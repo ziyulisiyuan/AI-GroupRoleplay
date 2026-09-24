@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 应用图标前景：白色对话气泡 + 三个孔点（群聊语义）。
+     108x108 自适应图标画布，图形收在中心 56x48 的安全区内（圆形/方形遮罩均不裁切）。 -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+
+    <!-- 气泡主体（含左下尾巴） -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M38,32 h32 a12,12 0 0 1 12,12 v12 a12,12 0 0 1 -12,12 h-16 l-13,11 v-11 h-3 a12,12 0 0 1 -12,-12 v-12 a12,12 0 0 1 12,-12 z" />
+
+    <!-- 三个孔点：与底色同色，读作"多个说话人" -->
+    <path
+        android:fillColor="#07C160"
+        android:pathData="M44,50 m-3.6,0 a3.6,3.6 0 1,0 7.2,0 a3.6,3.6 0 1,0 -7.2,0 z" />
+    <path
+        android:fillColor="#07C160"
+        android:pathData="M54,50 m-3.6,0 a3.6,3.6 0 1,0 7.2,0 a3.6,3.6 0 1,0 -7.2,0 z" />
+    <path
+        android:fillColor="#07C160"
+        android:pathData="M64,50 m-3.6,0 a3.6,3.6 0 1,0 7.2,0 a3.6,3.6 0 1,0 -7.2,0 z" />
+</vector>

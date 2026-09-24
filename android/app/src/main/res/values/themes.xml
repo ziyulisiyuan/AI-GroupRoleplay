@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- 无 ActionBar；edge-to-edge（targetSdk 36 强制），inset 由 MainActivity 手动加到 WebView 上。
+         API 31+ 的启动页直接交给系统（windowSplashScreen* 三个属性）：绿底 + 会跳动的矢量 logo，
+         Activity 用 setKeepOnScreenCondition 把它保持到本地服务就绪，避免"系统大 logo → 自绘小 logo"的尺寸跳变。 -->
+    <style name="AppTheme" parent="@android:style/Theme.Material.Light.NoActionBar">
+        <item name="android:windowBackground">@color/splash_bg</item>
+        <item name="android:statusBarColor">@android:color/transparent</item>
+        <item name="android:navigationBarColor">@android:color/transparent</item>
+        <item name="android:windowLightStatusBar">true</item>
+        <item name="android:windowLightNavigationBar">true</item>
+        <item name="android:windowSplashScreenBackground">@color/splash_bg</item>
+        <item name="android:windowSplashScreenAnimatedIcon">@drawable/splash_logo_anim</item>
+        <item name="android:windowSplashScreenAnimationDuration">600</item>
+    </style>
+</resources>

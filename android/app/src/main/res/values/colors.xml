@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- 与前端 token 对齐：页面底色 #f7f7f7，品牌绿 #07c160（注意：XML 注释内不能出现双连字符） -->
+    <color name="page_bg">#f7f7f7</color>
+    <color name="ic_launcher_background">#07c160</color>
+    <!-- 启动页底色（同时作为 windowBackground：冷启动第一帧就是品牌绿，不会闪白） -->
+    <color name="splash_bg">#07c160</color>
+</resources>

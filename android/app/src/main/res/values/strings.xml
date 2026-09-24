@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- 应用名：群像本（群像 = 多角色同台；本 = 状态账本/知情账本） -->
+    <string name="app_name">群像本</string>
+    <string name="splash_fail">本地服务启动失败，请退出重进\n日志：files/app/server.log</string>
+</resources>

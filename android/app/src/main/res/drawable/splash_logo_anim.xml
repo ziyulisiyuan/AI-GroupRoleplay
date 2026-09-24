@@ -1,0 +1,41 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 启动页动效：三个点依次上下跳动（错峰 140ms，往返循环）——纯原生 AnimatedVectorDrawable，零依赖 -->
+<animated-vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:drawable="@drawable/splash_logo">
+    <target android:name="dotA">
+        <objectAnimator
+            android:duration="420"
+            android:interpolator="@android:anim/accelerate_decelerate_interpolator"
+            android:propertyName="translateY"
+            android:repeatCount="infinite"
+            android:repeatMode="reverse"
+            android:startOffset="0"
+            android:valueFrom="0"
+            android:valueTo="-7"
+            android:valueType="floatType" />
+    </target>
+    <target android:name="dotB">
+        <objectAnimator
+            android:duration="420"
+            android:interpolator="@android:anim/accelerate_decelerate_interpolator"
+            android:propertyName="translateY"
+            android:repeatCount="infinite"
+            android:repeatMode="reverse"
+            android:startOffset="140"
+            android:valueFrom="0"
+            android:valueTo="-7"
+            android:valueType="floatType" />
+    </target>
+    <target android:name="dotC">
+        <objectAnimator
+            android:duration="420"
+            android:interpolator="@android:anim/accelerate_decelerate_interpolator"
+            android:propertyName="translateY"
+            android:repeatCount="infinite"
+            android:repeatMode="reverse"
+            android:startOffset="280"
+            android:valueFrom="0"
+            android:valueTo="-7"
+            android:valueType="floatType" />
+    </target>
+</animated-vector>

@@ -1,0 +1,48 @@
+{
+  "name": "roleplay-groupchat",
+  "private": true,
+  "version": "0.0.1",
+  "type": "module",
+  "license": "SEE LICENSE IN LICENSE",
+  "engines": {
+    "node": ">=22.19"
+  },
+  "scripts": {
+    "chat:group": "tsx src/group-cli.ts",
+    "host": "tsx watch src/server.ts",
+    "web:dev": "pnpm --dir web dev",
+    "web:build": "pnpm --dir web build",
+    "bundle:server": "node scripts/bundle-server.mjs",
+    "selfcheck:llm": "tsx scripts/selfcheck-llm.ts",
+    "selfcheck:m1": "tsx scripts/selfcheck-m1-offline.ts",
+    "selfcheck:m2": "tsx scripts/selfcheck-m2-offline.ts",
+    "selfcheck:m3": "tsx scripts/selfcheck-m3-offline.ts",
+    "rebuild": "tsx scripts/rebuild.ts",
+    "typecheck": "tsc --noEmit",
+    "selfcheck:scaffold": "tsx scripts/selfcheck-scaffold.ts",
+    "selfcheck:settings": "tsx scripts/selfcheck-settings.ts",
+    "accept:isolation": "tsx scripts/acceptance-isolation.ts",
+    "accept:models": "tsx scripts/acceptance-models.ts",
+    "accept:context-edit": "tsx scripts/acceptance-context-edit.ts",
+    "selfcheck:presence": "tsx scripts/selfcheck-presence.ts",
+    "selfcheck:engine": "tsx scripts/selfcheck-engine-offline.ts",
+    "selfcheck:router": "tsx scripts/selfcheck-router-offline.ts",
+    "accept:presence": "tsx scripts/acceptance-presence.ts",
+    "accept:director": "tsx scripts/acceptance-director.ts"
+  },
+  "devDependencies": {
+    "@types/js-yaml": "^4.0.9",
+    "@types/node": "^22.19.0",
+    "esbuild": "^0.25.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.6.0"
+  },
+  "dependencies": {
+    "@hono/node-server": "^2.1.1",
+    "hono": "^4.13.8",
+    "iconv-lite": "^0.7.3",
+    "js-yaml": "^5.4.2",
+    "openai": "^7.19.0",
+    "undici": "^8.10.2"
+  }
+}

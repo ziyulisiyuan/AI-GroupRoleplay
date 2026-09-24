@@ -1,0 +1,12 @@
+node_modules/
+.env
+groups/
+.dsh-home/
+*.log
+web/dist/
+settings.yaml
+规则.md
+.shots/
+# 安卓打包用：termux 运行时与 deb 均为可重建产物（见 docs/安卓应用说明.md）
+runtime-node/
+.backup-phone/

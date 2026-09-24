@@ -1,0 +1,53 @@
+/* ============================================================
+   tokens.css — 设计变量（唯一取值来源；组件只允许引用这里的语义名）
+   体系：微信移动端视觉语言（亮色单主题，刻意不对齐暗色——决策见交付文档）
+   ============================================================ */
+:root {
+  /* 表面 */
+  --bg-page: #f7f7f7;      /* 导航/TabBar/表单页底 */
+  --bg-chat: #ededed;      /* 聊天滚动区底 */
+  --bg-cell: #ffffff;      /* 列表单元/面板 */
+  --bg-press: #ececec;     /* 单元按住态 */
+  /* 文字（正文一律 text-1；text-2/3 只用于短注释） */
+  --text-1: rgba(0, 0, 0, 0.9);
+  --text-2: #888888;
+  --text-3: #b2b2b2;
+  /* 品牌与语义 */
+  --brand: #07c160;
+  --brand-press: #06ad56;
+  --bubble-out: #95ec69;
+  --link: #576b95;
+  --danger: #fa5151;
+  --line: #e7e7e7;         /* 发丝线 */
+  --mask: rgba(0, 0, 0, 0.5);
+  /* 圆角 */
+  --r-avatar: 5px;
+  --r-bubble: 8px;
+  --r-btn: 6px;
+  --r-input: 6px;
+  /* 间距（4px 基准） */
+  --s-1: 4px;
+  --s-2: 8px;
+  --s-3: 12px;
+  --s-4: 16px;
+  --s-5: 20px;
+  --s-6: 24px;
+  /* 字号 */
+  --fs-nav: 17px;
+  --fs-body: 17px;         /* 聊天气泡正文 */
+  --fs-cell: 16px;
+  --fs-sub: 14px;
+  --fs-cap: 12px;
+  /* 结构尺寸 */
+  --nav-h: 44px;
+  --tab-h: 50px;
+  --cell-h: 54px;
+  --composer-bar: 52px;
+  /* 动效（只动 transform/opacity） */
+  --t-press: 0.06s;
+  --t-view: 0.18s;
+  --ease-kb: cubic-bezier(0.25, 1, 0.5, 1);
+  /* 字体 */
+  --font: -apple-system, BlinkMacSystemFont, "PingFang SC", "HarmonyOS Sans SC",
+    "MiSans", "Microsoft YaHei", "Segoe UI", sans-serif;
+}

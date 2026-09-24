@@ -1,0 +1,46 @@
+plugins {
+    id 'com.android.application'
+}
+
+android {
+    namespace 'com.roleplay.groupchat'
+    compileSdk 36
+
+    defaultConfig {
+        applicationId 'com.roleplay.groupchat'
+        minSdk 30
+        targetSdk 36
+        versionCode 1
+        versionName '1.0'
+        // 目标机仅 arm64（见 dev-environment.md）；只出这一种 ABI 可显著缩小 APK
+        ndk { abiFilters 'arm64-v8a' }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+
+    // 关键：node 运行时以 jniLibs/*.so 形式打包，必须让安装器把真实文件解包到
+    // nativeLibraryDir（legacy packaging），否则 ProcessBuilder 无法执行它。
+    packaging {
+        jniLibs {
+            useLegacyPackaging = true
+        }
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled false
+            signingConfig signingConfigs.debug
+        }
+    }
+
+    lint {
+        abortOnError false
+    }
+}
+
+// 无第三方依赖：全程只用 Android 框架 API（不引 androidx），依赖解析零风险
+dependencies {
+}

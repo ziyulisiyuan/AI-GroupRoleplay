@@ -1,0 +1,10 @@
+# 安卓工程：只提交源码与资源；以下全部是可重建的构建产物/本机路径
+local.properties
+.gradle/
+build/
+app/build/
+# payload（由 pnpm bundle:server + scripts/build-android.mjs 生成）
+app/src/main/assets/payload.zip
+payload/
+# node 运行时（由 scripts/stage-node-android.mjs 从 runtime-node/deb 生成）
+app/src/main/jniLibs/

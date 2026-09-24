@@ -1,0 +1,4 @@
+// 根构建文件：只声明 AGP（版本与本机 Gradle 缓存一致，避免额外下载）
+plugins {
+    id 'com.android.application' version '8.13.2' apply false
+}
