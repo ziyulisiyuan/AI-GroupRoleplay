@@ -331,26 +331,13 @@ export class GroupSession {
             rules: this.rules,
             timeoutMs: Math.max(config.directorTimeoutMs, 60000),
           })
-          const presenceApplied: string[] = []
-          for (const p of book.presenceUpdates) {
-            const resolved = this.resolvePresence(p)
-            if (resolved === undefined) continue
-            const cur = this.sceneAccess()
-            const nextScene: SceneAccess = {
-              present: resolved.present,
-              remote: resolved.remote ?? cur.remote,
-              overhear: resolved.overhear ?? cur.overhear,
-            }
-            if (this.sameScene(nextScene, this.sceneAccess())) continue
-            this.setScene(this.normalizeScene(nextScene), p.reason !== '' ? p.reason : '记账修正')
-            presenceApplied.push(sceneSummary(this.normalizeScene(nextScene)))
-          }
+          // 记账员只有状态账本写入权（§6.1b）：presence_updates 权力已摘除，
+          // 场景名册由 Jev 每轮判定 / 总管代管 / 用户手动修正维护
           const notes = this.recordRouteChanges(book.ledgerUpdates)
           this.judgeLog({
             phase: '记账',
             subject: w.speaker === '' ? '用户消息' : `${w.speaker} 的回复`,
             ledgerUpdates: notes,
-            presenceUpdates: presenceApplied,
           })
         } catch (e) {
           this.judgeLog({ phase: '记账', subject: w.speaker === '' ? '用户消息' : `${w.speaker} 的回复`, error: String(e instanceof Error ? e.message : e) })

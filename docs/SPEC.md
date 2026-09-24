@@ -628,26 +628,30 @@ interactMax: 0.3, gateKeep: 0.5, toldMin: 0.5, extraRoundMin: 0.75 }`.
 ### 6.1b Slow path (`askBookkeeper`)
 
 `record_round` tool, queued in the background after the stream. Records: `状态账本`
-(whole-snapshot seven-field updates, §3.4a) and `presence_updates` (scene corrections). No memory
-fields. **Gated** (fast path): the work list holds the user message and each reply whose judgment
-opened the status gate (missing answer = open); one deepseek call per list entry — the user
-message can be its own entry with no reply section, which also covers no-reply turns (e.g. the
-picked speaker has no speech rights). An empty list means no bookkeeping call at all. The
-fallback path is unchanged: the full director's ledger updates apply inline and no background
-bookkeeping runs. Failures are logged (`DSH_DEBUG` and 判定.jsonl) and never fatal. Position
-status must track movement: when the dialogue moves someone, the ledger's 位置状态 and the scene
-roster are updated together (stale position states poison the presence judgment).
+(whole-snapshot seven-field updates, §3.4a) only. No memory fields, **no scene roster writes** —
+the bookkeeper has no presence authority: it must not add or remove scene members, and any
+`presence_updates` it emits anyway are discarded by the engine `[WHY]` left ungated it re-added
+off-scene characters based on setting-plausibility ("same cave") against Jev's explicit judgment.
+Position status still tracks movement inside the ledger. **Gated** (fast path): the work list
+holds the user message and each reply whose judgment opened the status gate (missing answer =
+open); one deepseek call per list entry — the user message can be its own entry with no reply
+section, which also covers no-reply turns (e.g. the picked speaker has no speech rights). An
+empty list means no bookkeeping call at all. The fallback path is unchanged: the full director's
+ledger updates apply inline and no background bookkeeping runs. Failures are logged (`DSH_DEBUG`
+and 判定.jsonl) and never fatal.
 
 ### 6.1c Fallback full director (`routeNextSpeaker`)
 
 `route_and_remember` tool: routing + `状态账本` + `presence_updates` in one call; ledger updates
-apply inline after the reply. The route prompt reads the effective view plus `pendingUserText`
-(the pre-flight appends the user message after judging, so the fallback needs it explicitly);
-the heuristic fallback uses the same view. Its scene-people record is a cache that can lag the
-story: when the dialogue clearly depicts an arrival/departure, it takes precedence and the
-record must be corrected immediately. No tool carries memory fields. Failure of the director
-call or an out-of-roster pick → heuristic: mention detection on the pending user text → even
-pick excluding the last speaker.
+apply inline after the reply. This is the director's **compensatory takeover** — it runs only
+when the Jev call itself failed (a salvage turn keeps Jev's own scene corrections and the
+director's `presence_updates` are ignored by the pre-existing if/else split). Its scene-people
+authority is **extremely strict, two rules**: a character absent from the roster joins only when
+the dialogue explicitly depicts him entering/appearing/being called in; a character on the roster
+leaves only when the dialogue explicitly depicts him unconscious or leaving — plausibility
+("he lives here", "he could be nearby") never counts. No tool carries memory fields. Failure of
+the director call or an out-of-roster pick → heuristic: mention detection on the pending user
+text → even pick excluding the last speaker.
 
 ### 6.1d Scene summarizer (`askSceneSummarizer`)
 
@@ -902,7 +906,7 @@ Convention [INV 11]: fixtures are temporary and always deleted. Offline checks n
 | `selfcheck:settings` | offline | rules zero-built-in round-trip · provider parsing/fallback · router provider resolution |
 | `selfcheck:presence` | offline | three-layer yaml round-trip (with `since`) · parse semantics (omitted=keep/empty=clear/unknown=语音) · perception keywords · visible_to snapshots |
 | `selfcheck:engine` | offline | bad-line tolerance + id continuity · text-retract no-resurrection (restart/replay) · edit living-ledger (physical ledger-row rewrite, respects retracts) · deleted-message physical removal (no text left in log) + memory cleanup + id monotonicity · rename chains |
-| `selfcheck:router` | offline | Jev hit / three-layer derivation / knowledge audience (incl. overhearers) / `told` stage-1 + `state_dirty` parsing (missing = safe side) · low-confidence, out-of-roster → route-only fallback with raw answers logged · scene/knowledge salvage when route unusable · `jevExtraRounds` stage-2 thresholds / failure grants nothing · `missingRounds`/`transplantRounds` units (verbatim, mid, own-speech prefix) · end-to-end merged judgment (1 call/reply) · extra-memory grant (end-append order, ledger rows, idempotence on re-telling) · gate (zero deepseek calls when clean, exactly one when dirty) · scene-perception snapshot (entrant detection, injection before entrant speaks via relay, manual-fix entries snapshotted too) · off-story experiences (absence anchor pure-code, discovery merged per entry, event×participant limited-POV renders injected to all participants, first-time entrants skipped) · judgment log (判定.jsonl rows with phases + raw answers + elapsed) · relay (user turn / cap) · fallback = legacy behavior · unconfigured = fully compatible |
+| `selfcheck:router` | offline | Jev hit / three-layer derivation / knowledge audience (incl. overhearers) / `told` stage-1 + `state_dirty` parsing (missing = safe side) · low-confidence, out-of-roster → route-only fallback with raw answers logged · scene/knowledge salvage when route unusable · `jevExtraRounds` stage-2 thresholds / failure grants nothing · `missingRounds`/`transplantRounds` units (verbatim, mid, own-speech prefix) · end-to-end merged judgment (1 call/reply) · extra-memory grant (end-append order, ledger rows, idempotence on re-telling) · gate (zero deepseek calls when clean, exactly one when dirty) · bookkeeper has no roster authority (overreach discarded) · scene-perception snapshot (entrant detection, injection before entrant speaks via relay, manual-fix entries snapshotted too) · off-story experiences (absence anchor pure-code, discovery merged per entry, event×participant limited-POV renders injected to all participants, first-time entrants skipped) · judgment log (判定.jsonl rows with phases + raw answers + elapsed) · relay (user turn / cap) · fallback = legacy behavior · unconfigured = fully compatible |
 | `acceptance-*` (m1–m5, isolation, models, context-edit, presence, director) | online | end-to-end behaviors per milestone; re-run after any fast-path or memory change |
 
 `DSH_DEBUG=1` prints director/judge failure causes.

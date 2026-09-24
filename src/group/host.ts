@@ -189,7 +189,7 @@ export const ROUTE_TOOL: ToolSpec = {
         },
         presence_updates: {
           type: 'array',
-          description: '维护"当前场景人员"（硬约束：决定谁能在这里发言、谁会被自动登记这里发生的事）。开场给出名单；此后只要与剧情不符，给出修正后的完整名单；没有变化就不要填。',
+          description: '代管维护"当前场景人员"（硬约束：决定谁能在这里发言、谁会被自动登记这里发生的事）。**极其严苛，两条铁律**：名单里不在场的角色，只有对话**明确描写他进场/出现/被叫到现场**才能加入；名单里在场的角色，只有对话**明确描写他失去意识或离开**才能移出。"他住在这里""他可能在附近""他是这里的人"这类推测一律不算。有明确描写才给出修正后的完整名单；没有就不要填此字段。',
           items: { ...PRESENCE_ITEM_SCHEMA },
         },
       },
@@ -282,8 +282,8 @@ export async function routeNextSpeaker(input: RouteInput): Promise<RouteResult> 
     '可发言角色（只有他们能在本场景说话：现场者，以及通道接入者；两者之外的人不能发言）：',
     ...input.rosterLines.map(l => `- ${l}`),
     input.presentNames !== undefined
-      ? `[当前场景人员（你的记录）]\n${(input.presentNotes ?? input.presentNames).join('、') || '（无）'}\n`
-        + '这份记录是你的判断缓存，**可能落后于剧情**：对话已经明确描写某人到场/进门/离开时，以对话为准，立即用 presence_updates 给出修正后的完整名单，并同步更新该角色的位置状态。它决定谁能在这里发言、谁会被自动登记这里发生的事。\n'
+      ? `[当前场景人员（你的代管记录——判定模型不可用，由你代为维护）]\n${(input.presentNotes ?? input.presentNames).join('、') || '（无）'}\n`
+        + '**代管规则（极其严苛，两条铁律）**：名单里不在场的角色，只有对话**明确描写他进场/出现/被叫到现场**才能加入；名单里在场的角色，只有对话**明确描写他失去意识或离开**才能移出。"他住这里""可能在附近""他是这里的人"这类推测一律不算——有明确描写才用 presence_updates 给出修正后的完整名单，没有就不动这份名单。它决定谁能在这里发言、谁会被自动登记这里发生的事。\n'
         + '**接入者不会被自动登记**：通道传来的内容只在他的实时上下文里，不自动写进他的长期记忆。他经通道确实获知、且值得长期记住的事，用 knowledge_appends 记给他；通道没传到的一律不记。\n'
         + 'knowledge_appends 同时也用于名单之外的人偶发的实际感知；名单内的人若因任何原因实际感知不到，就不要给他记。'
       : '',
@@ -794,7 +794,7 @@ export const BOOKKEEP_TOOL: ToolSpec = {
   type: 'function',
   function: {
     name: 'record_round',
-    description: '剧情刚走完一条消息（一段用户发言，或某角色对它的回复）。记录这段剧情造成的持久变化；只记确实发生的，没有变化就不填',
+    description: '剧情刚走完一条消息（一段用户发言，或某角色对它的回复）。记录这段剧情造成的持久**状态**变化；只记确实发生的，没有变化就不填。**场景人员名单由判定层维护，此工具不处理在场名单**',
     parameters: {
       type: 'object',
       properties: {
@@ -802,11 +802,6 @@ export const BOOKKEEP_TOOL: ToolSpec = {
           type: 'array',
           description: '对发生状态变化的角色，输出其**完整最新状态账本**（整体快照，不是增量）：输入里给了各角色当前账本，没变化的字段原样带回，变化的字段写新值；没有角色发生变化就不要填。',
           items: { ...LEDGER_ITEM_SCHEMA },
-        },
-        presence_updates: {
-          type: 'array',
-          description: '对当前场景人员的补充修正（快路径已做过初判，只在与剧情不符时修正；没有不符就不要填）',
-          items: { ...PRESENCE_ITEM_SCHEMA },
         },
       },
       required: [],
@@ -844,7 +839,7 @@ export async function askBookkeeper(input: BookkeeperInput): Promise<Pick<RouteR
     ...(input.replyText.trim() === '' ? [] : [`[${input.speaker} 的回复]\n${input.replyText}`]),
     '[最近对话]',
     input.recent,
-    '调用 record_round 工具记录这段剧情造成的持久变化（状态账本整体快照，以及场景人员的补充修正）；没发生的变化不要填。特别留意位置状态：对话描写了某人移动/到场/离开时，必须同步更新其位置状态与场景名单，不能停留在旧记录上。状态账本只写客观要点（短语式，无形容词渲染、无文学描写、无比喻）——它是骨架不是描写，写丰满会让角色反复复读。',
+    '调用 record_round 工具记录这段剧情造成的持久**状态**变化（状态账本整体快照）；没发生的变化不要填。特别留意位置状态：对话描写了某人移动/到场/离开时，必须同步更新其位置状态，不能停留在旧记录上。状态账本只写客观要点（短语式，无形容词渲染、无文学描写、无比喻）——它是骨架不是描写，写丰满会让角色反复复读。**场景人员名单由判定层维护，你不处理在场名单，也不要推测谁在场**。',
   ].filter(s => s !== '').join('\n')
 
   const call = await chatToolCall(resolveLlm(), {
@@ -857,7 +852,9 @@ export async function askBookkeeper(input: BookkeeperInput): Promise<Pick<RouteR
     signal: AbortSignal.timeout(input.timeoutMs ?? 60000),
   })
   const args = JSON.parse(call.arguments) as Parameters<typeof parseBookkeeping>[0]
-  return { appends: [], ...parseBookkeeping(args) } // 记忆不由总管生成（知情 = Jev 名单 + 原文移植）
+  // 记账员只有状态账本写入权（§6.1b）：场景名册由 Jev 判定/总管代管/用户手动维护，
+  // 记账员若越权输出 presence_updates 一律丢弃（实测它会凭"同处一洞"式推测把场外角色写回名册）
+  return { ledgerUpdates: parseBookkeeping(args).ledgerUpdates, appends: [], presenceUpdates: [] }
 }
 
 // ---------- 纠正窗口：用户直接与总管对话（戏外） ----------

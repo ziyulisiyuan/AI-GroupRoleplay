@@ -306,7 +306,10 @@ try {
   // ── 4) 端到端：快路径路由 → 知情名单（原文移植）→ 合并判定 → 记账门控（回复脏 → 恰一次记账）
   {
     const ds = await mockDeepseek({
-      bookkeep: { 状态账本: [{ character: '角色甲', 心理状态: '愉快' }] },
+      bookkeep: {
+        状态账本: [{ character: '角色甲', 心理状态: '愉快' }],
+        presence_updates: [{ present: ['角色乙'], reason: '记账员越权试图改名单' }],
+      },
       streamText: '（甲压低声音）我只跟你说。',
     })
     const jev = await mockJev({ answers: [
@@ -365,6 +368,8 @@ try {
     assert.equal(ds.hits.filter(h => h.kind === 'bookkeep').length, 1, '记账门控：仅回复脏 → 恰好一次后台记账')
     const stFinal = fsReadFileSync(join(accDir, '角色', '角色甲', '状态.yaml'), 'utf8')
     assert.ok(stFinal.includes('愉快'), '后台记账必须把状态账本快照落盘')
+    // 记账员无名册权：bookkeeper 越权输出的 presence_updates 必须被忽略
+    assert.ok(session.snapshot().present.includes('角色甲') && session.snapshot().present.includes('角色乙'), '记账员不得改动场景名册（权力已摘除）')
 
     // 判定日志（判定.jsonl，只给人看）：判定/记账必须有完整记录，带原始答案与耗时
     const judgeRaw = fsReadFileSync(join(accDir, '判定.jsonl'), 'utf8')
@@ -844,7 +849,7 @@ try {
     ds.server.close()
   }
 
-  console.log('快/慢双路径自检通过：Jev命中/三层推导/知情名单(原文移植，含偷听者)/低置信与名单外→路由回退但场景知情不连坐(留痕) · 合并判定(知情+总门+转告+接力一次调用) · 额外记忆(一段触发/二段逐轮/逐字移植/带mid幂等/堆在末尾) · 记账门控(无变化零调用/回复脏恰一次) · 现场所见(进场检测/发言前等待) · 事件补全(离场锚点纯代码/发现一次合并/事件×参与者限知视角分别注入/首次进场不触发) · 接力判定（判给用户即结束/上限保护） · 接力加权(纯代码衰减翻转留痕) · 回退=旧版行为 · 未配置=完全兼容')
+  console.log('快/慢双路径自检通过：Jev命中/三层推导/知情名单(原文移植，含偷听者)/低置信与名单外→路由回退但场景知情不连坐(留痕) · 合并判定(知情+总门+转告+接力一次调用) · 额外记忆(一段触发/二段逐轮/逐字移植/带mid幂等/堆在末尾) · 记账门控(无变化零调用/回复脏恰一次) · 记账员无名册权(越权丢弃) · 现场所见(进场检测/发言前等待) · 事件补全(离场锚点纯代码/发现一次合并/事件×参与者限知视角分别注入/首次进场不触发) · 接力判定（判给用户即结束/上限保护） · 接力加权(纯代码衰减翻转留痕) · 回退=旧版行为 · 未配置=完全兼容')
 } finally {
   rmSync(accDir, { recursive: true, force: true })
   if (hadSettings) writeFileSync(settingsFile, backup ?? '', 'utf8')
