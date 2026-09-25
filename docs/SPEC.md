@@ -1034,4 +1034,4 @@ gate: `registerStatic(app)` (only active when `ROOT/dist` exists; unknown GETs f
 `127.0.0.1` so the server is not exposed to the LAN).
 
 **Known limitations.** The APK ships `arm64-v8a` only; `minSdk 30`; the back key backgrounds the
-app instead of navigating within it; the payload's Node runtime adds ~85 MB to the APK.
+app instead of navigating within it; the Node runtime accounts for nearly all of the APK's ~39 MB.

@@ -6,7 +6,7 @@
 
 📱 跑在你手机里的 AI 群聊角色扮演引擎 · 🔒 安全 · 🧩 本地
 
-> Local-first multi-character AI group-roleplay engine — characters know only what they should, remember verbatim, and take turns under an auditable judge. Runs fully offline, on-device.
+> Local-first multi-character AI group-roleplay engine — characters know only what they should, remember verbatim, and take turns under an auditable judge on a user-built scene map. Runs fully offline, on-device.
 
 [快速开始](#快速开始) · [它解决了什么](#它解决了什么) · [为什么它能做到](#为什么它能做到) · [系统手册](docs/SPEC.md)
 
@@ -30,6 +30,7 @@
 |---|---|
 | 总有人抢戏 | 每轮一次结构化判定决定"谁输出下一段内容"；拿不准就**把发言权还给你**，绝不抢戏 |
 | 耳语泄露 | 每条消息独立判定知情名单，每个角色独立记忆——谁听得见，谁的上下文里才有这句；听不见的，**记忆里也没有**，从根源杜绝记忆错乱 |
+| 角色总出现在不该在的地方 | 地图机制：世界由固定场景文件构成（名称+描述，全量注入角色与判定层），在场 = 位置相同的**代码事实**；换场景只认明确描写（极严苛判定）或定位针手选 |
 | 记忆漂移 | 角色记忆是**逐字原文移植**，不是模型总结——没有可编造的环节 |
 | 判断是黑箱 | 每一次判定全程落盘成日志：每道题的原始概率、走了哪条路径、为什么回退，随时可查可审计 |
 | 数据不可控 | 纯文件存储，无数据库、无账号、无云端；数据在你设备上，格式看得懂，坏了能修，不存在远程后端服务器 |
@@ -72,6 +73,7 @@
 - **判定/生成分离**：一次廉价的结构化判定（TypeSafe System One 协议的 noul/choice 类型化问题）同时回答"谁接话、三层场景变动、谁能感知这条消息、是否在转告、状态要不要重记"；生成模型只负责把角色演好。判定失败三级回退，剧情不中断。
 - **知情边界（knowledge boundary）**：每条消息出生即带 `visible_to` 快照，上下文窗口与记忆账本从第一刻一致；接入/偷听者各带感知起点锚（`since`），接入之前的事不可能是他的记忆。
 - **唯一事实源 + 重放**：`剧情.jsonl` append-only 账本，状态/记忆/在场全部可由它重放重建（`pnpm rebuild`）；改写与删除是物理语义，"当前上下文"与"角色知道什么"永不分叉。
+- **地图机制**：世界由一张固定地图构成——场景文件（名称+描述，一经创建不可改名不可删除）全量注入角色与判定层；在场 = 位置相同的代码事实，换场景只认明确描写或定位针手选，每个角色的位置逐轮落在 presence 行上，可审计可重放。
 - **两段式事件补全**：离场者回归时，先从对话依据中发现事件骨架，再按**每个参与者各自的限知视角**渲染成记忆——同一场事，两个人的记忆版本视角不同、事实不矛盾。
 - **状态账本七字段整体快照**：生理/心理/外观/位置/性格演变/姓名变化/人物关系变化——只保留最新版，杜绝堆叠污染；写作被硬约束为客观骨架，防复读。
 - **全链路判定日志**：每道判定题的原始概率分布、耗时、回退原因全部落盘，`判定.jsonl` 只给人看、永不进入任何模型输入。
@@ -104,7 +106,7 @@ Windows 下直接双击 `启动.bat`。
 
 - [`docs/SPEC.md`](docs/SPEC.md) —— 系统手册：运行时形态、数据格式、判定协议、接口契约、已知限制（AI 助手接入本项目前建议先读）
 - [`docs/安卓应用说明.md`](docs/安卓应用说明.md) —— 安卓自包含构建与数据迁移
-- [`docs/前端重设计说明.md`](docs/前端重设计说明.md) —— 前端设计决策
+- [`docs/前端设计说明.md`](docs/前端设计说明.md) —— 前端设计决策
 
 ---
 
@@ -119,6 +121,8 @@ Windows 下直接双击 `启动.bat`。
 第三个是**数据主权**。没有数据库、没有账号、没有云端——所有状态是纯文件，格式人类可读，`rebuild` 可从日志完整重放。你的剧情永远在你手里。
 
 以及一个反面共识：**引擎不该有内容**。仓库里没有示例人设、没有内置规则、没有"推荐提示词"——写什么、怎么演，完全是你的事。一个自带内容的引擎，等于把别人的偏好塞进你的创作。
+
+如果它帮你把一场群聊跑顺，**一个 star 就是最实在的反馈**——这比什么都管用，作者会把时间继续花在下一处毛刺上。⭐
 
 ---
 
@@ -149,20 +153,6 @@ Windows 下直接双击 `启动.bat`。
 **Q：能在手机上离线运行吗？**
 
 能。安卓版把 Node 运行时、引擎、HTTP 服务与界面全部打进一个 APK，只绑回环地址，无云端依赖，数据存应用私有目录。
-
----
-
-## 关于制作过程
-
-这套东西不是一次写成的。
-
-从"单角色终端对话"到"判定与生成分离的多角色运行时"，中间是十余个里程碑的反复推翻：账本语义从聚合式状态重写成七字段快照（堆叠会污染提示词）；记忆从"模型总结"改成"逐字移植"（实测总结必然虚构）；场景从两层拆到三层（偷听者的存在感会泄露）；接力判定反复校准（判定模型会滥用"无人回应"选项）；连"被哀求的角色即使沉默也该获得输出权"这种细节，都是在真实对局里撞出来再修掉的。
-
-每一次修改都留下回归钉。改坏的代价是自检变红，而不是三天后才发现"某个角色知道了不该知道的事"。
-
-移动端同样如此：键盘与输入条的贴合、乐观回显的时序掩盖、启动页与系统启动页的衔接——每一处都是真机上反复验证。
-
-如果它帮你把一场群聊跑顺，**一个 star 就是最实在的反馈**——这比什么都管用，作者会把时间继续花在下一处毛刺上。⭐
 
 ---
 
@@ -209,8 +199,8 @@ Windows 下直接双击 `启动.bat`。
 
 **Qunxiangben** ("Group Portrait Book") is a local-first, multi-character AI group-roleplay
 engine. Several AI characters share one scene and take turns under an auditable structural
-judge (TypeSafe SystemOne protocol): who speaks next, who is present, who can hear a given
-message, whether an off-screen event should be remembered. Character memory is a
+judge (TypeSafe SystemOne protocol) on a user-built scene map: who speaks next, who is present,
+who can hear a given message, whether an off-screen event should be remembered. Character memory is a
 **verbatim-transplant ledger** — the model never invents memories — and every judgment is
 logged for human review. Storage is plain files (append-only JSONL as the single source of
 truth, fully replayable), with no database, no accounts and no cloud. An Android build runs
