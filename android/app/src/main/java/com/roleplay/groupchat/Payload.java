@@ -28,7 +28,7 @@ import java.util.zip.ZipInputStream;
 final class Payload {
     static final String TAG = "Payload";
     /** payload 版本：改动前端/后端后要 +1，启动时才会重新解包。 */
-    static final String VERSION = "15";
+    static final String VERSION = "16";
 
     private Payload() {}
 

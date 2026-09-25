@@ -458,8 +458,9 @@ function NewGroupView({ onBack, onCreated }: { onBack: () => void; onCreated: (g
   const [era, setEra] = useState('')
   const [world, setWorld] = useState('')
   const [tone, setTone] = useState('')
-  /** 地图：场景随群创建（名称+描述）；初始当前场景从其中指定。 */
+  /** 地图：场景随群创建；条目点选其一作为开局地点。添加走悬浮弹窗（同正则替换）。 */
   const [scenes, setScenes] = useState<Array<{ name: string; description: string }>>([])
+  const [adding, setAdding] = useState(false)
   const [draftName, setDraftName] = useState('')
   const [draftDesc, setDraftDesc] = useState('')
   const [active, setActive] = useState('')
@@ -473,6 +474,7 @@ function NewGroupView({ onBack, onCreated }: { onBack: () => void; onCreated: (g
     setActive(a => (a === '' ? n : a))
     setDraftName('')
     setDraftDesc('')
+    setAdding(false)
   }
 
   const create = async (): Promise<void> => {
@@ -492,33 +494,51 @@ function NewGroupView({ onBack, onCreated }: { onBack: () => void; onCreated: (g
   return (
     <div className="page page-enter">
       <NavBar title="新建群聊" onBack={onBack} />
-      <Cells>
-        <Field label="群聊名 *" value={name} onChange={setName} placeholder="如：大晟王朝" />
-        <Field label="时代背景" value={era} onChange={setEra} />
-        <Field label="世界观设定" value={world} onChange={setWorld} multiline rows={5} />
-        <Field label="总管基调" value={tone} onChange={setTone} multiline rows={2} />
-      </Cells>
-      <Cells>
-        <Cell title="场景（地图）" />
-        {scenes.map((s, i) => (
-          <button key={s.name} className="cell" onClick={() => setActive(s.name)}>
-            <div className="cell-title">
-              <div className="main">{s.name}{active === s.name ? '（当前场景）' : ''}</div>
-              <div className="sub">{s.description !== '' ? s.description : '（无描述）'}</div>
-            </div>
-            <button className="mem-del" onClick={e => {
-              e.stopPropagation()
-              setScenes(list => list.filter((_, j) => j !== i))
-              setActive(a => (a === s.name ? (scenes.find((_, j) => j !== i)?.name ?? '') : a))
-            }}>移除</button>
+      <div className="scroll">
+        <Cells>
+          <Field label="群聊名 *" value={name} onChange={setName} />
+          <Field label="时代背景" value={era} onChange={setEra} />
+          <Field label="世界观设定" value={world} onChange={setWorld} multiline rows={5} />
+          <Field label="总管基调" value={tone} onChange={setTone} multiline rows={2} />
+        </Cells>
+        <Cells>
+          <Cell title="场景" />
+          <button className="cell" onClick={() => { setDraftName(''); setDraftDesc(''); setAdding(true) }}>
+            <div className="cell-title"><div className="main" style={{ color: 'var(--brand)' }}>＋ 新建场景</div></div>
           </button>
-        ))}
-        {scenes.length === 0 && <div className="hint">（建好场景，点选其一作为开局地点）</div>}
-        <Field label="场景名称" value={draftName} onChange={setDraftName} placeholder="如：我的卧室" />
-        <Field label="场景描述" value={draftDesc} onChange={setDraftDesc} multiline rows={3} placeholder="这个场景是什么样子" />
-      </Cells>
-      <button className="btn-plain" disabled={draftName.trim() === ''} onClick={addScene}>＋ 添加场景</button>
-      <button className="btn-primary" disabled={busy || name.trim() === ''} onClick={() => void create()}>创建</button>
+          {scenes.map(s => (
+            <button key={s.name} className="cell" onClick={() => setActive(s.name)}>
+              <div className="cell-title">
+                <div className="main">{s.name}{active === s.name ? '（开局）' : ''}</div>
+                {s.description !== '' && <div className="sub">{s.description}</div>}
+              </div>
+              <button className="mem-del" onClick={e => {
+                e.stopPropagation()
+                setScenes(list => list.filter(x => x.name !== s.name))
+                setActive(a => (a === s.name ? (scenes.find(x => x.name !== s.name)?.name ?? '') : a))
+              }}>移除</button>
+            </button>
+          ))}
+        </Cells>
+        <button className="btn-primary" disabled={busy || name.trim() === ''} onClick={() => void create()}>创建</button>
+      </div>
+
+      <Modal open={adding} onClose={() => setAdding(false)} title="新建场景">
+        <div className="field">
+          <div className="field-label">场景名称</div>
+          <input className="field-input" value={draftName}
+            onChange={e => setDraftName(e.target.value)} />
+        </div>
+        <div className="field">
+          <div className="field-label">场景描述</div>
+          <textarea className="field-input" rows={4} value={draftDesc}
+            onChange={e => setDraftDesc(e.target.value)} />
+        </div>
+        <div style={{ display: 'flex', gap: 'var(--s-2)', padding: '0 var(--s-4) var(--s-2)' }}>
+          <button className="btn-plain" style={{ flex: 1, width: 'auto', margin: 0 }} onClick={() => setAdding(false)}>取消</button>
+          <button className="btn-primary" style={{ flex: 1, width: 'auto', margin: 0 }} onClick={addScene}>保存</button>
+        </div>
+      </Modal>
     </div>
   )
 }

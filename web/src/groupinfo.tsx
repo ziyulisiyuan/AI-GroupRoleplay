@@ -357,8 +357,9 @@ function ScenesView({ group, snap, onChanged }: {
 }): React.ReactElement {
   const toast = useToast()
   const [scenes, setScenes] = useState<Scene[] | null>(null)
-  const [name, setName] = useState('')
-  const [desc, setDesc] = useState('')
+  const [adding, setAdding] = useState(false)
+  const [newName, setNewName] = useState('')
+  const [newDesc, setNewDesc] = useState('')
   const [editing, setEditing] = useState<Scene | null>(null)
   const [editDesc, setEditDesc] = useState('')
 
@@ -372,10 +373,11 @@ function ScenesView({ group, snap, onChanged }: {
   useEffect(() => { void load() }, [load])
 
   const add = async (): Promise<void> => {
-    if (name.trim() === '') { toast('场景名称不能为空'); return }
+    if (newName.trim() === '') { toast('场景名称不能为空'); return }
     try {
-      await postJson(`/api/group/${enc(group)}/scenes`, { name: name.trim(), description: desc.trim() })
-      setName(''); setDesc('')
+      await postJson(`/api/group/${enc(group)}/scenes`, { name: newName.trim(), description: newDesc.trim() })
+      setNewName(''); setNewDesc('')
+      setAdding(false)
       await load()
       await onChanged()
       toast('场景已创建')
@@ -401,24 +403,40 @@ function ScenesView({ group, snap, onChanged }: {
   return (
     <>
       <Cells>
-        <div className="hint" style={{ padding: 'var(--s-3) var(--s-4) 0' }}>当前场景：{snap !== null && snap.scene !== '' ? snap.scene : '（未定）'}</div>
+        <button className="cell" onClick={() => { setNewName(''); setNewDesc(''); setAdding(true) }}>
+          <div className="cell-title"><div className="main" style={{ color: 'var(--brand)' }}>＋ 添加场景</div></div>
+        </button>
+        {scenes.length === 0 && <div className="hint">（还没有场景）</div>}
         {scenes.map(s => (
           <button key={s.name} className="cell" onClick={() => { setEditing(s); setEditDesc(s.description) }}>
             <div className="cell-title">
               <div className="main">{s.name}{snap?.scene === s.name ? '（当前）' : ''}</div>
-              <div className="sub">{s.description !== '' ? s.description : '（无描述）'}</div>
+              {s.description !== '' && <div className="sub">{s.description}</div>}
             </div>
           </button>
         ))}
-        {scenes.length === 0 && <div className="hint">（还没有场景）</div>}
-        <Field label="新场景名称" value={name} onChange={setName} placeholder="如：李府大院" />
-        <Field label="新场景描述" value={desc} onChange={setDesc} multiline rows={3} placeholder="这个场景是什么样子" />
       </Cells>
-      <button className="btn-primary" disabled={name.trim() === ''} onClick={() => void add()}>创建场景</button>
+
+      <Modal open={adding} onClose={() => setAdding(false)} title="添加场景">
+        <div className="field">
+          <div className="field-label">场景名称</div>
+          <input className="field-input" value={newName}
+            onChange={e => setNewName(e.target.value)} />
+        </div>
+        <div className="field">
+          <div className="field-label">场景描述</div>
+          <textarea className="field-input" rows={4} value={newDesc}
+            onChange={e => setNewDesc(e.target.value)} />
+        </div>
+        <div style={{ display: 'flex', gap: 'var(--s-2)', padding: '0 var(--s-4) var(--s-2)' }}>
+          <button className="btn-plain" style={{ flex: 1, width: 'auto', margin: 0 }} onClick={() => setAdding(false)}>取消</button>
+          <button className="btn-primary" style={{ flex: 1, width: 'auto', margin: 0 }} onClick={() => void add()}>保存</button>
+        </div>
+      </Modal>
 
       <Modal open={editing !== null} onClose={() => setEditing(null)} title={`场景 · ${editing?.name ?? ''}`}>
         <div className="field">
-          <div className="field-label">描述（名称不可改）</div>
+          <div className="field-label">描述</div>
           <textarea className="field-input" rows={6} value={editDesc} onChange={e => setEditDesc(e.target.value)} />
         </div>
         <div style={{ padding: '0 var(--s-4) var(--s-2)' }}>
@@ -528,21 +546,16 @@ function CharProfileView({ group, dirName, scenes, onChanged, onCreated }: {
         <Field label="初始性格" value={draft.personality} onChange={v => setDraft({ ...draft, personality: v })} multiline rows={3} />
         <Field label="初始人物关系" value={draft.relationships} onChange={v => setDraft({ ...draft, relationships: v })} multiline rows={3} />
       </Cells>
-      {isNew ? (
-        scenes.length > 0 ? (
-          <Cells>
-            <div className="hint" style={{ padding: 'var(--s-3) var(--s-4) 0' }}>初始所在场景</div>
-            {scenes.map(s => (
-              <CheckCell key={s.name} on={draft.scene === s.name} label={s.name}
-                onToggle={on => { if (on) setDraft(d => ({ ...d, scene: s.name })) }} />
-            ))}
-          </Cells>
-        ) : (
-          <Cells>
-            <div className="hint" style={{ padding: 'var(--s-3) var(--s-4) 0' }}>群还没有场景——先到聊天信息的「场景」里建，角色才有初始所在场景</div>
-          </Cells>
-        )
-      ) : (
+      {isNew && scenes.length > 0 && (
+        <Cells>
+          <Cell title="初始所在场景" />
+          {scenes.map(s => (
+            <CheckCell key={s.name} on={draft.scene === s.name} label={s.name}
+              onToggle={on => { if (on) setDraft(d => ({ ...d, scene: s.name })) }} />
+          ))}
+        </Cells>
+      )}
+      {!isNew && (
         <Cells>
           <Cell title="初始所在场景" sub={draft.scene !== '' ? draft.scene : '（无）'} />
         </Cells>
