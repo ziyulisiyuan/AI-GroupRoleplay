@@ -66,7 +66,7 @@ const SETTINGS_BACKUP_SUFFIX = '.selfcheck-bak'
 
 /**
  * 恢复孤儿备份：离线自检（selfcheck:router）会把 settings.yaml 短暂换成 mock 配置，正常结束时
- * 由 finally 还原；但进程被硬崩溃打死时 finally 不会执行，mock 配置就会留在真实配置上（实测事故）。
+ * 由 finally 还原；但进程被硬崩溃打死时 finally 不会执行，mock 配置就会留在真实配置上。
  * 自检把原始配置同时落盘到 settings.yaml.selfcheck-bak；启动时（server / cli）发现孤儿备份就
  * 原样恢复并告警——备份内容为空串表示"原本不存在 settings.yaml"，恢复即删除。
  */
@@ -113,7 +113,7 @@ export function resolveLlm(root: string = config.root): ResolvedLlm {
 
 /**
  * 快路径（路由判断）专用连接信息（SPEC §6.1a）：settings.routerId 指向的提供方。
- * 未配置或指向不存在的条目 → undefined：快路径关闭，总管走单次完整调用（行为与旧版一致）。
+ * 未配置或指向不存在的条目 → undefined：快路径关闭，总管走单次完整调用。
  * 每次调用现读 settings.yaml，前端改配置即刻生效。
  */
 export function resolveRouter(root: string = config.root): ResolvedLlm | undefined {

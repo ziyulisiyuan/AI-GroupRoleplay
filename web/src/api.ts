@@ -12,7 +12,6 @@ export interface Msg {
   text: string
   round: number
   visible_to: 'all' | string[]
-  scope?: 'public' | 'private'
   ts: string
 }
 export interface Route { type: 'route'; round: number; picked: string; reason: string; fallback: boolean }
@@ -40,7 +39,7 @@ export type Ev =
   | { type: 'speaker'; name: string }
   | { type: 'delta'; text: string }
   | { type: 'route'; picked: string; reason: string; fallback: boolean }
-  | { type: 'reply'; name: string; text: string; private: boolean }
+  | { type: 'reply'; name: string; text: string }
   | { type: 'ledger'; text: string }
   | { type: 'info'; text: string }
 export interface MemoryEntry { index: number; source: string; round: number; text: string }

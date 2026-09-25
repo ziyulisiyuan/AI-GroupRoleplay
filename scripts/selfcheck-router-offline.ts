@@ -288,9 +288,9 @@ try {
     const { StoryStore } = await import('../src/store.ts')
     const { missingRounds, transplantRounds } = await import('../src/group/knowledge.ts')
     const store = StoryStore.open(accDir, accName)
-    store.append('user', '你', '第一轮开会', ['角色甲', '角色乙'], 'public')
-    store.append('character', '角色甲', '（甲发言）我喜欢乙。', ['角色甲', '角色乙'], 'public')
-    store.append('user', '你', '第二轮的事', 'all', 'public')
+    store.append('user', '你', '第一轮开会', ['角色甲', '角色乙'])
+    store.append('character', '角色甲', '（甲发言）我喜欢乙。', ['角色甲', '角色乙'])
+    store.append('user', '你', '第二轮的事', 'all')
     const mem = [{ source: '亲历', mid: 1, round: 1, text: '你：第一轮开会' }]
     const missing = missingRounds(store, mem)
     assert.deepEqual(missing.map(x => x.round), [1, 2], '第1轮（缺甲发言）与第2轮（全缺）都是缺失轮')
@@ -704,9 +704,9 @@ try {
     const session = GroupSession.open(accName)
     // 造离场窗口：甲先在场 → 离场（窗口内有乙丙照顾猫的对话）
     session.setScene({ present: ['角色甲', '角色乙', '角色丙'], remote: [], overhear: [] }, 'r1')
-    session.store.append('user', '你', '（乙和丙在家里给甲的猫喂了饭陪它玩了一会儿）', 'all', 'public')
+    session.store.append('user', '你', '（乙和丙在家里给甲的猫喂了饭陪它玩了一会儿）', 'all')
     session.setScene({ present: ['角色乙', '角色丙'], remote: [], overhear: [] }, '甲离场')
-    session.store.append('user', '你', '（甲离场期间，乙和丙一直在照顾甲的猫）', 'all', 'public')
+    session.store.append('user', '你', '（甲离场期间，乙和丙一直在照顾甲的猫）', 'all')
     // 甲回归（手动修正路径）→ 入场包：现场所见 + 事件补全
     session.setScene({ present: ['角色甲', '角色乙', '角色丙'], remote: [], overhear: [] }, '甲回归')
     session.maybeSnapshotEntrants(['角色乙', '角色丙'], '测试进场')

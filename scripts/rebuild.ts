@@ -1,10 +1,9 @@
 /**
- * rebuild（SPEC §4.5 / §6 M2）：pnpm rebuild <群聊名>
+ * rebuild（SPEC §9）：pnpm rebuild <群聊名>
  * 从 剧情.jsonl 重放 ledger 行，重建每个角色的 状态.yaml / 性格.md / 人物关系.md / 记忆.jsonl。
  * 角色.md 是用户专属文件，rebuild 永不触碰。
  *
- * 一次性修复：旧格式迁移上来的条目在 jsonl 中可能没有 ledger 行，
- * 把这些"磁盘上有、日志里没有"的条目补写成 ledger 行，使 jsonl 真正成为唯一事实源。
+ * 修复语义：磁盘上有、日志里没有的记忆条目补写成 ledger 行，使 jsonl 真正成为唯一事实源。
  */
 import { existsSync } from 'node:fs'
 import { join } from 'node:path'
@@ -29,7 +28,7 @@ const characters = loadCharacters(groupDir)
 
 for (const persona of characters) {
   const charDir = join(groupDir, '角色', persona.dirName)
-  const onDisk = loadFiles(charDir) // 含旧格式自动迁移
+  const onDisk = loadFiles(charDir)
   const derived = emptyFiles()
   for (const line of store.allLines) {
     // 名字链归一：角色改名前的旧账目（ledger 行记旧名）经 rename 行归到当前名下重放，不丢历史
@@ -37,7 +36,7 @@ for (const persona of characters) {
     applyLedgerEvent(derived, line.op, line.section, line.content, 0)
   }
 
-  // 状态账本：本角色日志里一条新式快照行都没有时，保留磁盘上（播种后）的账本，避免丢历史
+  // 状态账本：本角色日志里一条快照行都没有时，保留磁盘上的账本，避免丢历史
   const hasSnapshot = store.allLines.some(l => l.type === 'ledger' && store.nameOf(l.character) === persona.name && l.section === 'status' && l.content.startsWith('{'))
   if (!hasSnapshot) derived.status = onDisk.status
 
@@ -52,7 +51,7 @@ for (const persona of characters) {
     repaired++
   }
 
-  // 用户资产（性格原文/关系备注）受保护；状态账本以重放为准（无快照行时为播种后的磁盘值）
+  // 用户资产（性格原文/关系备注）受保护；状态账本以重放为准（无快照行时为磁盘值）
   const files = mergeRebuiltFiles(onDisk, derived)
   saveStatus(charDir, files.status)
   savePersonality(charDir, files.personality)

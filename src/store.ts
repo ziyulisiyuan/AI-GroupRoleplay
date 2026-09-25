@@ -1,6 +1,6 @@
 /**
- * 剧情日志存储（SPEC §3.5）：一个群聊一个目录，剧情.jsonl 是唯一事实源。
- * 行类型与规格一致：header / msg / route / swipe / ledger（M0 只产生 header+msg）。
+ * 剧情日志存储（SPEC §3）：一个群聊一个目录，剧情.jsonl 是唯一事实源。
+ * 行类型：header / msg / route / ledger / presence / director / rename。
  */
 import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
@@ -11,8 +11,7 @@ export interface HeaderLine {
   group: string
   created: string
   v: 1
-  /** 已发出过的最大消息 id：消息行可被物理删除（当前上下文快照语义），靠它保证 id 永不复用。
-   *  旧文件缺省 = 打开时按现存行现算，首次重写时补上。 */
+  /** 已发出过的最大消息 id：消息行可被物理删除（当前上下文快照语义），靠它保证 id 永不复用。 */
   lastMsgId?: number
 }
 
@@ -23,10 +22,8 @@ export interface MsgLine {
   name: string
   text: string
   round: number
-  /** 'all' 或 可见角色名数组（当面发生之事 = 在场且能感知者的快照；私聊 = 仅目标）。 */
+  /** 'all' 或 可见角色名数组（知情名单快照，消息出生即写定）。 */
   visible_to: 'all' | string[]
-  /** 语义标记：公开（当面）/ 私聊。旧数据可能缺失。 */
-  scope?: 'public' | 'private'
   ts: string
 }
 
@@ -41,37 +38,13 @@ export interface RouteLine {
 export interface LedgerLine {
   type: 'ledger'
   character: string
-  section: 'status' | 'knowledge' | 'personality' | 'relationship'
-  /** retract：撤回记忆条目（用户手动改上下文，SPEC §3.10） */
-  op: 'set' | 'append' | 'unset' | 'retract'
+  section: 'status' | 'knowledge'
+  /** set：状态账本整体快照 · append：知情条目 · retract：撤回记忆条目（用户手动改上下文） */
+  op: 'set' | 'append' | 'retract'
   content: string
 }
 
-/** 旧版 swipe 重roll 行（现版本重掷 = rewriteMessage 物理改写；本类型仅为旧日志视图兼容保留）。 */
-export interface SwipeLine {
-  type: 'swipe'
-  target_id: number
-  /** 含最初文本在内的全部候选（顺序保留）。 */
-  variants: string[]
-  chosen: number
-}
-
-/** 旧版手改行（现版本手改 = rewriteMessage 物理改写；仅为旧日志视图兼容保留）。 */
-export interface EditLine {
-  type: 'edit'
-  target_id: number
-  text: string
-  ts: string
-}
-
-/** 旧版手删行（现版本手删 = removeMessage 物理移除；仅为旧日志视图兼容保留）。 */
-export interface DeleteLine {
-  type: 'delete'
-  target_id: number
-  ts: string
-}
-
-/** 场景人员变更（总管从剧情判断：谁进入/离开现场、谁接入或单向感知，SPEC §3.11）。 */
+/** 场景人员变更（判定层从剧情判断：谁进入/离开现场、谁接入或单向感知，SPEC §4）。 */
 export interface PresenceLine {
   type: 'presence'
   present: string[]
@@ -100,7 +73,7 @@ export interface RenameLine {
   ts: string
 }
 
-export type StoryLine = HeaderLine | MsgLine | RouteLine | LedgerLine | SwipeLine | EditLine | DeleteLine | PresenceLine | DirectorLine | RenameLine
+export type StoryLine = HeaderLine | MsgLine | RouteLine | LedgerLine | PresenceLine | DirectorLine | RenameLine
 
 export class StoryStore {
   readonly path: string
@@ -130,15 +103,12 @@ export class StoryStore {
       store.lines = [{ type: 'header', group, created: new Date().toISOString(), v: 1 }]
       store.rewrite()
     }
-    // 取号基准：header 快照 ∪ 现存消息 id ∪ 旧版派生行的 target（旧日志兼容）
+    // 取号基准：header 快照 ∪ 现存消息 id（消息可被物理删除，id 永不复用）
     const header = store.lines[0]
     store.maxIdEver = Math.max(
       header?.type === 'header' ? header.lastMsgId ?? 0 : 0,
       0,
-      ...store.lines.flatMap(l =>
-        l.type === 'msg' ? [l.id]
-          : l.type === 'swipe' || l.type === 'edit' || l.type === 'delete' ? [l.target_id]
-            : []),
+      ...store.lines.flatMap(l => (l.type === 'msg' ? [l.id] : [])),
     )
     return store
   }
@@ -158,24 +128,20 @@ export class StoryStore {
   }
 
   /**
-   * 物理改写某条消息的文本（当前上下文快照语义）：msg 行就地更新，该消息的旧版 swipe/edit
-   * 派生行一并清掉（否则视图会用旧文本覆盖物理文本）。
+   * 物理改写某条消息的文本（当前上下文快照语义）：msg 行就地更新。
    */
   rewriteMessage(id: number, text: string): MsgLine {
     const target = this.messages.find(m => m.id === id)
     if (target === undefined) throw new Error(`消息不存在: #${id}`)
     target.text = text
-    this.lines = this.lines.filter(l => !((l.type === 'swipe' || l.type === 'edit') && l.target_id === id))
     this.rewrite()
     return target
   }
 
-  /** 物理删除某条消息（当前上下文快照语义）：msg 行与该 id 的旧版派生行从日志移除，原文不留痕。 */
+  /** 物理删除某条消息（当前上下文快照语义）：msg 行从日志移除，原文不留痕。 */
   removeMessage(id: number): void {
     if (!this.messages.some(m => m.id === id)) throw new Error(`消息不存在: #${id}`)
-    this.lines = this.lines.filter(l =>
-      !(l.type === 'msg' && l.id === id)
-      && !((l.type === 'swipe' || l.type === 'edit' || l.type === 'delete') && l.target_id === id))
+    this.lines = this.lines.filter(l => !(l.type === 'msg' && l.id === id))
     this.rewrite()
   }
 
@@ -205,7 +171,6 @@ export class StoryStore {
     name: string,
     text: string,
     visibleTo: 'all' | string[] = 'all',
-    scope: 'public' | 'private' = 'public',
   ): MsgLine {
     const msg: MsgLine = {
       type: 'msg',
@@ -215,7 +180,6 @@ export class StoryStore {
       text,
       round: this.round + (role === 'user' ? 1 : 0),
       visible_to: visibleTo,
-      scope,
       ts: new Date().toISOString(),
     }
     this.maxIdEver = msg.id
@@ -309,13 +273,6 @@ export class StoryStore {
     return undefined
   }
 
-  /** 被用户删除过的消息 id 集合（delete 行的 target_id；删除 = 这条消息对一切意图都不存在）。 */
-  deletedMsgIds(): Set<number> {
-    const out = new Set<number>()
-    for (const l of this.lines) if (l.type === 'delete') out.add(l.target_id)
-    return out
-  }
-
   /** 角色改名落盘（旧名 → 新名；账目按名字链归一重放）。 */
   appendRename(from: string, to: string): void {
     const line: RenameLine = { type: 'rename', from, to, ts: new Date().toISOString() }
@@ -344,59 +301,19 @@ export class StoryStore {
     appendFileSync(this.path, JSON.stringify(line) + '\n', 'utf8')
   }
 
-  /** 记账事件落盘（SPEC §3.8 ledger 行；状态/性格/关系/记忆四文件由其重放重建）。 */
+  /** 记账事件落盘（SPEC §3.3 ledger 行；状态/记忆由其重放重建）。 */
   appendLedgerLine(character: string, section: LedgerLine['section'], op: LedgerLine['op'], content: string): void {
     const line: LedgerLine = { type: 'ledger', character, section, op, content }
     this.lines.push(line)
     appendFileSync(this.path, JSON.stringify(line) + '\n', 'utf8')
   }
 
-  /** swipe 重掷（旧版语义，仅为旧日志与测试保留——现版本重掷由 rewriteMessage 物理改写，不再产出 swipe 行）：
-   *  variants 累积全部候选，chosen 指向当前生效文本。 */
-  appendSwipe(targetId: number, newVariant: string): void {
-    const target = this.messages.find(m => m.id === targetId)
-    if (target === undefined) throw new Error(`swipe 目标不存在: #${targetId}`)
-    const prev = [...this.lines].reverse().find((l): l is SwipeLine => l.type === 'swipe' && l.target_id === targetId)
-    const variants = [...(prev?.variants ?? [target.text])]
-    if (!variants.includes(newVariant)) variants.push(newVariant)
-    const line: SwipeLine = { type: 'swipe', target_id: targetId, variants, chosen: variants.length - 1 }
-    this.lines.push(line)
-    appendFileSync(this.path, JSON.stringify(line) + '\n', 'utf8')
-  }
-
-  /** 用户手动改某条消息的文本（旧版语义，仅为旧日志与测试保留——现版本由 rewriteMessage 物理改写）。 */
-  appendEdit(targetId: number, text: string): void {
-    const target = this.messages.find(m => m.id === targetId)
-    if (target === undefined) throw new Error(`消息不存在: #${targetId}`)
-    const line: EditLine = { type: 'edit', target_id: targetId, text, ts: new Date().toISOString() }
-    this.lines.push(line)
-    appendFileSync(this.path, JSON.stringify(line) + '\n', 'utf8')
-  }
-
-  /** 用户手动删除某条消息（旧版语义，仅为旧日志与测试保留——现版本由 removeMessage 物理移除）。 */
-  appendDelete(targetId: number): void {
-    const target = this.messages.find(m => m.id === targetId)
-    if (target === undefined) throw new Error(`消息不存在: #${targetId}`)
-    const line: DeleteLine = { type: 'delete', target_id: targetId, ts: new Date().toISOString() }
-    this.lines.push(line)
-    appendFileSync(this.path, JSON.stringify(line) + '\n', 'utf8')
-  }
-
   /**
-   * 组装/展示用消息视图：按时间顺序应用 swipe（重掷）→ edit（手改）→ delete（手删）。
-   * append-only 日志上的派生视图——原行永不改动，故 rebuild 与审计不受影响。
+   * 当前上下文快照：msg 行即生效文本（用户的改写/删除/重掷是物理语义，行内文本永远是最新的）。
+   * 一切角色侧消费（组装、回填、最后发言者、启发式路由）都走这个视图。
    */
   effectiveMessages(): MsgLine[] {
-    const textById = new Map<number, string>()
-    const deleted = new Set<number>()
-    for (const l of this.lines) {
-      if (l.type === 'swipe') textById.set(l.target_id, l.variants[l.chosen])
-      else if (l.type === 'edit') textById.set(l.target_id, l.text)
-      else if (l.type === 'delete') deleted.add(l.target_id)
-    }
     return this.messages
-      .filter(m => !deleted.has(m.id))
-      .map(m => (textById.has(m.id) ? { ...m, text: textById.get(m.id)! } : m))
   }
 
   /** 最后一条角色消息（swipe/编辑的目标定位；用可见视图）。 */

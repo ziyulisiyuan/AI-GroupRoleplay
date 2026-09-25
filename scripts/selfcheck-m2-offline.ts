@@ -1,10 +1,11 @@
 /**
- * M2 离线自检（SPEC §3.4 状态账本模型，无需 API key，全临时目录）：
+ * M2 离线自检（SPEC §3.4a 状态账本模型，无需 API key，全临时目录）：
  * 1) 状态账本固定七字段：确定性序列化 + 幂等（rebuild 幂等依赖）。
- * 2) 整体快照语义：快照行逐字段覆盖，旧式行（"字段=值"/unset/personality/relationship）重放忽略。
+ * 2) 整体快照语义：快照行逐字段覆盖，无叠加污染。
  * 3) 记忆撤回：按 mid 与按文本（回填不复活）。
- * 4) 旧数据播种：旧状态字段/性格演变列表/关系条目 → 一次性播种进账本，文件回归纯初始。
+ * 4) prompt 片段：账本固定格式；性格/关系 = 用户初始。
  * 5) 角色.md 与 性格.md/人物关系.md 的用户部分永不被 AI 写路径改动。
+ * 6) 消息改删（当前上下文快照语义：物理改写/移除，id 不复用）。
  */
 import assert from 'node:assert/strict'
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync, existsSync } from 'node:fs'
@@ -61,53 +62,21 @@ try {
   assert.equal(again.memory.length, 1, '撤回后应只剩 1 条记忆')
   assert.ok(!again.memory.some(e => e.mid === 42), '按 mid 撤回必须生效')
 
-  // 3) 旧行重放忽略：旧式 "字段=值" 与 personality/relationship 行不再影响账本
-  const legacy: CharacterFiles = emptyFiles()
-  applyLedgerEvent(legacy, 'set', 'status', '（旧字段）=（旧值）', 1)
-  applyLedgerEvent(legacy, 'unset', 'status', '（旧字段）', 2)
-  applyLedgerEvent(legacy, 'append', 'personality', JSON.stringify({ round: 2, change: '（旧演变）' }), 2)
-  applyLedgerEvent(legacy, 'set', 'relationship', JSON.stringify({ target: '角色乙', text: '（旧关系）' }), 2)
-  assert.deepEqual(legacy.status, {}, '旧式状态行重放必须忽略（内容已播种）')
-  assert.equal(legacy.personality.drift.length, 0, '旧性格行重放忽略')
-  assert.equal(legacy.relationships.entries.length, 0, '旧关系行重放忽略')
-
-  // 4) prompt 片段：账本固定格式 + 初始性格/关系不含动态
+  // 3) prompt 片段：账本固定格式 + 初始性格/关系不含动态
   assert.ok(ledgerPrompt(again.status).includes('生理状态:"（值一改）"'), '账本 prompt 用固定格式')
   assert.ok(ledgerPrompt(again.status).includes('姓名变化:"无"'), '空/无值字段显示"无"')
   assert.equal(personalityPrompt(again.personality), again.personality.base, '性格 prompt = 用户初始')
   assert.equal(relationshipsPrompt(again.relationships), again.relationships.base, '关系 prompt = 用户初始')
 
-  // 5) 旧数据播种：旧状态字段/性格演变/关系条目 → 一次性进入账本
-  const legacyDir = join(dir, 'legacy', '角色乙')
-  mkdirSync(legacyDir, { recursive: true })
-  writeFileSync(join(legacyDir, '角色.md'), '---\nname: 角色乙\n---\n\n（测试背景）\n', 'utf8')
-  writeFileSync(join(legacyDir, '状态.yaml'), '身体状况: 左臂受伤\n心情: 屈辱\n', 'utf8')
-  writeFileSync(join(legacyDir, '性格.md'), '# 性格\n\n倔强。\n\n## 性格演变\n- (第2轮) 不再轻信任何人\n', 'utf8')
-  writeFileSync(join(legacyDir, '人物关系.md'), '# 人物关系\n\n- 角色甲：仇敌\n', 'utf8')
-  const migrated = loadFiles(legacyDir)
-  assert.ok(migrated.status['生理状态']?.includes('左臂受伤'), '旧身体字段 → 播种进生理状态')
-  assert.ok(migrated.status['心理状态']?.includes('屈辱'), '旧心理字段 → 播种进心理状态')
-  assert.ok(migrated.status['性格演变']?.includes('不再轻信任何人'), '旧演变列表 → 播种进性格演变')
-  assert.ok(migrated.status['人物关系变化']?.includes('对角色甲：仇敌'), '旧关系条目 → 播种进人物关系变化')
-  assert.equal(migrated.personality.drift.length, 0, '播种后文件不再承载演变')
-  assert.equal(migrated.relationships.entries.length, 0, '播种后文件不再承载条目')
-  assert.equal(migrated.personality.base, '倔强。', '用户初始性格保留')
-  // 播种落盘（幂等：第二次 load 不再变化）
-  const second = loadFiles(legacyDir)
-  assert.deepEqual(second.status, migrated.status, '播种幂等')
+  // 4) 账本规范化：非七字段的未知键在 loadFiles 时被丢弃
+  const unknownDir = join(dir, 'unknown', '角色乙')
+  mkdirSync(unknownDir, { recursive: true })
+  writeFileSync(join(unknownDir, '状态.yaml'), '生理状态: 左臂受伤\n未知字段: 值\n', 'utf8')
+  const normalized = loadFiles(unknownDir)
+  assert.deepEqual(Object.keys(normalized.status), ['生理状态'], '账本只保留固定七字段')
 
-  // 6) 角色.md 永不被写 + 消息改删（当前上下文快照语义：物理改写/移除）+ 旧版派生行视图兼容
+  // 5) 角色.md 永不被写 + 消息改删（当前上下文快照语义：物理改写/移除）
   assert.equal(readFileSync(join(dir, '角色.md'), 'utf8'), ROLE_MD, '角色.md 不得被任何写路径改动')
-  // 6a) 旧版日志（swipe/edit/delete 行）的视图语义仍然生效（存量群兼容）
-  const s = StoryStore.open(join(dir, 'g'), 'g')
-  s.append('user', '你', '（用户发言）')
-  s.append('character', '角色甲', '（第一版回复）')
-  s.appendSwipe(2, '（重掷版）')
-  s.appendEdit(2, '（手改版）')
-  assert.equal(s.effectiveMessages().find(m => m.id === 2)?.text, '（手改版）', '旧版日志：手改覆盖重掷')
-  s.appendDelete(2)
-  assert.ok(!s.effectiveMessages().some(m => m.id === 2), '旧版日志：手删从可见视图移除')
-  // 6b) 新语义：改/删物理重写日志——日志 = 当前上下文快照，原文不留痕，id 不复用
   const raw = (): string => readFileSync(join(dir, 'g2', '剧情.jsonl'), 'utf8')
   const s2 = StoryStore.open(join(dir, 'g2'), 'g2')
   s2.append('user', '你', '（原文）')
@@ -115,21 +84,20 @@ try {
   s2.rewriteMessage(2, '（改后回复）')
   assert.ok(raw().includes('（改后回复）'), '手改 = 日志行就地更新')
   assert.ok(!raw().includes('（回复甲）'), '手改后原文不得残留在日志里')
-  s2.appendSwipe(2, '（旧版遗留重掷）') // 模拟旧版遗留派生行
   s2.rewriteMessage(2, '（最终版）')
-  assert.ok(!raw().includes('"type":"swipe"') && !raw().includes('（旧版遗留重掷）'), '物理改写清掉该消息的旧版派生行')
+  assert.ok(!raw().includes('（改后回复）'), '再次改写同样不留旧文')
   s2.removeMessage(1)
   assert.ok(!raw().includes('（原文）'), '手删 = 消息行从日志移除（原文不留痕）')
   assert.ok(!s2.effectiveMessages().some(m => m.id === 1))
   assert.equal(s2.append('user', '你', '（新消息）').id, 3, '物理删除后的 id 不得复用（header.lastMsgId 保证单调）')
 
-  // 7) mergeRebuiltFiles：性格/关系只保留用户初始，账本以重放为准
+  // 6) mergeRebuiltFiles：性格/关系只保留用户初始，账本以重放为准
   const merged = mergeRebuiltFiles(again, filesA)
   assert.equal(merged.personality.base, again.personality.base, '用户初始性格保留')
   assert.equal(merged.relationships.base, again.relationships.base, '用户初始关系保留')
   assert.equal(merged.status, filesA.status, '状态账本以重放为准')
 
-  console.log('M2 离线自检通过：账本固定七字段/整体快照幂等 · 旧行重放忽略 · 播种迁移 · 记忆撤回 · 角色.md与初始文件只读 · 消息改删')
+  console.log('M2 离线自检通过：账本固定七字段/整体快照幂等 · 记忆撤回 · 角色.md与初始文件只读 · 消息物理改删')
 } finally {
   rmSync(dir, { recursive: true, force: true })
 }

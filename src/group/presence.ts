@@ -6,10 +6,10 @@
  *   present —— **现场**：人就在这个场景里。默认能发言、能听、能看。
  *   remote  —— **通道接入**：人不在现场，但当下双向连通（此刻能感知这里、这里也能与他互动）。
  *              perceive=语音 者只感知到声音；perceive=视听 者还能看到画面。
- *              接入者**可以发言**，但知情**不自动登记**，由总管按通道逐轮记录（§3.11 第 8 条）。
+ *              接入者**可以发言**；他能否感知某条消息与其他角色走同一套知情判定，另受自己 since 锚点约束。
  *
  * 判定标准只有"当下双向"：只满足单向或延迟投递的传达不是接入——那是物件或转述，
- * 内容由总管按实际送达用 knowledge_appends 显式记给当事人，绝不能让他自动获知全部对话。
+ * 不构成感知，也不会进入任何人的账本。
  *
  * 缺省（文件不存在）：视为全员现场（向后兼容旧群）。
  */
@@ -28,7 +28,7 @@ export interface RemoteLink {
   /** 这个通道是什么（自由文本，人读用；同时提示总管该通道能传什么）。 */
   note?: string
   /** 接入起点（该接入者已落盘消息数快照）：通道馈送从 id > since 的消息开始。
-   *  续接的接入者保留原值——别人进出场景不影响他；缺省（旧数据）由调用方回退到全局锚点。 */
+   *  续接的接入者保留原值——别人进出场景不影响他。 */
   since?: number
 }
 
@@ -36,7 +36,7 @@ export interface SceneAccess {
   present: string[]
   remote: RemoteLink[]
   /** 单向感知（偷听/监控/隔墙有耳——能知道这里的事、但无法实时互动，现场角色不知道他在听）。
-   *  结构与 remote 相同（含各自独立的 since 起点）；旧数据缺省 = 无。 */
+   *  结构与 remote 相同（含各自独立的 since 起点）。 */
   overhear: RemoteLink[]
 }
 
@@ -68,7 +68,7 @@ export function parseRemoteList(value: unknown): RemoteLink[] | undefined {
 }
 
 /** 读取场景接入；缺省返回空（调用方按"全员现场"处理）。 */
-/** 读取场景接入；缺省返回空（调用方按"全员现场"处理）。旧文件/旧行无 overhear = 无偷听。 */
+/** 读取场景接入；缺省返回空（调用方按"全员现场"处理）。 */
 export function loadScene(groupDir: string): SceneAccess {
   const file = presencePath(groupDir)
   if (!existsSync(file)) return emptyScene()
@@ -118,7 +118,7 @@ export function perceives(status: Record<string, string>): { hearing: boolean; s
  *
  * 保守规则：要求听觉与视觉都正常。理由：剧情消息里语音与动作描写混在一起，
  * 程序无法可靠区分"他是听见的"还是"他看见的"；若放宽到"听或看其一"，失聪者就会
- * 通过"别人说出口的话"被自动记账（实测发生过），造成客观上的错误知情。
+ * 通过"别人说出口的话"被自动记账，造成客观上的错误知情。
  * 有感知障碍的角色改由总管按剧情显式记录他能感知的部分（总管提示里已标注其障碍）。
  */
 export function canWitness(status: Record<string, string>): boolean {

@@ -1,16 +1,15 @@
 /**
  * 角色可变文件的读写层（SPEC §3.3-§3.7）。每角色五个文件：
  *   角色.md     用户专属（外观/建模、背景）——本模块**只读**（仅用户编辑器可写）；散文用 md
- *   性格.md     初始性格（用户填）+ "## 性格演变"（总管追加，不改写原文）；散文用 md
- *   人物关系.md 初始关系（用户填）+ 条目式增改（总管可新增/改写，不改写用户备注）；散文用 md
- *   状态.yaml   身体状况/增益/减益/心理（总管实时，纯字段 → yaml）
+ *   性格.md     初始性格（用户填）；散文用 md
+ *   人物关系.md 初始关系（用户填）；散文用 md
+ *   状态.yaml   状态账本（固定七字段，纯字段 → yaml）
  *   记忆.jsonl  该角色能知道的上下文（知情账本，机器条目、追加式 → jsonl）
  *
  * 全部文件确定性序列化（同一状态 → 逐字节相同），rebuild 幂等依赖此性质；
  * 剧情.jsonl 的 ledger 行是唯一事实源，本层只做"状态 ↔ 文件"的双向转换。
- * 旧格式（状态.md / 记忆.md、性格与关系写在 角色.md）在读取时自动迁移并删除旧文件。
  */
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { load as loadYaml, dump as dumpYaml } from 'js-yaml'
 
@@ -22,18 +21,14 @@ export interface KnowledgeEntry {
   mid?: number
 }
 
+/** 性格.md 只承载用户初始性格；动态演变在状态账本（§3.4a）。 */
 export interface PersonalityFile {
-  /** 用户填写的初始性格（总管不改写）。 */
   base: string
-  /** 性格演变（总管随剧情追加）。 */
-  drift: Array<{ round: number; change: string }>
 }
 
+/** 人物关系.md 只承载用户初始备注；动态关系在状态账本（§3.4a）。 */
 export interface RelationshipFile {
-  /** 用户填写的自由备注（总管不改写）。 */
   base: string
-  /** 关系条目：对象 → 描述。总管可新增条目或改写某条描述。 */
-  entries: Array<{ target: string; text: string }>
 }
 
 /**
@@ -71,15 +66,12 @@ export interface CharacterFiles {
 
 export function emptyFiles(): CharacterFiles {
   return {
-    personality: { base: '', drift: [] },
-    relationships: { base: '', entries: [] },
+    personality: { base: '' },
+    relationships: { base: '' },
     status: {},
     memory: [],
   }
 }
-
-const DRIFT_HEADER = '## 性格演变'
-const OLD_KNOWLEDGE_HEADER = '## 知情账本'
 
 function stripBom(s: string): string {
   return s.charCodeAt(0) === 0xfeff ? s.slice(1) : s
@@ -94,32 +86,12 @@ export const statusPath = (dir: string): string => join(dir, '状态.yaml')
 export const memoryPath = (dir: string): string => join(dir, '记忆.jsonl')
 export const personalityPath = (dir: string): string => join(dir, '性格.md')
 export const relationshipPath = (dir: string): string => join(dir, '人物关系.md')
-/** 旧格式（迁移用）：状态字段内嵌在 md 的 frontmatter、记忆为管道分隔的 md 列表 */
-const legacyStatusPath = (dir: string): string => join(dir, '状态.md')
-const legacyMemoryPath = (dir: string): string => join(dir, '记忆.md')
 
 /** 解析 frontmatter + 正文；无 frontmatter 时把整篇当正文。 */
 function splitFrontmatter(raw: string): { fields: Record<string, unknown>; body: string } {
   const m = raw.match(/^---\r?\n([\s\S]*?)\r?\n---\r?\n?([\s\S]*)$/)
   if (m === null) return { fields: {}, body: raw }
   return { fields: (loadYaml(m[1]) ?? {}) as Record<string, unknown>, body: m[2] ?? '' }
-}
-
-/** 旧格式：管道分隔的 md 记忆条目 */
-function parseLegacyKnowledgeLines(text: string): KnowledgeEntry[] {
-  const out: KnowledgeEntry[] = []
-  for (const line of text.split('\n')) {
-    const km = line.match(/^-\s*(K\d+)\s*\|\s*source=([^|]+)\|\s*(?:mid=(\d+)\s*\|\s*)?round=(\d+)\s*\|\s*(.+)$/)
-    if (km !== null) {
-      out.push({
-        source: km[2].trim(),
-        ...(km[3] !== undefined ? { mid: Number(km[3]) } : {}),
-        round: Number(km[4]),
-        text: km[5].trim(),
-      })
-    }
-  }
-  return out
 }
 
 /** 记忆.jsonl：逐行 JSON（追加式机器条目）。 */
@@ -145,108 +117,39 @@ function parseMemoryJsonl(raw: string): KnowledgeEntry[] {
   return out
 }
 
-/** 解析 `- 对象：描述` 形式的关系条目；其余非标题文本视为用户备注。 */
-function parseRelationshipBody(body: string): RelationshipFile {
-  const entries: Array<{ target: string; text: string }> = []
-  const notes: string[] = []
-  for (const raw of body.split('\n')) {
-    const line = raw.trim()
-    if (line === '' || /^#/.test(line)) continue
-    const em = line.match(/^-\s*([^：:]+)[：:]\s*(.+)$/)
-    if (em !== null) entries.push({ target: em[1].trim(), text: em[2].trim() })
-    else notes.push(line)
-  }
-  return { base: notes.join('\n').trim(), entries }
+/** 去掉可选的 frontmatter 与 "# 标题" 行，返回正文。 */
+function docBody(raw: string, title: string): string {
+  const { body } = splitFrontmatter(raw)
+  return body.replace(new RegExp(`^#\\s*${title}\\s*$`, 'm'), '').trim()
 }
 
 /**
- * 读取一个角色的四个可变文件；命中旧格式（状态.md / 记忆.md）则自动迁移并删除旧文件。
- * 状态账本模型（SPEC §3.4）：状态.yaml 规范化为固定七字段；性格.md 的旧"演变"列表与
- * 人物关系.md 的旧 AI 条目**一次性播种**进账本（内容不丢），此后这两个文件只承载用户初始设定。
+ * 读取一个角色的四个可变文件。
+ * 状态.yaml 规范化为固定七字段；性格.md / 人物关系.md 只承载用户初始设定。
  */
 export function loadFiles(dir: string): CharacterFiles {
   const files = emptyFiles()
-  let migrated = false
 
-  // 状态：状态.yaml 优先；否则从旧 状态.md 迁移（含内嵌的旧知情账本）
   const statusRaw = readIfExists(statusPath(dir))
   if (statusRaw !== undefined) {
     const parsed = (loadYaml(statusRaw) ?? {}) as Record<string, unknown>
     for (const [k, v] of Object.entries(parsed)) if (v !== null && typeof v !== 'object') files.status[k] = String(v)
-  } else {
-    const legacyRaw = readIfExists(legacyStatusPath(dir))
-    if (legacyRaw !== undefined) {
-      const { fields, body } = splitFrontmatter(legacyRaw)
-      for (const [k, v] of Object.entries(fields)) files.status[k] = String(v)
-      if (body.includes(OLD_KNOWLEDGE_HEADER) && !existsSync(memoryPath(dir)) && !existsSync(legacyMemoryPath(dir))) {
-        const section = body.slice(body.indexOf(OLD_KNOWLEDGE_HEADER) + OLD_KNOWLEDGE_HEADER.length)
-        files.memory = parseLegacyKnowledgeLines(section)
-        saveMemory(dir, files.memory)
-      }
-      rmSync(legacyStatusPath(dir), { force: true })
-      migrated = true
-    }
   }
-
-  // 账本规范化：分离固定七字段与旧字段；旧字段按语义播种（身体类→生理，心理/情绪类→心理，其余并入生理）
   const ledger: Record<string, string> = {}
-  const legacyKeys: Array<[string, string]> = []
   for (const [k, v] of Object.entries(files.status)) {
     if (v.trim() === '') continue
     if ((LEDGER_KEYS as readonly string[]).includes(k)) ledger[k] = v.trim()
-    else legacyKeys.push([k, v.trim()])
   }
-  for (const [k, v] of legacyKeys) {
-    const target = /心理|心情|情绪|精神/.test(k) ? '心理状态' : '生理状态'
-    ledger[target] = ledger[target] === undefined ? `${k}：${v}` : `${ledger[target]}；${k}：${v}`
-  }
-  if (legacyKeys.length > 0) migrated = true
   files.status = ledger
 
-  // 记忆：记忆.jsonl 优先；否则从旧 记忆.md 迁移
   const memoryRaw = readIfExists(memoryPath(dir))
-  if (memoryRaw !== undefined) {
-    files.memory = parseMemoryJsonl(memoryRaw)
-  } else {
-    const legacyMemoryRaw = readIfExists(legacyMemoryPath(dir))
-    if (legacyMemoryRaw !== undefined) {
-      files.memory = parseLegacyKnowledgeLines(legacyMemoryRaw)
-      saveMemory(dir, files.memory)
-      rmSync(legacyMemoryPath(dir), { force: true })
-    }
-  }
+  if (memoryRaw !== undefined) files.memory = parseMemoryJsonl(memoryRaw)
 
-  // 性格：base 是用户初始设定；旧"演变"列表一次性播种进账本（性格演变字段），文件回归纯初始
   const personalityRaw = readIfExists(personalityPath(dir))
-  if (personalityRaw !== undefined) {
-    const { body } = splitFrontmatter(personalityRaw)
-    const idx = body.indexOf(DRIFT_HEADER)
-    const base = (idx >= 0 ? body.slice(0, idx) : body).replace(/^#\s*性格\s*$/m, '').trim()
-    const driftText = idx >= 0 ? body.slice(idx + DRIFT_HEADER.length) : ''
-    const drift = driftText.split('\n').flatMap(line => {
-      const dm = line.match(/^-\s*\(第(\d+)轮\)\s*(.+)$/)
-      return dm !== null ? [{ round: Number(dm[1]), change: dm[2].trim() }] : []
-    })
-    files.personality = { base, drift: [] }
-    if (drift.length > 0 && ledger['性格演变'] === undefined) {
-      ledger['性格演变'] = drift.map(d => `第${d.round}轮起：${d.change}`).join('；')
-      migrated = true
-    }
-  }
+  if (personalityRaw !== undefined) files.personality.base = docBody(personalityRaw, '性格')
 
-  // 人物关系：base/备注是用户初始设定；旧 AI 条目一次性播种进账本（人物关系变化字段）
   const relationshipRaw = readIfExists(relationshipPath(dir))
-  if (relationshipRaw !== undefined) {
-    const parsed = parseRelationshipBody(splitFrontmatter(relationshipRaw).body)
-    files.relationships = { base: parsed.base, entries: [] }
-    if (parsed.entries.length > 0 && ledger['人物关系变化'] === undefined) {
-      ledger['人物关系变化'] = parsed.entries.map(e => `对${e.target}：${e.text}`).join('；')
-      migrated = true
-    }
-  }
-
-  // 播种/规范化结果落盘（一次性迁移；幂等——已规范化的文件不会再触发写入）
-  if (migrated) saveStatus(dir, files.status)
+  if (relationshipRaw !== undefined) files.relationships.base = docBody(relationshipRaw, '人物关系')
 
   return files
 }
@@ -259,7 +162,7 @@ export function saveStatus(dir: string, status: Record<string, string>): void {
 
 /**
  * 性格.md：**只写用户初始性格**（用户资产，AI 永不更改）。
- * 性格的动态演变已移入状态账本（SPEC §3.4），本文件不再承载演变。
+ * 性格的动态演变在状态账本（SPEC §3.4a）。
  */
 export function savePersonality(dir: string, p: PersonalityFile): void {
   mkdirSync(dir, { recursive: true })
@@ -268,7 +171,7 @@ export function savePersonality(dir: string, p: PersonalityFile): void {
 
 /**
  * 人物关系.md：**只写用户初始关系**（用户资产，AI 永不更改）。
- * 关系的动态变化已移入状态账本（SPEC §3.4）。
+ * 关系的动态变化在状态账本（SPEC §3.4a）。
  */
 export function saveRelationships(dir: string, r: RelationshipFile): void {
   mkdirSync(dir, { recursive: true })
@@ -300,30 +203,29 @@ export function relationshipsPrompt(r: RelationshipFile): string {
 }
 
 /**
- * rebuild 合并语义（状态账本模型，SPEC §3.8 不变式）：
- * - 状态.yaml（账本）：重放结果（新式快照行）为准；性格/关系文件只保留用户初始部分。
- * - 记账.jsonl：纯重放。
- * - 性格.md / 人物关系.md：AI 永不更改的用户资产，base 以磁盘为准；旧的演变/条目已播种进账本，不再产出。
+ * rebuild 合并语义（状态账本模型，SPEC §3.4a 不变式）：
+ * - 状态.yaml（账本）：重放结果（快照行）为准。
+ * - 记忆.jsonl：纯重放。
+ * - 性格.md / 人物关系.md：用户初始资产，base 以磁盘为准。
  */
 export function mergeRebuiltFiles(onDisk: CharacterFiles, derived: CharacterFiles): CharacterFiles {
   return {
     status: derived.status,
     memory: derived.memory,
-    personality: { base: onDisk.personality.base, drift: [] },
-    relationships: { base: onDisk.relationships.base, entries: [] },
+    personality: { base: onDisk.personality.base },
+    relationships: { base: onDisk.relationships.base },
   }
 }
 
 /**
- * ledger 事件应用器：增量记账与 rebuild 重放共用同一语义（状态账本模型，SPEC §3.3/§3.4）。
- * - status:       op=set 且 content=JSON（固定七字段子集）→ 逐字段覆盖（整体快照的载体）；旧式"字段=值"/unset 行忽略（已播种）
- * - knowledge:    op=append 时 content=JSON({source, mid?, round, text})；op=retract 时 content=JSON({mid?|text?})（用户/纠正撤回）
- * - personality / relationship 旧段落：已退役，重放忽略（内容经播种进入状态账本）
+ * ledger 事件应用器：增量记账与 rebuild 重放共用同一语义（SPEC §3.3/§3.4a）。
+ * - status:    op=set 且 content=JSON（固定七字段子集）→ 逐字段覆盖（整体快照的载体）
+ * - knowledge: op=append 时 content=JSON({source, mid?, round, text})；op=retract 时 content=JSON({mid?|text?})（用户/纠正撤回）
  */
 export function applyLedgerEvent(
   files: CharacterFiles,
-  op: 'set' | 'append' | 'unset' | 'retract',
-  section: 'status' | 'knowledge' | 'personality' | 'relationship',
+  op: 'set' | 'append' | 'retract',
+  section: 'status' | 'knowledge',
   content: string,
   round: number,
 ): void {
@@ -335,8 +237,6 @@ export function applyLedgerEvent(
     return
   }
   if (section === 'status') {
-    // 新式快照行：content = JSON（固定七字段的子集，逐字段覆盖、其余保持）。
-    // 旧式行（"字段=值"/unset）与 personality/relationship 旧段落：内容已经 loadFiles 播种进账本，重放时忽略。
     if (op !== 'set') return
     let parsed: Record<string, unknown>
     try { parsed = JSON.parse(content) as Record<string, unknown> } catch { return }
@@ -347,7 +247,6 @@ export function applyLedgerEvent(
     }
     return
   }
-  if (section === 'personality' || section === 'relationship') return // 已退役：内容经播种进入状态账本（§3.4）
   const parsed = JSON.parse(content) as { source?: string; round?: number; text?: string; mid?: number }
   if (typeof parsed.text === 'string' && parsed.text !== '') {
     files.memory.push({

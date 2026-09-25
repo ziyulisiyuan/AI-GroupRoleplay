@@ -3,7 +3,7 @@
  * 1) 角色只读文件/群设定加载（含 BOM 容错、值内冒号、默认值回填）。
  * 2) 路由启发式：提及命中（别名/最长匹配）、掷骰禁连说、零权重、退化、空群。
  * 3) 名字归一（别名/短名/空格/名单外）。
- * 4) 群聊组装：五文件注入（只读角色.md/性格+演变/人物关系/状态）、前缀、角色映射、连续合并。
+ * 4) 群聊组装：五文件注入（只读角色.md/性格/人物关系/状态账本）、前缀、角色映射、连续合并。
  */
 import assert from 'node:assert/strict'
 import { mkdtempSync, rmSync, mkdirSync, writeFileSync } from 'node:fs'
@@ -25,7 +25,6 @@ try {
 name: 角色甲
 appearance: |
   （测试外观：冒号：也该活得下去）
-personality: （旧格式性格）
 ---
 
 （测试背景）`)
@@ -34,21 +33,17 @@ name: 角色乙
 ---
 
 （测试背景）`)
-  writeFileSync(join(groupDir, '群设定.md'), `---
-era: （测试时代）
+  writeFileSync(join(groupDir, '群设定.yaml'), `era: （测试时代）
 world: |
   （测试世界观）
 tone:
----
-
-（基调可空）`)
+`)
 
   const chars = loadCharacters(groupDir)
   assert.equal(chars.length, 2)
   const jia = chars.find(c => c.name === '角色甲')!
   assert.ok(jia.appearance.includes('冒号：也该活得下去'), '值里的冒号必须存活（js-yaml 意义所在）')
   assert.ok(jia.body.includes('测试背景'))
-  assert.equal(jia.personalityFallback, '（旧格式性格）', '旧格式字段仍可读（由引擎种入 性格.md）')
 
   const gs = loadGroupSettings(groupDir)
   assert.equal(gs.era, '（测试时代）')
@@ -57,7 +52,6 @@ tone:
 
   const single = loadCharacter(join(groupDir, '角色', '角色乙', '角色.md'))
   assert.equal(single.name, '角色乙')
-  assert.equal(single.personalityFallback, '', '无 personality 字段时为空')
 
   // 2) 路由启发式（降级路径：按名字提及，其次等概率）
   const rc: RoutableCharacter[] = chars.map(c => ({ name: c.name }))
@@ -86,18 +80,17 @@ tone:
 
   // 4) 群聊组装（五文件注入）
   const settings = loadGroupSettings(groupDir)
-  writeFileSync(join(groupDir, '角色', '角色甲', '性格.md'), '# 性格\n\n（测试性格）\n\n## 性格演变\n- (第3轮) （测试性格变化）\n')
-  writeFileSync(join(groupDir, '角色', '角色甲', '人物关系.md'), '# 人物关系\n\n- 角色乙：（测试关系）\n')
-  writeFileSync(join(groupDir, '角色', '角色甲', '状态.yaml'), '（测试字段）: （测试值）\n')
+  writeFileSync(join(groupDir, '角色', '角色甲', '性格.md'), '# 性格\n\n（测试性格）\n')
+  writeFileSync(join(groupDir, '角色', '角色甲', '人物关系.md'), '# 人物关系\n\n（测试关系）\n')
+  writeFileSync(join(groupDir, '角色', '角色甲', '状态.yaml'), '生理状态: （测试值）\n')
   const files = loadFiles(join(groupDir, '角色', '角色甲'))
   const { system, messages } = assembleGroup(jia, settings, charsHist(), { files })
   assert.ok(system.includes('（测试时代）'), 'era 注入')
   assert.ok(system.includes('测试世界观'), 'world 注入')
   assert.ok(system.includes('[以角色甲的身份'), '末尾指令')
   assert.ok(system.includes('（测试性格）'), '性格.md 注入')
-  assert.ok(system.includes('（测试性格变化）'), '性格演变注入')
-  assert.ok(system.includes('角色乙：（测试关系）'), '人物关系.md 注入')
-  assert.ok(system.includes('（测试字段）：（测试值）'), '状态.yaml 注入')
+  assert.ok(system.includes('（测试关系）'), '人物关系.md 注入')
+  assert.ok(system.includes('生理状态:"（测试值）"'), '状态.yaml 注入')
   assert.ok(system.includes('冒号：也该活得下去'), '角色.md（用户专属）注入')
   assert.ok(messages.some(m => m.role === 'user' && m.content.includes('角色乙：他人发言1')), '他人发言带名字前缀')
   const own = messages.find(m => m.role === 'assistant')

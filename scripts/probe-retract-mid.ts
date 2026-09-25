@@ -21,10 +21,10 @@ try {
   mkdirSync(dir, { recursive: true })
   buildGroupFixture(dir, { chars: TEST_CAST.slice(0, 1) })
   let s = GroupSession.open(G)
-  s.store.append('user', '你', '开场白', ['角色甲'], 'public')
+  s.store.append('user', '你', '开场白', ['角色甲'])
   s = GroupSession.open(G)
-  s.store.append('user', '你', '甲啊，口令是红色这件事你要守住', ['角色甲'], 'public')
-  s.store.append('user', '你', '再说一遍，口令是红色的口诀你背了吗', ['角色甲'], 'public')
+  s.store.append('user', '你', '甲啊，口令是红色这件事你要守住', ['角色甲'])
+  s.store.append('user', '你', '再说一遍，口令是红色的口诀你背了吗', ['角色甲'])
   s = GroupSession.open(G)
   console.log(`起点 ${count()} 条:`, dump().map(t => t.slice(0, 14)).join(' | '))
 

@@ -86,14 +86,12 @@ try {
   const after = loadFiles(dir)
   assert.equal(after.personality.base, '（改后的性格）')
   assert.equal(after.relationships.base, '（改后的关系）')
-  assert.equal(after.personality.drift.length, 0, '性格.md 不再承载演变（演变在状态账本）')
-  assert.equal(after.relationships.entries.length, 0, '人物关系.md 不再承载 AI 条目（变化在状态账本）')
 
   // 名字校验
   assert.ok(isValidName('正常名字'))
   for (const bad of ['', '   ', 'a/b', 'a\\b', '..', 'x:y']) assert.ok(!isValidName(bad), `应拒绝: ${JSON.stringify(bad)}`)
 
-  console.log('M5 离线自检通过：建群/建角色/五文件落盘/回填/更新保留演变/名字校验')
+  console.log('M5 离线自检通过：建群/建角色/五文件落盘/回填/名字校验')
 } finally {
   cleanup()
 }

@@ -24,7 +24,7 @@ export type SessionEvent =
   | { type: 'speaker'; name: string }
   | { type: 'route'; picked: string; reason: string; fallback: boolean }
   | { type: 'delta'; text: string }
-  | { type: 'reply'; name: string; text: string; private: boolean }
+  | { type: 'reply'; name: string; text: string }
   | { type: 'ledger'; text: string }
   | { type: 'info'; text: string }
 
@@ -70,7 +70,7 @@ export class GroupSession {
     this.byName = new Map(this.characters.map(c => [c.name, c]))
     this.roster = this.characters.map(c => ({ name: c.name }))
     this.rosterLines = this.characters.map(c =>
-      `${c.name}｜${(c.personalityFallback || c.appearance).split(/[，。.！!？?\n]/)[0] ?? ''}`,
+      `${c.name}｜${c.appearance.split(/[，。.！!？?\n]/)[0] ?? ''}`,
     )
   }
 
@@ -129,12 +129,11 @@ export class GroupSession {
   setScene(scene: SceneAccess, reason = '场景人员变动'): void {
     const next = this.normalizeScene(scene)
     const oldLinks = new Map([...this.scene.remote, ...this.scene.overhear].map(l => [l.character, l]))
-    const fallbackSince = this.store.lastSceneMsgCount() ?? 0
     const callBaseline = Math.max(0, (this.store.lastUserMsgId() ?? 1) - 1)
     const withSince = (links: RemoteLink[]): RemoteLink[] => links.map(l => {
       const prev = oldLinks.get(l.character)
       const since = prev !== undefined
-        ? (prev.since ?? fallbackSince) // 续接：旧数据（无 since）回退全局锚点
+        ? prev.since ?? callBaseline // 续接保留原锚；缺失（不应发生）按新接入处理
         : callBaseline // 新出现：从引起感知的那句用户发言起听
       return { ...l, since }
     })
@@ -168,14 +167,13 @@ export class GroupSession {
    */
   private audienceOf(knows: ReadonlySet<string>, msgId: number, exclude?: string): string[] {
     const links = new Map([...this.scene.remote, ...this.scene.overhear].map(l => [l.character, l]))
-    const fallbackSince = this.store.lastSceneMsgCount() ?? 0
     return this.characters
       .map(c => c.name)
       .filter(n => n !== exclude && knows.has(n))
       .filter(n => {
         const link = links.get(n)
-        // 旧数据无 since：回退全局锚点（最后一条 presence 行前）——接入/开始感知之前的消息不进名单
-        return link === undefined || msgId > (link.since ?? fallbackSince)
+        // 接入/开始感知之前的消息不进名单；setScene 落盘的链路都带 since（缺省防御 = 不设限）
+        return link === undefined || msgId > (link.since ?? 0)
       })
   }
 
@@ -331,8 +329,7 @@ export class GroupSession {
             rules: this.rules,
             timeoutMs: Math.max(config.directorTimeoutMs, 60000),
           })
-          // 记账员只有状态账本写入权（§6.1b）：presence_updates 权力已摘除，
-          // 场景名册由 Jev 每轮判定 / 总管代管 / 用户手动修正维护
+          // 记账员只有状态账本写入权（§6.1b）：场景名册唯一写者 = Jev 每轮判定 / 总管代管 / 用户手动修正
           const notes = this.recordRouteChanges(book.ledgerUpdates)
           this.judgeLog({
             phase: '记账',
@@ -508,7 +505,7 @@ export class GroupSession {
 
   /**
    * 判定/后台运行日志（groups/<群>/判定.jsonl，append-only，**只给人看**——前端侧边栏展示）。
-   * 记录每轮判定走了哪条路、每道题的原始答案与耗时、记账门控开没开、回退原因——不再盲审。
+   * 记录每轮判定走了哪条路、每道题的原始答案与耗时、记账门控开没开、回退原因——判定全程可审计。
    * 写日志失败绝不影响剧情。
    */
   private judgeLog(entry: Record<string, unknown>): void {
@@ -564,10 +561,10 @@ export class GroupSession {
     }
     full = stripNameEcho(full, last.name)
     if (full.trim() !== '') {
-      this.store.rewriteMessage(last.id, full) // 当前上下文快照：日志行就地更新（不再产出 swipe 派生行）
+      this.store.rewriteMessage(last.id, full) // 当前上下文快照：日志行就地更新
       this.rewriteMemoryFor(last.id) // 活账本：生效文本变了，引用它的记忆条目同步改写
     }
-    yield { type: 'reply', name: last.name, text: full, private: last.scope === 'private' }
+    yield { type: 'reply', name: last.name, text: full }
   }
 
   /** 用户公开发言：路由 → 角色回复 → 记账。 */
@@ -590,8 +587,8 @@ export class GroupSession {
     yield { type: 'info', text: '总管判断谁接话…' }
     // ── 快路径（SPEC §6.1a）：Jev 一次调用回答"谁接话 + 三层场景名单 + 知情名单 + 转告 + 状态门"。
     // 未配置/调用失败 → undefined；路由不可用（置信不足/名单外）→ picked 置空：路由回退完整总管，
-    // 场景/知情/转告/状态门判定照常生效（各自带阈值，不与路由连坐——实测连坐会把准确的进场判定一起扔掉）。
-    const recent = this.store.effectiveMessages().slice(-6).map(m => `${m.name}：${m.text}`).join('\n')
+    // 场景/知情/转告/状态门判定照常生效（各自带阈值，不与路由连坐）。
+    const recent = this.store.effectiveMessages().slice(-config.contextWindow).map(m => `${m.name}：${m.text}`).join('\n')
     const routerLlm = resolveRouter()
     if (routerLlm === undefined) this.judgeLog({ phase: '主判定', note: '未配置快路径，走完整总管' })
     let quick: import('./host.ts').JevRouteResult | undefined
@@ -654,7 +651,7 @@ export class GroupSession {
     // 快照在场景修正之前写定：刚进场的人从下一轮起听到，本轮这句仍按旧场景与旧名单。
     const knows = quick?.knows ?? new Set(this.witnesses())
     const audience = this.audienceOf(knows, this.store.nextMsgId)
-    const userMsg = this.store.append('user', this.userPersona.name, text, audience, 'public')
+    const userMsg = this.store.append('user', this.userPersona.name, text, audience)
     this.backfillAll()
 
     // 额外记忆（§5.7）：这条发言在向谁转告他原本不知道的事——二段判定后逐字移植。
@@ -674,7 +671,7 @@ export class GroupSession {
       }
     } else {
       // 回退路径：总管判断的场景人员变动（谁进来/离开/接入/开始偷听）。
-      // 名单里的名字经 resolveCharacterName 对号（"甲"↔"角色甲"），写歪的不再被静默丢弃。
+      // 名单里的名字经 resolveCharacterName 对号（"甲"↔"角色甲"），对不上的丢弃。
       for (const p of route!.presenceUpdates) {
         const resolved = this.resolvePresence(p)
         if (resolved === undefined) continue
@@ -855,7 +852,7 @@ export class GroupSession {
             userName: this.userPersona.name,
             statusNotes: this.statusNotes(),
             presentNotes: this.presentNotes(),
-            recent: this.store.effectiveMessages().slice(-8).map(m => `${m.name}：${m.text}`).join('\n'),
+            recent: this.store.effectiveMessages().slice(-config.contextWindow).map(m => `${m.name}：${m.text}`).join('\n'),
             tone: this.settings.tone,
             rules: this.rules,
             timeoutMs: config.jevTimeoutMs,
@@ -865,9 +862,9 @@ export class GroupSession {
       const base = judge?.audience ?? new Set(this.witnesses(name))
       const msgIdForReply = this.store.nextMsgId
       const listeners = [name, ...this.audienceOf(base, msgIdForReply, name)]
-      msgId = this.store.append('character', name, full, listeners, 'public').id
+      msgId = this.store.append('character', name, full, listeners).id
     }
-    yield { type: 'reply', name, text: full, private: false }
+    yield { type: 'reply', name, text: full }
     return { text: full, ...(msgId === undefined ? {} : { msgId }), ...(judge === undefined ? {} : { judge }) }
   }
 
@@ -911,17 +908,12 @@ export class GroupSession {
   private filesFor(name: string): CharacterFiles | undefined {
     const persona = this.byName.get(name)
     if (persona === undefined) return undefined
-    let files = this.books.get(name)
-    if (files === undefined) {
-      files = loadFiles(join(this.groupDir, '角色', persona.dirName))
-      // 旧格式迁移：性格/关系原写在 角色.md，种入各自的文件，随首次落盘完成搬家。
-      if (files.personality.base === '' && persona.personalityFallback !== '') files.personality.base = persona.personalityFallback
-      if (files.relationships.base === '' && files.relationships.entries.length === 0 && persona.relationshipsFallback !== '') {
-        files.relationships.base = persona.relationshipsFallback
+      let files = this.books.get(name)
+      if (files === undefined) {
+        files = loadFiles(join(this.groupDir, '角色', persona.dirName))
+        this.books.set(name, files)
       }
-      this.books.set(name, files)
-    }
-    return files
+      return files
   }
 
   /** 刷新该角色的四个可变文件（角色.md 永不写入）。 */
@@ -1029,7 +1021,7 @@ export class GroupSession {
    * 被用户撤回过的 mid 不趁机复活。
    */
   private rewriteMemoryFor(id: number): void {
-    // 用可见视图取生效文本（物理改写后 msg 行即生效文本；旧版派生行同样被 rewriteMessage 清掉）
+    // 用生效视图取文本（物理改写后 msg 行即生效文本）
     const msg = this.store.effectiveMessages().find(m => m.id === id)
     if (msg === undefined) return
     for (const c of this.characters) {
@@ -1126,12 +1118,10 @@ export class GroupSession {
   }
 
   private backfillAll(): void {
-    // 存量治愈：引用"已不存在的消息"的记忆条目统一清掉——旧版 delete 行的 target，
-    // 以及物理删除（当前上下文快照语义）后从日志消失的 mid。
-    // （ledger retract + suppressed 双保险：残留条目消失，且永远不会因回填复活）
-    const deletedIds = this.store.deletedMsgIds()
+    // 存量治愈：引用"已不存在的消息"的记忆条目统一清掉（消息物理删除后 mid 从日志消失，
+    // ledger retract + suppressed 双保险：残留条目消失，且永远不会因回填复活）。
     const existingIds = new Set(this.store.messages.map(m => m.id))
-    const isGone = (mid: number): boolean => deletedIds.has(mid) || !existingIds.has(mid)
+    const isGone = (mid: number): boolean => !existingIds.has(mid)
     for (const c of this.characters) {
       const f = this.filesFor(c.name)
       if (f === undefined) continue

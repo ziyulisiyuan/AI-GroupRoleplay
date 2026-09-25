@@ -1,7 +1,7 @@
 /**
  * 记忆（知情账本）运行时（SPEC §4.3/§5）：
  * - backfillKnowledge：凡 `visible_to` 可见（= Jev 判定的知情名单）且账本尚无该 mid 的消息，
- *   把**原文原样**移植进该角色的账本（不做任何总结改写——总结是虚构的唯一入口，实测踩过）。
+ *   把**原文原样**移植进该角色的账本（不做任何总结改写——总结是虚构的唯一入口）。
  *   **返回新增条目**，调用方必须为其写 ledger 行（jsonl 是唯一事实源）。
  * - buildMemory：把账本条目按轮次、最新优先注入角色输入（按字符预算），
  *   已在"最近消息窗口"里的条目不重复注入。
@@ -85,12 +85,11 @@ export function buildMemory(
 
 /**
  * 该角色**缺失的轮次**（额外记忆二段判定的候选集）：生效视图里有消息、但这些消息都不在他
- * 账本里的轮。升序返回最近 cap 轮，每轮附一句话摘要（首条消息前 40 字）供 Jev 判断转告范围。
+ * 账本里的轮。升序返回全部缺失轮，每轮附摘要（首条缺失消息）供 Jev 判断转告范围。
  */
 export function missingRounds(
   store: StoryStore,
   memory: KnowledgeEntry[],
-  cap = 8,
 ): Array<{ round: number; summary: string }> {
   const known = new Set(memory.filter(k => k.mid !== undefined).map(k => k.mid as number))
   const byRound = new Map<number, MsgLine[]>()
@@ -102,10 +101,9 @@ export function missingRounds(
   }
   return [...byRound.entries()]
     .sort((a, b) => a[0] - b[0])
-    .slice(-cap)
     .map(([round, msgs]) => ({
       round,
-      summary: `${msgs[0].name}：${msgs[0].text.slice(0, 40)}${msgs.length > 1 ? `（等${msgs.length}条）` : ''}`,
+      summary: `${msgs[0].name}：${msgs[0].text}${msgs.length > 1 ? `（等${msgs.length}条）` : ''}`,
     }))
 }
 

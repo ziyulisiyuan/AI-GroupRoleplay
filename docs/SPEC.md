@@ -19,8 +19,7 @@
    context snapshot**: user edits, deletions, and rerolls physically rewrite/remove those lines —
    the original wording does not survive anywhere in the log (their ledger-transplant rows are
    rewritten/removed with them). Operational rows — `ledger`, `route`, `presence`, `director`,
-   `rename`, plus legacy `swipe`/`edit`/`delete` rows from old versions — are append-only and
-   never rewritten. Derived artifacts (状态.yaml, 记忆.jsonl, 在场.yaml, the dynamic parts of
+   `rename` — are append-only and never rewritten. Derived artifacts (状态.yaml, 记忆.jsonl, 在场.yaml, the dynamic parts of
    性格.md / 人物关系.md) are replayable from the log's ledger/presence rows. The AI never
    rewrites original lines.
 2. **[INV] Write order is ledger row first, derived file second.**
@@ -76,8 +75,8 @@ a fallback full director (deepseek, §6.1c), and a correction window (§6.3).
    call itself fails → `undefined` → whole turn to the full director. If only the **route pick**
    is unusable (low confidence / out-of-roster — typical for pure-narration messages) →
    `picked` is returned empty: routing falls back to the full director while scene / knowledge /
-   retelling / gate judgments from the same answers still apply (each is threshold-guarded;
-   discarding them with the route once threw away an accurate 0.89 arrival judgment).
+   retelling / gate judgments from the same answers still apply (each is threshold-guarded and
+   stands on its own).
 4. Append the user `msg` line. `visible_to` = knowledge audience (§4.3/§4.4): the Jev `knows` set
    filtered by per-link `since` anchors; when the fast path is unavailable, fallback =
    present ∩ full perception (keyword rule). The snapshot is written at birth — context window and
@@ -119,11 +118,10 @@ a fallback full director (deepseek, §6.1c), and a correction window (§6.3).
 ### 1.2 Other operations
 
 - **No private-chat channel exists.** To speak privately, write it in the message body ("我凑到
-  某人耳边低声说……"); who perceives it is judged like any other message. The `scope` field on
-  legacy msg lines is honored for old data.
+  某人耳边低声说……"); who perceives it is judged like any other message.
 - **`roll()`**: regenerate the last character message from the same visible input minus that
-  message, temperature 1.0; the log's msg line is **rewritten in place** (no swipe row is
-  produced) and memory entries referencing the message are rewritten to the new text (§5.6).
+  message, temperature 1.0; the log's msg line is **rewritten in place** and memory entries
+  referencing the message are rewritten to the new text (§5.6).
 - **`editMessage(id)`**: the log's msg line is **rewritten in place** with the new wording;
   memory entries (and their ledger rows) referencing the message are rewritten to the new text
   (§5.6).
@@ -201,20 +199,16 @@ Then one JSON object per line:
 
 | type | fields | notes |
 |---|---|---|
-| `msg` | `id, role(user\|character\|system), name, text, round, visible_to("all"\|[名]), scope?(public\|private), ts` | `id` is monotonic: `nextMsgId = max(header.lastMsgId, existing ids, legacy target ids) + 1`. **User edits/deletes/rerolls physically rewrite/remove msg lines** — the log is the current context. `visible_to` = knowledge-audience snapshot taken at append time (§4.4). `scope: private` exists only in legacy data. |
+| `msg` | `id, role(user\|character\|system), name, text, round, visible_to("all"\|[名]), ts` | `id` is monotonic: `nextMsgId = max(header.lastMsgId, existing ids) + 1`. **User edits/deletes/rerolls physically rewrite/remove msg lines** — the log is the current context. `visible_to` = knowledge-audience snapshot taken at append time (§4.4). |
 | `route` | `round, picked, reason, fallback` | one per director decision (including each relay hop; relay rows carry reason `接力`) |
-| `swipe` | `target_id, variants[], chosen` | **legacy only** (old versions); still honored by the effective view; purged when the message is physically edited/deleted/rerolled |
-| `edit` | `target_id, text, ts` | **legacy only**; same view semantics and purge rule as above |
-| `delete` | `target_id, ts` | **legacy only**; same view semantics and purge rule as above |
 | `presence` | `present[], remote?[{character, perceive(语音\|视听), note?, since?}], overhear?[{same}], reason, ts` | scene change (§4); omitted layers = unchanged |
 | `ledger` | `character, section(status\|knowledge\|personality\|relationship), op(set\|append\|unset\|retract), content` | payloads in §3.3; `personality`/`relationship` sections are retired (replay ignores them) |
 | `director` | `text, reply, applied[], ts` | correction-window archive; never shown to characters (§6.3) |
 | `rename` | `from, to, ts` | character rename; historical rows are mapped to the current name via the name chain (§3.10) |
 
-- **Effective view `effectiveMessages()`**: msg lines with legacy swipe → edit → delete applied
-  in log order. In logs written by the current version this is the msg lines verbatim — the log
-  IS the current context. Everything character-facing (assembly, backfill, last speaker,
-  heuristic routing) uses this view.
+- **Effective view `effectiveMessages()`**: the msg lines verbatim — the log IS the current
+  context. Everything character-facing (assembly, backfill, last speaker, heuristic routing)
+  uses this view.
 - **Bad-line policy**: lines failing `JSON.parse` are ignored (a torn tail line must not lock the
   group). New message ids skip gaps (max existing id + 1, floored by `header.lastMsgId`).
 
@@ -238,10 +232,8 @@ logged with their reason. Served to the frontend via `GET /api/group/{name}/judg
 | section + op | content | effect |
 |---|---|---|
 | status + set | JSON object, subset of the seven ledger fields (§3.4a) | per-field overwrite into the character's ledger (fields absent from the JSON keep their value) |
-| status legacy (non-JSON) | `"字段=值"` / unset `"字段"` | ignored on replay (content was seeded into the ledger by `loadFiles`) |
 | knowledge + append | `JSON({source, mid?, round, text})` | verbatim ledger entry; `source` is `亲历` (transplant), `额外得知` (retelling grant, §5.7), `现场所见` (scene snapshot, §5.8), `离场经历` (off-story experience, §5.9), or `用户指定`/`推断`/`他人告知` (correction window) |
 | knowledge + retract | `JSON({mid? \| text?})` | removes matching entries; a `mid` retract also adds the mid to the suppression set so backfill can never re-register it |
-| personality / relationship (retired) | anything | ignored on replay (content lives in the status ledger via seeding) |
 
 ### 3.4 Character files
 
@@ -280,9 +272,8 @@ gets echoed verbatim by characters as repeated stock phrases):
   provided fields overwrite the ledger, omitted fields carry forward, and unchanged characters are
   skipped. One status snapshot ledger row (JSON of the merged seven fields) is appended per
   changed character, then 状态.yaml is rewritten.
-- **Migration/seed** (`loadFiles`): legacy free-form status keys are mapped into 生理状态/心理状态;
-  legacy 性格.md drift lists seed 性格演变; legacy 人物关系.md entries seed 人物关系变化. Seeding is
-  one-time and idempotent; after it, 性格.md/人物关系.md carry only user content.
+- **Normalization** (`loadFiles`): 状态.yaml is normalized to the fixed seven fields; 性格.md /
+  人物关系.md carry only user content.
 
 ### 3.5 群设定.yaml
 
@@ -318,7 +309,7 @@ providers:
 
 Entries missing baseUrl/apiKey/model are ignored. `activeId` falling on a missing entry falls back
 to the first provider. `routerId` falling on a missing/ignored entry disables the fast path (the
-director runs the single full call — legacy-compatible behavior). The fast-path provider must
+director runs the single full call). The fast-path provider must
 serve `POST {baseUrl}/v1/systemone` with the TypeSafe native protocol; the AIHubMix relay
 (`https://api.inferera.com`, `model: jev-latest`) is a known-good choice.
 
@@ -346,11 +337,7 @@ overhear:           # one-directional perceivers (can know, cannot interact; hid
   `rename` row. `store.nameOf()` maps any historical name through the chain to the current name;
   ledger replay, scene restoration, and rebuild all resolve through it (renaming never loses
   history or evicts the character from the scene).
-- Legacy compatibility (read-triggered, old file deleted after migration): 群设定.md → 群设定.yaml;
-  状态.md (frontmatter fields + embedded 知情账本) → 状态.yaml + 记忆.jsonl; 记忆.md (pipe lines) →
-  记忆.jsonl; `personality`/`relationships` frontmatter in 角色.md seeds 性格.md/人物关系.md;
-  free-form status keys and drift/relationship entries seed the status ledger (§3.4a). Unknown
-  frontmatter fields are ignored.
+- Unknown frontmatter fields in any user file are ignored.
 
 ---
 
@@ -414,8 +401,7 @@ birth. Deleted messages are excluded from the view and their ledger entries remo
 Their perceived messages follow the same transplant pipeline as everyone else, filtered by each
 link's own `since` anchor: messages at or before the anchor (i.e. before the link existed) are not
 theirs. New links anchor just before the last user message, so the utterance that caused the link
-is heard. Legacy data without `since` falls back to the global anchor (messages before the last
-presence row). The system prompt declares each link's limits and the overhear variant adds that
+is heard. The system prompt declares each link's limits and the overhear variant adds that
 the scene cannot interact back.
 
 ---
@@ -433,8 +419,7 @@ messages: `你自己说过：<原文>`). No truncation, summarizing, or rewritin
 Runs after every append. Iterates the **effective view**; for each character, any visible message
 without a ledger entry for its `mid` is transplanted as `source=亲历` with the `mid` (restart
 idempotent). Every new entry is also appended as a ledger row [INV 2]. Entries whose `mid` is in
-the suppression set are never re-registered (§5.3). Suppression sources: user retracts and legacy
-delete rows.
+the suppression set are never re-registered (§5.3). Suppression source: user retracts.
 
 ### 5.3 Manual memory operations (user; via ledger)
 
@@ -442,8 +427,7 @@ delete rows.
 - Retract: by `mid` (preferred) or by exact text; a `mid` retract also suppresses the mid against
   future backfill.
 - Deleting a message physically removes its line and ledger rows; `backfillAll` additionally heals
-  any entry whose `mid` references a message that a legacy delete row marked deleted or that no
-  longer exists in the log at all.
+  any entry whose `mid` references a message that no longer exists in the log at all.
 
 ### 5.4 Bookkeeping write order
 
@@ -488,9 +472,8 @@ granted to the told character as **extra memory**:
 The `mid` linkage gives extra entries the full living-ledger semantics for free: idempotent
 (re-granted rounds yield nothing), retractable by mid/text (memory panel, correction window),
 rewritten when the original message is edited or re-rolled, retracted when it is deleted. Failure
-at any point grants nothing (status quo ante). The stage-2 state is capped (8 rounds × one-line
-summaries + the ≤200-char retelling) to fit the judge's small window; `JEV_THRESHOLDS.toldMin /
-extraRoundMin` are the two thresholds.
+at any point grants nothing (status quo ante). `JEV_THRESHOLDS.toldMin / extraRoundMin` are the
+two thresholds.
 
 ### 5.8 Scene-perception snapshot (现场所见)
 
@@ -574,10 +557,8 @@ text; transport failures throw and are caught). Questions:
   addressee even when the speech names someone else (a name in speech may be a third person being
   *talked about*); when the parenthesis points at nobody, a direct name in speech wins. The main
   route **deliberately does
-  not offer the user as a choice**: a user message always gets a character response — an
-  earlier "no-reply exit" was abused by the judge (every passive message handed back to the
-  user) and was removed. Handing the floor back to the user is the relay's job (below), where
-  the context makes the choice honest.
+  not offer the user as a choice**: a user message always gets a character response. Handing the
+  floor back to the user is the relay's job (below), where the context makes the choice honest.
 - `present_<角色>` for every character (noul "is he in the scene right now"): ≥0.7 in, ≤0.3 out,
   in between = keep current state (no presence row). **Dialogue takes precedence over records**:
   the scene record and the status ledger can lag behind the story — when the dialogue depicts
@@ -597,8 +578,8 @@ text; transport failures throw and are caught). Questions:
   is ever skipped for "the environment did not change": presence, knowledge, retelling, routing
   and the gate are all re-judged every turn and after every reply.
 
-State passed to the judge is compact (candidates, scene notes, status lines, the user utterance)
-to fit the 512-token window.
+State passed to the judge assembles the full relevant context (candidates, scene notes, complete
+status lines, the user utterance, recent history).
 
 **Merged post-reply judgment (`jevAfterReply`).** One call after each character reply, before
 that reply is appended, answers four things at once: the reply's knowledge audience
@@ -639,8 +620,8 @@ interactMax: 0.3, gateKeep: 0.5, toldMin: 0.5, extraRoundMin: 0.75 }`.
 `record_round` tool, queued in the background after the stream. Records: `状态账本`
 (whole-snapshot seven-field updates, §3.4a) only. No memory fields, **no scene roster writes** —
 the bookkeeper has no presence authority: it must not add or remove scene members, and any
-`presence_updates` it emits anyway are discarded by the engine `[WHY]` left ungated it re-added
-off-scene characters based on setting-plausibility ("same cave") against Jev's explicit judgment.
+`presence_updates` it emits anyway are discarded by the engine `[WHY]` roster authority belongs to
+the judge and the correction surfaces, not to bookkeeping.
 Position status still tracks movement inside the ledger. **Gated** (fast path): the work list
 holds the user message and each reply whose judgment opened the status gate (missing answer =
 open); one deepseek call per list entry — the user message can be its own entry with no reply
@@ -784,7 +765,7 @@ rename without the frontend twin breaks the UI silently):
   names (`现场`/`接入`/`单向感知`), and perceive values (`语音`/`视听`) are displayed verbatim —
   never translate or alias them.
 
-**Decisions to preserve across any redesign** (these are decisions, not legacy accidents):
+**Decisions to preserve across any redesign**:
 
 - The chat column shows **only messages and streaming text**. Route/ledger/info events surface
   as a single transient status line above the input box (updated in place, never accumulated)
@@ -799,7 +780,7 @@ rename without the frontend twin breaks the UI silently):
 - Per-message edit/delete and reroll are physical operations; the delete confirm must keep
   saying the text is removed from the log.
 - The models panel edits API keys only; providers are managed by editing settings.yaml.
-  **Amendment (§13 self-contained build):** on the Android app the group data and
+  **Amendment (§12 self-contained build):** on the Android app the group data and
   `settings.yaml` live in app-private storage with **no external editor path**, so the panel
   becomes a two-section page: (1) **模型** — one custom dialogue provider, edited in place
   (API 密钥 / API 地址 / 模型 ID + a single 保存; creates the provider and activates it when
@@ -909,37 +890,20 @@ Convention [INV 11]: fixtures are temporary and always deleted. Offline checks n
 |---|---|---|
 | `selfcheck:llm` | online | channel/model/thinking params/stream parsing/tool-call fallback |
 | `selfcheck:m1` | offline | file loading/injection · heuristic routing · name normalization · assembly |
-| `selfcheck:m2` | offline | ledger determinism/idempotence · snapshot semantics · legacy-row replay ignore · seeding migration · memory retracts · 角色.md immutability · legacy swipe/edit/delete view semantics · physical edit/delete/reroll (log = current snapshot, purge of legacy rows, id never reused) |
+| `selfcheck:m2` | offline | ledger determinism/idempotence · snapshot semantics · ledger normalization · memory retracts · 角色.md immutability · physical edit/delete/reroll (log = current snapshot, id never reused) |
 | `selfcheck:m3` | offline | visibility filtering · transplant idempotence (verbatim entries) · injection budget · message window = CONTEXT_WINDOW |
 | `selfcheck:scaffold` | offline | group/character creation products load · updates keep user content · name validation · empty rules inject nothing |
 | `selfcheck:settings` | offline | rules zero-built-in round-trip · provider parsing/fallback · router provider resolution |
 | `selfcheck:presence` | offline | three-layer yaml round-trip (with `since`) · parse semantics (omitted=keep/empty=clear/unknown=语音) · perception keywords · visible_to snapshots |
 | `selfcheck:engine` | offline | bad-line tolerance + id continuity · text-retract no-resurrection (restart/replay) · edit living-ledger (physical ledger-row rewrite, respects retracts) · deleted-message physical removal (no text left in log) + memory cleanup + id monotonicity · rename chains |
-| `selfcheck:router` | offline | Jev hit / three-layer derivation / knowledge audience (incl. overhearers) / `told` stage-1 + `state_dirty` parsing (missing = safe side) · low-confidence, out-of-roster → route-only fallback with raw answers logged · scene/knowledge salvage when route unusable · `jevExtraRounds` stage-2 thresholds / failure grants nothing · `missingRounds`/`transplantRounds` units (verbatim, mid, own-speech prefix) · end-to-end merged judgment (1 call/reply) · extra-memory grant (end-append order, ledger rows, idempotence on re-telling) · gate (zero deepseek calls when clean, exactly one when dirty) · bookkeeper has no roster authority (overreach discarded) · scene-perception snapshot (entrant detection, injection before entrant speaks via relay, manual-fix entries snapshotted too) · off-story experiences (absence anchor pure-code, discovery merged per entry, event×participant limited-POV renders injected to all participants, first-time entrants skipped) · judgment log (判定.jsonl rows with phases + raw answers + elapsed) · relay (user turn / cumulative decay: ×0 right after a speech — no consecutive output, that judgment does not advance the multiplier; `RELAY_DECAY` applied at every other judgment, cumulative across re-speeches; no hard cap, the undecaying user weight ends the chain; hard block hands the floor back to the user on just-spoke re-picks and all-zero distributions) · fallback = legacy behavior · unconfigured = fully compatible |
+| `selfcheck:router` | offline | Jev hit / three-layer derivation / knowledge audience (incl. overhearers) / `told` stage-1 + `state_dirty` parsing (missing = safe side) · low-confidence, out-of-roster → route-only fallback with raw answers logged · scene/knowledge salvage when route unusable · `jevExtraRounds` stage-2 thresholds / failure grants nothing · `missingRounds`/`transplantRounds` units (verbatim, mid, own-speech prefix) · end-to-end merged judgment (1 call/reply) · extra-memory grant (end-append order, ledger rows, idempotence on re-telling) · gate (zero deepseek calls when clean, exactly one when dirty) · bookkeeper has no roster authority (overreach discarded) · scene-perception snapshot (entrant detection, injection before entrant speaks via relay, manual-fix entries snapshotted too) · off-story experiences (absence anchor pure-code, discovery merged per entry, event×participant limited-POV renders injected to all participants, first-time entrants skipped) · judgment log (判定.jsonl rows with phases + raw answers + elapsed) · relay (user turn / cumulative decay: ×0 right after a speech — no consecutive output, that judgment does not advance the multiplier; `RELAY_DECAY` applied at every other judgment, cumulative across re-speeches; no hard cap, the undecaying user weight ends the chain; hard block hands the floor back to the user on just-spoke re-picks and all-zero distributions) · fallback = single full director · unconfigured = fast path off |
 | `acceptance-*` (m1–m5, isolation, models, context-edit, presence, director) | online | end-to-end behaviors per milestone; re-run after any fast-path or memory change |
 
 `DSH_DEBUG=1` prints director/judge failure causes.
 
 ---
 
-## 11. Explicit non-goals
-
-- ST card import/export or format compatibility; any ST feature beyond behavioral reference.
-- Built-in writing rules or style constraints — everything user-authored (规则.md).
-- A size budget on 规则.md (injected verbatim; deliberate).
-- Agent-style LLM filesystem access (permanently out of scope).
-- Voice/image generation, mobile, multi-user accounts, vector retrieval, plugin systems.
-- A private-chat channel (removed by design; whisper via message text).
-- A narrator role (`next_speaker="narrator"` is a reserved value, unimplemented).
-- A "no character replies this turn" outcome from the main route: a user message always gets a
-  character response; the relay decides when the floor returns to the user.
-- Third-party local decision-model runtimes: the fast path is defined by the systemone protocol
-  contract (§6.1a) and its provider entry; any other backend is out of scope until it speaks that
-  contract.
-
----
-
-## 12. Known limitations (accepted, with mitigations)
+## 11. Known limitations (accepted, with mitigations)
 
 | limitation | mitigation |
 |---|---|
@@ -954,13 +918,12 @@ Convention [INV 11]: fixtures are temporary and always deleted. Offline checks n
 | background bookkeeping finishes after the stream closes | its ledger notes are not streamed; files are authoritative and visible on refresh |
 | relay chains can burn tokens | no hard cap by design: ×0 forbids immediate repeats, each speaker's cumulative multiplier decays `RELAY_DECAY` per judgment (re-speaking never resets it) while the user's never decays; chains end on the user pick, low confidence, relay failure, or an empty reply; background bookkeeping does not block |
 | user edits/deletes/rerolls physically rewrite 剧情.jsonl — the original wording is unrecoverable | accepted by design: the log is the current context snapshot (user decision); 状态.yaml / 记忆.jsonl keep their own accounting, and archived dialogs (director rows) are untouched |
-| stage-2 retelling judgment sees only the 8 newest missing rounds, one line each | keeps the judge's small state window; retellings of older stretches fall back to the memory panel |
 | a retelling grant assumes the narration is truthful — a lie grants the true rounds | accepted: verbatim-transplant philosophy; correction window / memory panel can retract |
 | the status gate is one Jev judgment; a false "clean" skips deepseek bookkeeping for that message | missing answer = gate opens; fallback path unaffected (inline bookkeeping); the correction window can still write ledgers |
 
 ---
 
-## 13. Android self-contained app (`android/`, additive)
+## 12. Android self-contained app (`android/`, additive)
 
 The whole stack — engine, HTTP host, frontend — also runs **on the phone**, with no PC involved.
 Nothing in `src/group/*` changes: the app runs the same bundled `server.ts` against an app-private

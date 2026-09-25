@@ -49,27 +49,22 @@ try {
 
   // 3) 可见性快照：场景内∩能感知
   const store = StoryStore.open(join(dir, 'g'), 'g')
-  store.append('user', '你', '（当面说的话）', ['角色甲', '角色乙'], 'public')
-  store.append('user', '你', '（私聊）', ['角色乙'], 'private')
+  store.append('user', '你', '（当面说的话）', ['角色甲', '角色乙'])
   store.appendPresence(['角色甲'], '测试', [{ character: '角色丙', perceive: '语音', note: '电话' }], [{ character: '角色丁', perceive: '视听', note: '窗外' }])
   assert.deepEqual(store.lastScene(), {
     present: ['角色甲'],
     remote: [{ character: '角色丙', perceive: '语音', note: '电话' }],
     overhear: [{ character: '角色丁', perceive: '视听', note: '窗外' }],
   }, 'presence 行携带接入层与单向感知层（rebuild 的事实源）')
-  assert.equal(store.lastSceneMsgCount(), 2, '接入起点 = 最近一次场景变更前已落盘的消息数（通道馈送从此切）')
-  store.append('character', '角色甲', '（接话）', 'all', 'public')
-  assert.equal(store.lastSceneMsgCount(), 2, '后续消息不改变接入起点')
+  assert.equal(store.lastSceneMsgCount(), 1, '接入起点 = 最近一次场景变更前已落盘的消息数（通道馈送从此切）')
+  store.append('character', '角色甲', '（接话）', 'all')
+  assert.equal(store.lastSceneMsgCount(), 1, '后续消息不改变接入起点')
   const msgs = store.effectiveMessages()
   const pub = msgs[0]
-  const priv = msgs[1]
-  assert.deepEqual(pub.visible_to, ['角色甲', '角色乙'], '公开消息写入在场者快照')
-  assert.equal(pub.scope, 'public')
-  assert.equal(priv.scope, 'private', '私聊带明确标记（UI 才不会误标）')
+  assert.deepEqual(pub.visible_to, ['角色甲', '角色乙'], '知情名单写入快照')
   assert.ok(StoryStore.isVisibleTo(pub, '角色甲') && !StoryStore.isVisibleTo(pub, '角色丙'), '不在场者看不到')
-  assert.ok(StoryStore.isVisibleTo(priv, '角色乙') && !StoryStore.isVisibleTo(priv, '角色甲'), '私聊仅目标可见')
 
-  console.log('场景接入/感知自检通过：现场+接入往返 · 感知解析 · 可见性快照与私聊标记')
+  console.log('场景接入/感知自检通过：现场+接入往返 · 感知解析 · 可见性快照')
 } finally {
   rmSync(dir, { recursive: true, force: true })
 }

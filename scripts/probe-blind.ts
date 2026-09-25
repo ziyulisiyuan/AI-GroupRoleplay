@@ -17,14 +17,14 @@ try {
   buildGroupFixture(dir, { chars: TEST_CAST.slice(0, 2) })
   let s = GroupSession.open(G)
   // 第 1、2 轮：正常在场，甲说过两句话
-  s.store.append('user', '你', '甲，你先前那句话一', ['角色甲'], 'public')
-  s.store.append('character', '角色甲', '甲的回答一', ['角色甲'], 'public')
+  s.store.append('user', '你', '甲，你先前那句话一', ['角色甲'])
+  s.store.append('character', '角色甲', '甲的回答一', ['角色甲'])
   s = GroupSession.open(G)
   // 总管把现场判空（工具说明书明确允许 present: []）
   s.setScene({ present: [], remote: [], overhear: [] }, '现场清空')
   s = GroupSession.open(G)
   // 引擎在现场为空时给 user 行写的 visible_to 就是空名单
-  s.store.append('user', '你', '现场清空后我说的第三句话', [], 'public')
+  s.store.append('user', '你', '现场清空后我说的第三句话', [])
   s = GroupSession.open(G)
   const files = loadFiles(join(dir, '角色', '角色甲'))
   for (const who of ['角色甲', '角色乙'] as const) {

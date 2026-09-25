@@ -42,12 +42,8 @@ export function assembleGroup(
   input: AssembleInput = {},
 ): { system: string; messages: Array<{ role: 'user' | 'assistant'; content: string }> } {
   const { files, memoryText = '', userPersona, rules = '', presentNames, remote = [], overhear = [], appearances } = input
-  const personality = files !== undefined
-    ? personalityPrompt(files.personality)
-    : persona.personalityFallback
-  const relationships = files !== undefined
-    ? relationshipsPrompt(files.relationships)
-    : persona.relationshipsFallback
+  const personality = files !== undefined ? personalityPrompt(files.personality) : ''
+  const relationships = files !== undefined ? relationshipsPrompt(files.relationships) : ''
 
   const fields = [
     persona.appearance !== '' ? `外貌：${persona.appearance}` : '',
@@ -119,7 +115,7 @@ export function assembleGroup(
   return { system, messages: merged }
 }
 
-/** route_and_remember 工具 schema（SPEC §4.1）。state_updates 的 value 为空串 = 移除该字段（过期 buff）。 */
+/** route_and_remember 工具 schema（SPEC §6.1c）。 */
 const PRESENCE_ITEM_SCHEMA = {
   type: 'object',
   properties: {
@@ -158,7 +154,7 @@ const PRESENCE_ITEM_SCHEMA = {
 /** 状态账本的 items schema（ROUTE/BOOKKEEP/CORRECTION 三工具共用；整体快照语义：没变化的字段原样带回）。 */
 const LEDGER_ITEM_SCHEMA = {
   type: 'object',
-  description: '状态账本是**客观骨架**，不是描写：只写事实要点，短语式。禁止形容词渲染、文学性描写、比喻、心理独白——账本写得过于丰满，角色会在台词里反复复读这些句子（实测漂移）。例：恐惧发抖要写成"恐惧、轻微发抖"，不许写"肩膀因恐惧一抽一抽"。',
+    description: '状态账本是**客观骨架**，不是描写：只写事实要点，短语式。禁止形容词渲染、文学性描写、比喻、心理独白——账本写得过于丰满，角色会在台词里反复复读这些句子。例：恐惧发抖要写成"恐惧、轻微发抖"，不许写"肩膀因恐惧一抽一抽"。',
   properties: {
     character: { type: 'string' },
     生理状态: { type: 'string', description: '身体/伤势/体力/感官等客观要点（短语式，无形容词渲染）' },
@@ -212,9 +208,8 @@ export interface RouteResult {
 
 /**
  * 总管工具返回里的记账 + 场景修正（逐项类型过滤；快/慢路径共用同一解析）。
- * 注意：**记忆不由总管生成**——知情 = Jev 判定名单 + 代码原文移植（SPEC §5），
- * 总管的总结式记账是虚构的唯一入口（实测踩过），已从工具与解析中移除。
- * 状态/性格/关系合并为单一"状态账本"整体快照（§3.4）。
+ * **记忆不由总管生成**：知情 = Jev 判定名单 + 代码原文移植（SPEC §5），工具与解析均无记忆字段。
+ * 状态为单一"状态账本"整体快照（§3.4）。
  */
 function parseBookkeeping(args: {
   [k: string]: unknown
@@ -283,9 +278,7 @@ export async function routeNextSpeaker(input: RouteInput): Promise<RouteResult> 
     ...input.rosterLines.map(l => `- ${l}`),
     input.presentNames !== undefined
       ? `[当前场景人员（你的代管记录——判定模型不可用，由你代为维护）]\n${(input.presentNotes ?? input.presentNames).join('、') || '（无）'}\n`
-        + '**代管规则（极其严苛，两条铁律）**：名单里不在场的角色，只有对话**明确描写他进场/出现/被叫到现场**才能加入；名单里在场的角色，只有对话**明确描写他失去意识或离开**才能移出。"他住这里""可能在附近""他是这里的人"这类推测一律不算——有明确描写才用 presence_updates 给出修正后的完整名单，没有就不动这份名单。它决定谁能在这里发言、谁会被自动登记这里发生的事。\n'
-        + '**接入者不会被自动登记**：通道传来的内容只在他的实时上下文里，不自动写进他的长期记忆。他经通道确实获知、且值得长期记住的事，用 knowledge_appends 记给他；通道没传到的一律不记。\n'
-        + 'knowledge_appends 同时也用于名单之外的人偶发的实际感知；名单内的人若因任何原因实际感知不到，就不要给他记。'
+        + '**代管规则（极其严苛，两条铁律）**：名单里不在场的角色，只有对话**明确描写他进场/出现/被叫到现场**才能加入；名单里在场的角色，只有对话**明确描写他失去意识或离开**才能移出。"他住这里""可能在附近""他是这里的人"这类推测一律不算——有明确描写才用 presence_updates 给出修正后的完整名单，没有就不动这份名单。它决定谁能在这里发言、谁会被自动登记这里发生的事。'
       : '',
     input.tone !== '' ? `[群聊基调]\n${input.tone}` : '',
     input.rules !== undefined && input.rules.trim() !== '' ? `[规则（用户设定）]\n${input.rules.trim()}` : '',
@@ -308,10 +301,7 @@ export async function routeNextSpeaker(input: RouteInput): Promise<RouteResult> 
     const args = JSON.parse(call.arguments) as {
       next_speaker?: string
       reason?: string
-      state_updates?: unknown
-      knowledge_appends?: unknown
-      personality_updates?: unknown
-      relationship_updates?: unknown
+      状态账本?: unknown
       presence_updates?: unknown
     }
     const picked = resolveCharacterName(input.roster, args.next_speaker ?? '')
@@ -342,7 +332,7 @@ function heuristicRosterPick(
 
 /**
  * 工具参数里的"数组字段"模型偶尔只写一个对象（schema 是数组也照写对象）——统一收成数组。
- * 不这么收的话整轮会抛异常并静默降级成启发式路由（实测踩过）。
+ * 不这么收的话整轮会抛异常并静默降级成启发式路由。
  */
 function asArray<T>(value: unknown): T[] {
   if (value === undefined || value === null) return []
@@ -413,20 +403,18 @@ export async function jevRoute(input: JevRouteInput): Promise<JevRouteResult | u
   for (const c of input.roster) criteria[c.name] = overviews.get(c.name) ?? ''
   const absentNow = input.allNames.filter(n => !input.present.includes(n))
   const statusOf = new Map(input.statusNotes.map(l => [l.split('｜')[0]?.trim() ?? '', l.split('｜').slice(1).join('｜').trim()]))
-  // 状态压缩：只发判断必需项（候选/场景/状态摘要/本轮发言）——内容越短推理越快，远低于超时线。
   const state = [
     '判断抽象情景（能否感知/能否互动，与手段无关）。',
     `候选：${input.roster.map(c => c.name).join('、')}（可发言）`,
     `场景：${input.presentNotes.join('、') || '（无）'}`,
-    input.statusNotes.length > 0 ? `状态：${input.statusNotes.map(l => l.slice(0, 80)).join('；')}（原文）` : '',
-    input.userText !== undefined ? `用户刚说：${input.userText.slice(0, 250)}` : '',
+    input.statusNotes.length > 0 ? `状态：${input.statusNotes.join('；')}（原文）` : '',
+    input.userText !== undefined ? `用户刚说：${input.userText}` : '',
   ].filter(s => s !== '').join('\n')
 
   const questions: Record<string, import('../llm/jev.ts').JevQuestion> = {
     next_speaker: {
       type: 'choice',
-      // 主判定刻意**不提供**"选用户/无人回应"出口：用户发言必有角色接话（实测 Jev 会滥用该选项，
-      // 把每轮都判回用户——2026-09 实测三连）。把发言权交还用户是接力判定的职责，语境不同、不受滥用。
+      // 主判定不提供"选用户"出口：用户发言必有角色接话；把发言权交还用户是接力判定的职责。
       instructions: '用户这段话之后，下一位发言者应该是谁？先判断用户在跟谁说话：括号里的动作描写（如"看着X说道""凑到X耳边""转向X"）通常标明真正的对话对象；说话内容里出现的名字可能是被谈论的第三者而非对话对象——括号指向与台词中的名字冲突时，以括号指向的人为准；括号没有指向任何人、且台词直接点名时，选被点名的角色。只能从选项中选。',
       criteria,
     },
@@ -493,8 +481,6 @@ export async function jevRoute(input: JevRouteInput): Promise<JevRouteResult | u
     })
     // 路由：选项必须在可发言名单内且置信度达标；不达标 → 仅路由回退完整总管（picked 置空标记），
     // 同一批答案里的场景/知情/转告/状态门判定**照常生效**——它们各自带阈值，单独站得住。
-    // 整轮作废会把一场准确的进场判定一起扔掉（实测：纯叙述发言让路由置信塌到 0.1，
-    // 而 present_小王 已到 0.89，整轮作废导致角色永远进不了场）。
     const route = answers['next_speaker']
     const routeUsable = route?.type === 'choice'
       && input.roster.some(c => c.name === route.choice)
@@ -761,7 +747,7 @@ export async function jevExtraRounds(input: {
       llm: input.llm,
       state: [
         '你在判断一次"转告"：某人用一句话把之前发生的某段事情告知了一个当时不在场的人。逐轮判断哪些轮的内容属于这次转告的范围。',
-        `[转告原话]\n${input.retoldText.slice(0, 200)}`,
+        `[转告原话]\n${input.retoldText}`,
         `[${input.character} 缺少的轮次（他不在场/未被知会期间的对话，附首句摘要）]`,
         ...input.missing.map(m => `第${m.round}轮：${m.summary}`),
       ].join('\n'),
@@ -794,7 +780,7 @@ export const BOOKKEEP_TOOL: ToolSpec = {
   type: 'function',
   function: {
     name: 'record_round',
-    description: '剧情刚走完一条消息（一段用户发言，或某角色对它的回复）。记录这段剧情造成的持久**状态**变化；只记确实发生的，没有变化就不填。**场景人员名单由判定层维护，此工具不处理在场名单**',
+    description: '剧情刚走完一条消息（一段用户发言，或某角色对它的回复）。记录这段剧情造成的持久**状态**变化；只记确实发生的，没有变化就不填',
     parameters: {
       type: 'object',
       properties: {
@@ -839,12 +825,12 @@ export async function askBookkeeper(input: BookkeeperInput): Promise<Pick<RouteR
     ...(input.replyText.trim() === '' ? [] : [`[${input.speaker} 的回复]\n${input.replyText}`]),
     '[最近对话]',
     input.recent,
-    '调用 record_round 工具记录这段剧情造成的持久**状态**变化（状态账本整体快照）；没发生的变化不要填。特别留意位置状态：对话描写了某人移动/到场/离开时，必须同步更新其位置状态，不能停留在旧记录上。状态账本只写客观要点（短语式，无形容词渲染、无文学描写、无比喻）——它是骨架不是描写，写丰满会让角色反复复读。**场景人员名单由判定层维护，你不处理在场名单，也不要推测谁在场**。',
+    '调用 record_round 工具记录这段剧情造成的持久**状态**变化（状态账本整体快照）；没发生的变化不要填。特别留意位置状态：对话描写了某人移动/到场/离开时，必须同步更新其位置状态，不能停留在旧记录上。状态账本只写客观要点（短语式，无形容词渲染、无文学描写、无比喻）——它是骨架不是描写，写丰满会让角色反复复读。',
   ].filter(s => s !== '').join('\n')
 
   const call = await chatToolCall(resolveLlm(), {
     messages: [
-      { role: 'system', content: '你是这个群聊的总管，负责维护角色的状态账本与场景，并保证各角色只知道他该知道的。' },
+      { role: 'system', content: '你是这个群聊的总管，负责维护角色的状态账本，并保证各角色只知道他该知道的。' },
       { role: 'user', content: prompt },
     ],
     tools: [BOOKKEEP_TOOL],
@@ -852,8 +838,7 @@ export async function askBookkeeper(input: BookkeeperInput): Promise<Pick<RouteR
     signal: AbortSignal.timeout(input.timeoutMs ?? 60000),
   })
   const args = JSON.parse(call.arguments) as Parameters<typeof parseBookkeeping>[0]
-  // 记账员只有状态账本写入权（§6.1b）：场景名册由 Jev 判定/总管代管/用户手动维护，
-  // 记账员若越权输出 presence_updates 一律丢弃（实测它会凭"同处一洞"式推测把场外角色写回名册）
+  // 记账员只有状态账本写入权（§6.1b）：场景名册唯一写者 = Jev 每轮判定 / 总管代管 / 用户手动修正
   return { ledgerUpdates: parseBookkeeping(args).ledgerUpdates, appends: [], presenceUpdates: [] }
 }
 

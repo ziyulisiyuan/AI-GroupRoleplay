@@ -44,7 +44,7 @@ try {
   rmSync(accDir, { recursive: true, force: true })
   buildGroupFixture(accDir, { chars: TEST_CAST.slice(0, 2) })
   // 先落一条只有角色甲可见的消息，再开会话 → open 时自动回填登记 mid=1
-  StoryStore.open(accDir, accName).append('user', '你', '我其实是卧底', ['角色甲'], 'public')
+  StoryStore.open(accDir, accName).append('user', '你', '我其实是卧底', ['角色甲'])
 
   // ── 2) 按 text 撤回：重启 + 重放都不复活
   {
@@ -72,7 +72,7 @@ try {
     assert.ok(!s.memoryOf('角色甲').some(e => e.text.includes('商人') || e.text.includes('卧底')), '被撤回的 mid 不得因 edit 复活')
     // 再落一条可见消息并回填，然后 edit：条目文本必须跟着新文本走
     const store = StoryStore.open(accDir, accName)
-    store.append('user', '你', '钥匙藏在花盆下', ['角色甲'], 'public')
+    store.append('user', '你', '钥匙藏在花盆下', ['角色甲'])
     const s3 = GroupSession.open(accName)
     const before = s3.memoryOf('角色甲')
     const entry = before.find(e => e.text.includes('花盆'))
@@ -97,7 +97,7 @@ try {
   {
     const s = GroupSession.open(accName)
     const store = StoryStore.open(accDir, accName)
-    store.append('user', '你', '（机密口令：晚霞）', ['角色甲', '角色乙'], 'public')
+    store.append('user', '你', '（机密口令：晚霞）', ['角色甲', '角色乙'])
     const s2 = GroupSession.open(accName)
     assert.ok(s2.memoryOf('角色甲').some(e => e.text.includes('晚霞')), '甲应已登记该消息')
     assert.ok(s2.memoryOf('角色乙').some(e => e.text.includes('晚霞')), '乙应已登记该消息')
