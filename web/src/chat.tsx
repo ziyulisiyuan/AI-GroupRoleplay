@@ -10,7 +10,7 @@ import React, { useCallback, useEffect, useRef, useState } from 'react'
 import { avatarUrl, getJson, postJson, postStream, readNdjson, type Ev, type Msg, type Snapshot } from './api.ts'
 import { applyRules } from './regex.ts'
 import { Avatar, Confirm, Modal, NavBar, useLongPress, useToast } from './ui.tsx'
-import { Ban, Check, CheckSquare, Ellipsis, MapPin, Pencil, RefreshCw, Trash2, X } from './icons.tsx'
+import { Check, CheckSquare, Ellipsis, MapPin, Pencil, RefreshCw, Trash2, X } from './icons.tsx'
 
 interface Props { group: string; onBack: () => void; onOpenInfo: () => void }
 
@@ -283,7 +283,7 @@ export function ChatView({ group, onBack, onOpenInfo }: Props): React.ReactEleme
                 aria-label="选择场景" disabled={busy}
                 onClick={() => setScenePick(true)}
               >
-                <Ban size={20} />
+                <MapPin size={20} />
               </button>
               <textarea
                 ref={textareaRef}
