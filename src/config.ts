@@ -42,10 +42,9 @@ export const config = {
   directorTimeoutMs: Number(get('DIRECTOR_TIMEOUT_MS') ?? 30000),
   /** 快路径（Jev 路由判断）超时：超时即回退 deepseek 完整总管，别让快路径变成新的等待。 */
   jevTimeoutMs: Number(get('JEV_TIMEOUT_MS') ?? 4000),
-  /** 一次用户发言后允许角色连续接话的最大次数（Jev 接力判定把发言权交还用户即提前结束）。 */
-  chainMax: Number(get('TURN_CHAIN_MAX') ?? 3),
-  /** 接力加权衰减系数（纯代码，Jev 不可见）：同一角色连续输出时，其概率每次乘以该系数，
-   *  衰减后重新取概率最大者——防"同一个人被反复判中导致独白复读"。 */
+  /** 接力累计衰减系数（纯代码，Jev 不可见）：角色发言后紧接的那次判定其概率压 0（不可能连续
+   *  发言，该次不推进衰减）；其余每次判定其累计权重乘以该系数——重新发言不重置，衰减叠加贯穿
+   *  整轮；用户概率永不衰减，最终把发言权判回用户（接力因此不设硬上限）。 */
   relayDecay: Number(get('RELAY_DECAY') ?? 0.8),
   /** 角色可见的消息窗口条数（assembleGroup 注入 + 记忆注入的去重窗口共用）。 */
   contextWindow: Number(get('CONTEXT_WINDOW') ?? 36),

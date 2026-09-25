@@ -6,7 +6,8 @@
  * 3) jevExtraRounds：二段逐轮判定（≥0.75 命中、低分不移植、故障不移植）。
  * 4) missingRounds/transplantRounds：缺失轮计算与逐字移植（source=额外得知，带 mid）。
  * 5) 端到端 speak：快路径（Jev 路由）→ 合并判定（知情+总门+转告+接力一次调用）→ 记账门控
- *    （无变化零 DeepSeek 调用）→ 额外记忆移植（幂等：无缺失轮不再触发二段）；
+ *    （无变化零 DeepSeek 调用）→ 额外记忆移植（幂等：无缺失轮不再触发二段）→
+ *    接力累计衰减（刚发言压0：不可能连续发言；权重每判定乘0.8且重新发言不重置；无硬上限，衰减最终判回用户）；
  *    Jev 故障 → 整轮回退 deepseek 完整总管（行为与旧版一致，记账随总管结果即时应用）。
  * settings.yaml 若存在则备份、结束恢复（测试注入 routerId/activeId 指向本地 mock）。
  */
@@ -450,28 +451,33 @@ try {
     ds.server.close(); jev.server.close()
   }
 
-  // ── 4c) 连续接话上限：Jev 一直判给角色 → 达到 chainMax 后强制交还用户
+  // ── 4c) 循环上限已取消 + 衰减跨发言叠加：接力无硬上限，靠持续衰减最终把发言权判回用户。
+  //         甲0.64 时再次发言 → 下一次判定压 0（衰减不推进）→ 再下一次 0.64×0.8=0.512（不重置）；
+  //         正是 0.512×0.23 < 你 0.12 让链在第 5 条回复后判回用户——若实现错误地"发言即重置"，
+  //         甲会是 0.8×0.23=0.184 > 0.12 继续说第 6 条，本钉即红。
   {
     const ds = await mockDeepseek({ streamText: '（继续说）……' })
     const base = {
       present_角色甲: { type: 'noul', noul: 0.98 },
       present_角色乙: { type: 'noul', noul: 0.9 },
-      present_角色丙: { type: 'noul', noul: 0.05 },
+      present_角色丙: { type: 'noul', noul: 0.9 },
       knows_角色甲: { type: 'noul', noul: 0.9 },
       knows_角色乙: { type: 'noul', noul: 0.9 },
-      knows_角色丙: { type: 'noul', noul: 0.05 },
+      knows_角色丙: { type: 'noul', noul: 0.9 },
       told_角色甲: { type: 'noul', noul: 0.05 },
       told_角色乙: { type: 'noul', noul: 0.05 },
       told_角色丙: { type: 'noul', noul: 0.05 },
       state_dirty: { type: 'noul', noul: 0.1 },
     }
-    const pickB = { next_speaker: { type: 'choice', choice: '角色乙', confidence: 0.9, probabilities: {} } }
+    const pick = (choice: string, probabilities: Record<string, number> = {}): Record<string, unknown> =>
+      ({ next_speaker: { type: 'choice', choice, confidence: 0.9, probabilities } })
     const jev = await mockJev({ answers: [
-      { next_speaker: { type: 'choice', choice: '角色甲', confidence: 0.9, probabilities: {} }, ...base },
-      { ...base, ...pickB }, // 合并判定1 → 乙
-      { ...base, ...pickB }, // 合并判定2 → 乙
-      { ...base, ...pickB }, // 合并判定3 → 乙
-      { ...base, ...pickB }, // 第4条回复仍会做合并判定（知情用），接力结果因达上限被忽略
+      { ...pick('角色甲'), ...base },                                                        // 主判定 → 甲
+      { ...base, ...pick('角色乙', { 角色甲: 0.5, 角色乙: 0.4, 角色丙: 0.05, 你: 0.05 }) },   // 甲刚发言压0 → 乙
+      { ...base, ...pick('角色丙', { 角色乙: 0.5, 角色丙: 0.4, 角色甲: 0.05, 你: 0.05 }) },   // 乙压0；甲0.8×0.05=0.04 → 丙
+      { ...base, ...pick('角色甲', { 角色丙: 0.5, 角色甲: 0.4, 角色乙: 0.05, 你: 0.05 }) },   // 丙压0；甲0.64×0.4=0.256 胜出 → 甲
+      { ...base, ...pick('角色乙', { 角色甲: 0.5, 角色乙: 0.4, 你: 0.1 }) },                  // 甲二次发言压0（0.64不推进）；乙0.64×0.4=0.256 → 乙
+      { ...base, ...pick('角色甲', { 角色乙: 0.5, 角色甲: 0.23, 你: 0.12 }) },                // 乙压0；甲累计0.512×0.23≈0.118 < 你0.12 → 你
     ] })
     rmSync(accDir, { recursive: true, force: true })
     buildGroupFixture(accDir, { chars: TEST_CAST })
@@ -485,9 +491,16 @@ try {
       else if (ev.type === 'info') events.push({ type: 'info', text: ev.text })
     }
     const replyCount = events.filter(e => e.type === 'reply').length
-    assert.equal(replyCount, 4, `首次回复 + 3 次接力后必须停止，实得 ${replyCount}`)
-    assert.ok(events.some(e => e.type === 'info' && (e.text ?? '').includes('连续发言已达上限')), '必须出现上限提示')
-    assert.equal(jev.hits.length, 5, 'Jev 调用：1 主判定 + 每条回复 1 次合并判定（4 条回复）')
+    assert.equal(replyCount, 5, `无上限且衰减叠加：链长超过旧上限（4 条）后由衰减判回用户，实得 ${replyCount}`)
+    assert.ok(!events.some(e => e.type === 'info' && (e.text ?? '').includes('上限')), '上限已取消：不得再出现上限提示')
+    assert.equal(jev.hits.length, 6, 'Jev 调用：1 主判定 + 每条回复 1 次合并判定（5 条回复）')
+    const picks = events.filter(e => e.type === 'route').map(e => e.picked)
+    assert.deepEqual(picks, ['角色甲', '角色乙', '角色丙', '角色甲', '角色乙'], `接力按累计衰减日程推进，实得 ${JSON.stringify(picks)}`)
+    const judgeRaw = fsReadFileSync(join(accDir, '判定.jsonl'), 'utf8')
+    assert.ok(judgeRaw.includes('"to":"你"'), '用户权重未衰减而胜出的翻转必须落判定日志')
+    // 翻转行分布里甲的加权值必须 ≈0.1178（=0.64→压0不推进→0.512×0.23）：
+    // 若"发言即重置"会是 0.184，若"压0那次错误推进衰减"会是 0.094——三者可区分
+    assert.ok(judgeRaw.includes('"角色甲":0.11'), '压0判定不得推进衰减：分布里甲必须是累计 0.512 加权后的值')
     ds.server.close(); jev.server.close()
   }
 
@@ -726,7 +739,8 @@ try {
     ds.server.close(); jev.server.close()
   }
 
-  // ── 4h) 接力加权（纯代码衰减）：同角色连续输出的概率打折后重选——防独白复读
+  // ── 4h) 接力累计衰减（纯代码）：刚发言者概率硬性压 0——Jev 原始选甲、分布 甲0.5 仍被压成 0
+  //         → 翻转到乙（留痕，带被压 0 的完整分布）
   {
     const ds = await mockDeepseek({ streamText: '（继续）嗯。' })
     const lowNoise = {
@@ -748,17 +762,13 @@ try {
         present_角色丙: { type: 'noul', noul: 0.9 },
         ...knowsAll, ...lowNoise,
       },
-      { // 甲回复 → 接力：原始选甲@0.9，分布 甲0.5/乙0.45 —— 甲连击1 ×0.8=0.4 < 0.45 → 衰减翻转到乙
+      { // 甲回复 → 判定1（甲刚发言，权重压 0）：原始选甲@0.9，分布 甲0.5/乙0.45 → 翻转到乙
         ...knowsAll, ...lowNoise,
         next_speaker: { type: 'choice', choice: '角色甲', confidence: 0.9, probabilities: { 角色甲: 0.5, 角色乙: 0.45, 你: 0.05 } },
       },
-      { // 乙回复 → 接力：乙0.5×0.8=0.4 > 甲0.3 → 仍乙
+      { // 乙回复 → 判定2 → 用户（本轮结束）
         ...knowsAll, ...lowNoise,
-        next_speaker: { type: 'choice', choice: '角色乙', confidence: 0.9, probabilities: { 角色乙: 0.5, 角色甲: 0.3, 你: 0.2 } },
-      },
-      { // 乙再回复 → 接力：乙0.4 > 甲0.3 → 仍乙 → 第3跳达上限
-        ...knowsAll, ...lowNoise,
-        next_speaker: { type: 'choice', choice: '角色乙', confidence: 0.9, probabilities: { 角色乙: 0.5, 角色甲: 0.3, 你: 0.2 } },
+        next_speaker: { type: 'choice', choice: '你', confidence: 0.9, probabilities: {} },
       },
     ] })
     rmSync(accDir, { recursive: true, force: true })
@@ -768,15 +778,117 @@ try {
     const session = GroupSession.open(accName)
     session.setScene({ present: ['角色甲', '角色乙', '角色丙'], remote: [], overhear: [] }, '测试')
     const routes: string[] = []
+    for await (const ev of session.speak('开始')) {
+      if (ev.type === 'route') routes.push(ev.picked)
+    }
+    assert.deepEqual(routes, ['角色甲', '角色乙'], `刚发言者压0后必须翻转，实得 ${JSON.stringify(routes)}`)
+    const judgeRaw = fsReadFileSync(join(accDir, '判定.jsonl'), 'utf8')
+    assert.ok(judgeRaw.includes('"phase":"接力加权"') && judgeRaw.includes('"from":"角色甲"') && judgeRaw.includes('"to":"角色乙"'), '压0翻转必须落判定日志')
+    assert.ok(judgeRaw.includes('"角色甲":0'), '刚发言者的概率必须在分布里被压成 0')
+    ds.server.close(); jev.server.close()
+  }
+
+  // ── 4h-2) 刚发言者硬阻断：分布缺失时 Jev 仍点名刚发言的乙 → 不可能连续发言，发言权交还用户
+  {
+    const ds = await mockDeepseek({ streamText: '（接话）嗯。' })
+    const knowsAB = {
+      knows_角色甲: { type: 'noul', noul: 0.9 },
+      knows_角色乙: { type: 'noul', noul: 0.9 },
+      knows_角色丙: { type: 'noul', noul: 0.05 },
+    }
+    const toldLow = {
+      told_角色甲: { type: 'noul', noul: 0.05 },
+      told_角色乙: { type: 'noul', noul: 0.05 },
+      told_角色丙: { type: 'noul', noul: 0.05 },
+    }
+    const clean = { state_dirty: { type: 'noul', noul: 0.1 } }
+    const jev = await mockJev({ answers: [
+      { // 主判定 → 甲（乙在场，丙缺席）
+        next_speaker: { type: 'choice', choice: '角色甲', confidence: 0.9, probabilities: {} },
+        present_角色甲: { type: 'noul', noul: 0.98 },
+        present_角色乙: { type: 'noul', noul: 0.9 },
+        present_角色丙: { type: 'noul', noul: 0.05 },
+        ...knowsAB, ...toldLow, ...clean,
+      },
+      { // 甲回复 → 判定1（甲刚发言压0）→ 乙
+        ...knowsAB, ...toldLow, ...clean,
+        next_speaker: { type: 'choice', choice: '角色乙', confidence: 0.9, probabilities: {} },
+      },
+      { // 乙回复 → 判定2：分布缺失，Jev 仍点名刚发言的乙 → 压0硬阻断交还用户
+        ...knowsAB, ...toldLow, ...clean,
+        next_speaker: { type: 'choice', choice: '角色乙', confidence: 0.9, probabilities: {} },
+      },
+    ] })
+    rmSync(accDir, { recursive: true, force: true })
+    buildGroupFixture(accDir, { chars: TEST_CAST })
+    writeTestSettings(ds.port, jev.port)
+    const { GroupSession } = await import('../src/group/engine.ts')
+    const session = GroupSession.open(accName)
+    session.setScene({ present: ['角色甲', '角色乙'], remote: [], overhear: [] }, '测试初始')
+    const routes: string[] = []
+    let replyCount = 0
     let sawCap = false
     for await (const ev of session.speak('开始')) {
       if (ev.type === 'route') routes.push(ev.picked)
+      else if (ev.type === 'reply') replyCount++
       else if (ev.type === 'info' && ev.text !== undefined && ev.text.includes('上限')) sawCap = true
     }
-    assert.deepEqual(routes, ['角色甲', '角色乙', '角色乙', '角色乙'], `接力序列（含衰减翻转）实得 ${JSON.stringify(routes)}`)
-    assert.ok(sawCap, '达上限必须提示交还')
+    assert.deepEqual(routes, ['角色甲', '角色乙'], '接力到乙后再点名刚发言的乙必须被阻断')
+    assert.equal(replyCount, 2, '甲、乙各回复一次后交还用户')
+    assert.equal(sawCap, false, '硬阻断不是上限：不得出现上限提示')
     const judgeRaw = fsReadFileSync(join(accDir, '判定.jsonl'), 'utf8')
-    assert.ok(judgeRaw.includes('"phase":"接力加权"') && judgeRaw.includes('"from":"角色甲"') && judgeRaw.includes('"to":"角色乙"'), '衰减翻转必须落判定日志')
+    assert.ok(judgeRaw.includes('"phase":"接力加权"') && judgeRaw.includes('不可能连续发言'), '硬阻断必须落判定日志（带压0说明）')
+    assert.equal(jev.hits.length, 3, 'Jev 调用：1 主判定 + 2 合并判定')
+    ds.server.close(); jev.server.close()
+  }
+
+  // ── 4h-3) 全零分布：分布里只剩刚发言的乙（被压成 0）→ 不改判、硬阻断交还用户
+  {
+    const ds = await mockDeepseek({ streamText: '（接话）嗯。' })
+    const knowsAB = {
+      knows_角色甲: { type: 'noul', noul: 0.9 },
+      knows_角色乙: { type: 'noul', noul: 0.9 },
+      knows_角色丙: { type: 'noul', noul: 0.05 },
+    }
+    const toldLow = {
+      told_角色甲: { type: 'noul', noul: 0.05 },
+      told_角色乙: { type: 'noul', noul: 0.05 },
+      told_角色丙: { type: 'noul', noul: 0.05 },
+    }
+    const clean = { state_dirty: { type: 'noul', noul: 0.1 } }
+    const jev = await mockJev({ answers: [
+      { // 主判定 → 甲
+        next_speaker: { type: 'choice', choice: '角色甲', confidence: 0.9, probabilities: {} },
+        present_角色甲: { type: 'noul', noul: 0.98 },
+        present_角色乙: { type: 'noul', noul: 0.9 },
+        present_角色丙: { type: 'noul', noul: 0.05 },
+        ...knowsAB, ...toldLow, ...clean,
+      },
+      { // 甲回复 → 判定1（甲刚发言压0）→ 乙
+        ...knowsAB, ...toldLow, ...clean,
+        next_speaker: { type: 'choice', choice: '角色乙', confidence: 0.9, probabilities: {} },
+      },
+      { // 乙回复 → 判定2：分布里只有刚发言的乙（压成 0）→ 全零不改判 → 硬阻断交还用户
+        ...knowsAB, ...toldLow, ...clean,
+        next_speaker: { type: 'choice', choice: '角色乙', confidence: 0.9, probabilities: { 角色乙: 0.5 } },
+      },
+    ] })
+    rmSync(accDir, { recursive: true, force: true })
+    buildGroupFixture(accDir, { chars: TEST_CAST })
+    writeTestSettings(ds.port, jev.port)
+    const { GroupSession } = await import('../src/group/engine.ts')
+    const session = GroupSession.open(accName)
+    session.setScene({ present: ['角色甲', '角色乙'], remote: [], overhear: [] }, '测试初始')
+    const routes: string[] = []
+    let replyCount = 0
+    for await (const ev of session.speak('开始')) {
+      if (ev.type === 'route') routes.push(ev.picked)
+      else if (ev.type === 'reply') replyCount++
+    }
+    assert.deepEqual(routes, ['角色甲', '角色乙'], '全零分布不得再判给任何角色')
+    assert.equal(replyCount, 2, '甲、乙各回复一次后交还用户')
+    const judgeRaw = fsReadFileSync(join(accDir, '判定.jsonl'), 'utf8')
+    assert.ok(judgeRaw.includes('"dist":{"角色乙":0}') && judgeRaw.includes('不可能连续发言'), '全零分布与硬阻断必须留痕')
     ds.server.close(); jev.server.close()
   }
 
@@ -849,7 +961,7 @@ try {
     ds.server.close()
   }
 
-  console.log('快/慢双路径自检通过：Jev命中/三层推导/知情名单(原文移植，含偷听者)/低置信与名单外→路由回退但场景知情不连坐(留痕) · 合并判定(知情+总门+转告+接力一次调用) · 额外记忆(一段触发/二段逐轮/逐字移植/带mid幂等/堆在末尾) · 记账门控(无变化零调用/回复脏恰一次) · 记账员无名册权(越权丢弃) · 现场所见(进场检测/发言前等待) · 事件补全(离场锚点纯代码/发现一次合并/事件×参与者限知视角分别注入/首次进场不触发) · 接力判定（判给用户即结束/上限保护） · 接力加权(纯代码衰减翻转留痕) · 回退=旧版行为 · 未配置=完全兼容')
+  console.log('快/慢双路径自检通过：Jev命中/三层推导/知情名单(原文移植，含偷听者)/低置信与名单外→路由回退但场景知情不连坐(留痕) · 合并判定(知情+总门+转告+接力一次调用) · 额外记忆(一段触发/二段逐轮/逐字移植/带mid幂等/堆在末尾) · 记账门控(无变化零调用/回复脏恰一次) · 记账员无名册权(越权丢弃) · 现场所见(进场检测/发言前等待) · 事件补全(离场锚点纯代码/发现一次合并/事件×参与者限知视角分别注入/首次进场不触发) · 接力判定（判给用户即结束/刚发言压0不可能连续发言/无硬上限） · 接力累计衰减（每判定乘0.8重新发言不重置/衰减最终判回用户/翻转与阻断留痕） · 回退=旧版行为 · 未配置=完全兼容')
 } finally {
   rmSync(accDir, { recursive: true, force: true })
   if (hadSettings) writeFileSync(settingsFile, backup ?? '', 'utf8')

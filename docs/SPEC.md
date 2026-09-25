@@ -102,8 +102,11 @@ a fallback full director (deepseek, §6.1c), and a correction window (§6.3).
 10. Relay (fast path only): the merged judgment's `next_speaker` (§6.1a) picks the next speaker
     with **the user as a candidate**. Retelling triggers from the reply are granted (§5.7) before
     the next hop speaks. A character → append route row and loop back to step 9 (hops + 1). The
-    user, a failure, or low confidence → end of chain. Hard cap: `TURN_CHAIN_MAX` consecutive
-    character replies (default 3); on cap, an info event hands the turn back to the user.
+    user, a failure, or low confidence → end of chain. There is **no hard cap**: each speaker's
+    weight is a cumulative multiplier that `RELAY_DECAY`s at every judgment (×0 for the judgment
+    right after a speech — that judgment does not advance the multiplier; re-speaking never resets
+    it), while the user's weight never decays — the weighted argmax eventually lands on the user
+    and the chain ends by itself.
 11. Bookkeeping. Fallback path: apply the director's ledger updates inline. Fast path: **gated** —
     the work list holds the user message and each reply whose judgment opened the status gate
     (missing answer = open); an empty list means **no bookkeeping call at all**; otherwise one
@@ -154,8 +157,8 @@ a fallback full director (deepseek, §6.1c), and a correction window (§6.3).
   `DEEPSEEK_REASONING_EFFORT`, `DIRECTOR_TIMEOUT_MS` (default 30000), `JEV_TIMEOUT_MS`
   (default 4000), `DEEPSEEK_MAX_TOKENS` (default 8192 — explicit per-generation token ceiling:
   without it the API default budget is consumed by deep thinking, producing "typing indicator but
-  empty output"), `TURN_CHAIN_MAX` (default 3), `RELAY_DECAY` (default 0.8, §6.1a relay
-  weighting), `CONTEXT_WINDOW` (default 36, message window), `HTTPS_PROXY`/`HTTP_PROXY` (used by
+  empty output"), `RELAY_DECAY` (default 0.8, §6.1a relay
+  decay), `CONTEXT_WINDOW` (default 36, message window), `HTTPS_PROXY`/`HTTP_PROXY` (used by
   the Jev client for outbound calls; localhost endpoints are exempt).
 - `settings.yaml` holds provider credentials and is gitignored.
 - Startup self-heal: server and CLI call `healOrphanSettingsBackup()` — if an offline selfcheck
@@ -613,14 +616,20 @@ missing round a `round_<N>` noul, ≥0.75 → transplant. Failure or no hit gran
 
 **Relay.** From the merged judgment: a picked character → append route row and continue; the
 user, low confidence (<0.45), an out-of-roster pick, or failure → turn ends. Uncertainty resolves
-to the user (never steal the floor). **Relay weighting (pure code, invisible to Jev):** the
-judge's full probability distribution travels with the pick, and the engine multiplies the last
-speaker's probability by `RELAY_DECAY` (default 0.8) to the power of his consecutive-output count,
-then re-picks the argmax — a repeated speaker's score decays until someone else (or the user)
-outranks him, preventing monologue loops with rephrased duplicates. The flip is logged to
-判定.jsonl (`接力加权`). Hard cap: `TURN_CHAIN_MAX` consecutive character replies
-(default 3) — the relay choice is ignored once the cap is reached (the merged call still runs for
-its audience/gate/retelling answers).
+to the user (never steal the floor). **Relay cumulative decay (pure code, invisible to Jev):** the
+judge's full probability distribution travels with the pick, and the engine applies a per-character
+cumulative multiplier before re-picking the argmax. A character's multiplier starts at 1 with his
+first output of the turn and is multiplied by `RELAY_DECAY` (default 0.8) at every subsequent relay
+judgment — **speaking again never resets it** (the decay is cumulative across re-speeches: at 0.64
+he speaks again, the next judgment is ×0, the one after that is 0.64×0.8). The judgment immediately
+after a speech instead multiplies that speaker's probability by **0** — a character can never take
+the floor twice in a row — and does not advance his multiplier. Characters who have not spoken this
+turn and the user keep their raw probability (the user's weight never decays). There is **no hard
+cap**: every speaker's multiplier decays geometrically while the user's does not, so the weighted
+argmax eventually lands on the user and the chain ends by itself. The hard zero also holds when the
+distribution is missing (or every candidate weights to 0) and Jev re-picks the just-spoke speaker:
+the turn ends and the floor returns to the user — "no consecutive output" is an engine rule, not a
+probability outcome. Flips and blocks are logged to 判定.jsonl (`接力加权`).
 
 Thresholds (`JEV_THRESHOLDS`): `{ confidenceMin: 0.45, perceiveMin: 0.7, interactMin: 0.7,
 interactMax: 0.3, gateKeep: 0.5, toldMin: 0.5, extraRoundMin: 0.75 }`.
@@ -906,7 +915,7 @@ Convention [INV 11]: fixtures are temporary and always deleted. Offline checks n
 | `selfcheck:settings` | offline | rules zero-built-in round-trip · provider parsing/fallback · router provider resolution |
 | `selfcheck:presence` | offline | three-layer yaml round-trip (with `since`) · parse semantics (omitted=keep/empty=clear/unknown=语音) · perception keywords · visible_to snapshots |
 | `selfcheck:engine` | offline | bad-line tolerance + id continuity · text-retract no-resurrection (restart/replay) · edit living-ledger (physical ledger-row rewrite, respects retracts) · deleted-message physical removal (no text left in log) + memory cleanup + id monotonicity · rename chains |
-| `selfcheck:router` | offline | Jev hit / three-layer derivation / knowledge audience (incl. overhearers) / `told` stage-1 + `state_dirty` parsing (missing = safe side) · low-confidence, out-of-roster → route-only fallback with raw answers logged · scene/knowledge salvage when route unusable · `jevExtraRounds` stage-2 thresholds / failure grants nothing · `missingRounds`/`transplantRounds` units (verbatim, mid, own-speech prefix) · end-to-end merged judgment (1 call/reply) · extra-memory grant (end-append order, ledger rows, idempotence on re-telling) · gate (zero deepseek calls when clean, exactly one when dirty) · bookkeeper has no roster authority (overreach discarded) · scene-perception snapshot (entrant detection, injection before entrant speaks via relay, manual-fix entries snapshotted too) · off-story experiences (absence anchor pure-code, discovery merged per entry, event×participant limited-POV renders injected to all participants, first-time entrants skipped) · judgment log (判定.jsonl rows with phases + raw answers + elapsed) · relay (user turn / cap) · fallback = legacy behavior · unconfigured = fully compatible |
+| `selfcheck:router` | offline | Jev hit / three-layer derivation / knowledge audience (incl. overhearers) / `told` stage-1 + `state_dirty` parsing (missing = safe side) · low-confidence, out-of-roster → route-only fallback with raw answers logged · scene/knowledge salvage when route unusable · `jevExtraRounds` stage-2 thresholds / failure grants nothing · `missingRounds`/`transplantRounds` units (verbatim, mid, own-speech prefix) · end-to-end merged judgment (1 call/reply) · extra-memory grant (end-append order, ledger rows, idempotence on re-telling) · gate (zero deepseek calls when clean, exactly one when dirty) · bookkeeper has no roster authority (overreach discarded) · scene-perception snapshot (entrant detection, injection before entrant speaks via relay, manual-fix entries snapshotted too) · off-story experiences (absence anchor pure-code, discovery merged per entry, event×participant limited-POV renders injected to all participants, first-time entrants skipped) · judgment log (判定.jsonl rows with phases + raw answers + elapsed) · relay (user turn / cumulative decay: ×0 right after a speech — no consecutive output, that judgment does not advance the multiplier; `RELAY_DECAY` applied at every other judgment, cumulative across re-speeches; no hard cap, the undecaying user weight ends the chain; hard block hands the floor back to the user on just-spoke re-picks and all-zero distributions) · fallback = legacy behavior · unconfigured = fully compatible |
 | `acceptance-*` (m1–m5, isolation, models, context-edit, presence, director) | online | end-to-end behaviors per milestone; re-run after any fast-path or memory change |
 
 `DSH_DEBUG=1` prints director/judge failure causes.
@@ -943,7 +952,7 @@ Convention [INV 11]: fixtures are temporary and always deleted. Offline checks n
 | fast-path probability jitter (routing/scene/knowledge) | conservative thresholds (ambiguity = keep/return to user); scene/knowledge judgments survive route failures; correction window fixes wrong calls; `JEV_TIMEOUT_MS` |
 | reply knowledge judgment delays the `reply` event by one sub-second call | brief cursor linger; failure keeps the keyword rule (no added risk) |
 | background bookkeeping finishes after the stream closes | its ledger notes are not streamed; files are authoritative and visible on refresh |
-| relay chains can burn tokens | `TURN_CHAIN_MAX` hard cap; uncertainty returns the floor to the user; background bookkeeping does not block |
+| relay chains can burn tokens | no hard cap by design: ×0 forbids immediate repeats, each speaker's cumulative multiplier decays `RELAY_DECAY` per judgment (re-speaking never resets it) while the user's never decays; chains end on the user pick, low confidence, relay failure, or an empty reply; background bookkeeping does not block |
 | user edits/deletes/rerolls physically rewrite 剧情.jsonl — the original wording is unrecoverable | accepted by design: the log is the current context snapshot (user decision); 状态.yaml / 记忆.jsonl keep their own accounting, and archived dialogs (director rows) are untouched |
 | stage-2 retelling judgment sees only the 8 newest missing rounds, one line each | keeps the judge's small state window; retellings of older stretches fall back to the memory panel |
 | a retelling grant assumes the narration is truthful — a lie grants the true rounds | accepted: verbatim-transplant philosophy; correction window / memory panel can retract |

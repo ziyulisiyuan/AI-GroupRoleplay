@@ -710,15 +710,16 @@ export class GroupSession {
     }
 
     // ── 回复与接力（§1.1）：角色发言完毕后，合并判定（jevAfterReply）已顺带回答了接力——
-    // 有人接话就继续说（连续接话上限 config.chainMax），判给用户则发言权交还、本轮结束。
+    // 有人接话就继续说，判给用户则发言权交还、本轮结束。
     // 接力判定是 Jev 的能力：未配置/回退路径保持一次回复（fail-open = 旧行为）。
     const replies: Array<{ speaker: string; text: string }> = []
     /** 记账工作列表（快路径）：判定为"可能有状态变化"的用户发言与回复。 */
     const dirtyWork: Array<{ speaker: string; replyText: string }> = []
     let current = picked
-    /** 接力加权（§6.1a）：当前连说者与其连击数——纯代码衰减，Jev 不可见。 */
-    let lastSpeaker: string | undefined
-    let streakN = 0
+    /** 接力累计衰减（§6.1a）：值 = 该角色本轮发言后的累计权重乘数（首次发言记 1）。
+     *  每经过一次他未被压 0 的判定乘一次 relayDecay；重新发言不重置——衰减叠加贯穿整轮；
+     *  刚发言者的下一次判定硬性压 0，且该次不推进其衰减。 */
+    const spokenWeight = new Map<string, number>()
     for (let hops = 0; ; hops++) {
       if (hops > 0) {
         yield { type: 'route', picked: current, reason: '接力', fallback: false }
@@ -726,9 +727,7 @@ export class GroupSession {
       }
       const r = yield* this.speakAs(current, this.store.effectiveMessages())
       replies.push({ speaker: current, text: r.text })
-      // 连击计数：该角色本轮已连续输出的次数
-      if (lastSpeaker === current) streakN += 1
-      else { lastSpeaker = current; streakN = 1 }
+      if (!spokenWeight.has(current)) spokenWeight.set(current, 1) // 首次发言记 1；再次发言不重置（衰减叠加）
       if (r.text.trim() === '') break // 空回复不再接力、不记账
       // 转告触发：这条回复若在向谁转告他不知道的事，先移植记忆再考虑接力
       if (r.judge !== undefined && r.judge.told.size > 0 && routerLlm !== undefined) {
@@ -736,19 +735,32 @@ export class GroupSession {
       }
       if (r.judge === undefined || r.judge.stateDirty) dirtyWork.push({ speaker: current, replyText: r.text })
       if (routerLlm === undefined || route !== undefined) break // 无快路径/回退路径：一次回复（旧行为）
-      if (hops >= config.chainMax) {
-        yield { type: 'info', text: '（连续发言已达上限，交还给你）' }
-        break
-      }
       if (r.judge?.next === undefined || r.judge.next.userTurn) break
-      // 接力加权：刚输出者的概率按 relayDecay^连击数衰减后重取最大者——
-      // 防"同一个人被反复判中导致独白复读、相似话连说"。分布缺失时按 Jev 原始选择。
+      // 接力累计衰减：本次判定先让所有已发言者（除刚发言者）的累计权重乘 relayDecay，再加权取最大者
+      // ——刚发言者本次硬性压 0（不可能连续发言）且衰减不推进（"现在是 0.64，又发言了，下一次乘 0，
+      // 再下一次是 0.64×0.8"）；未发言者与用户保持原始概率。判定一轮轮过去，已发言者的累计权重
+      // 持续衰减、用户永不衰减，最终 argmax 落到用户，发言权交还——接力无硬上限，衰减即退出机制。
+      for (const [name, acc] of spokenWeight) {
+        if (name !== current) spokenWeight.set(name, acc * config.relayDecay)
+      }
       const raw = r.judge.next
       const dist = { ...(raw.probabilities ?? {}) }
       let pickedNext = raw.picked
       if (Object.keys(dist).length > 0) {
-        if (dist[current] !== undefined) dist[current] *= Math.pow(config.relayDecay, streakN)
-        pickedNext = Object.entries(dist).sort((a, b) => b[1] - a[1])[0]?.[0] ?? raw.picked
+        for (const [name, acc] of spokenWeight) {
+          if (dist[name] !== undefined) dist[name] *= name === current ? 0 : acc
+        }
+        const top = Object.entries(dist).sort((a, b) => b[1] - a[1])[0]
+        if (top !== undefined && top[1] > 0) pickedNext = top[0] // 全部压成 0 时分布失去区分度，不改判
+      }
+      // 刚发言者拿不到发言权：分布缺失/全零时 Jev 若仍点名他，同样交还用户
+      // （"不可能连续发言"是引擎规则，不由概率决定）。
+      if (pickedNext === current) {
+        this.judgeLog({
+          phase: '接力加权', from: raw.picked, to: '交还用户', dist,
+          note: `${pickedNext} 刚发言（权重压 0），不可能连续发言`,
+        })
+        break
       }
       if (pickedNext !== raw.picked) this.judgeLog({ phase: '接力加权', from: raw.picked, to: pickedNext, dist })
       if (pickedNext === this.userPersona.name || !this.speakableNames().includes(pickedNext)) break
