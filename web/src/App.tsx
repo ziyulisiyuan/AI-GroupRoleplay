@@ -458,13 +458,30 @@ function NewGroupView({ onBack, onCreated }: { onBack: () => void; onCreated: (g
   const [era, setEra] = useState('')
   const [world, setWorld] = useState('')
   const [tone, setTone] = useState('')
+  /** 地图：场景随群创建（名称+描述）；初始当前场景从其中指定。 */
+  const [scenes, setScenes] = useState<Array<{ name: string; description: string }>>([])
+  const [draftName, setDraftName] = useState('')
+  const [draftDesc, setDraftDesc] = useState('')
+  const [active, setActive] = useState('')
   const [busy, setBusy] = useState(false)
+
+  const addScene = (): void => {
+    const n = draftName.trim()
+    if (n === '') { toast('场景名称不能为空'); return }
+    if (scenes.some(s => s.name === n)) { toast('场景重名了'); return }
+    setScenes(s => [...s, { name: n, description: draftDesc.trim() }])
+    setActive(a => (a === '' ? n : a))
+    setDraftName('')
+    setDraftDesc('')
+  }
 
   const create = async (): Promise<void> => {
     if (name.trim() === '' || busy) return
     setBusy(true)
     try {
-      await postJson<{ ok: boolean; name: string }>('/api/groups', { name: name.trim(), era, world, tone })
+      await postJson<{ ok: boolean; name: string }>('/api/groups', {
+        name: name.trim(), era, world, tone, scenes, scene: active,
+      })
       onCreated(name.trim())
     } catch (e) {
       toast(e instanceof Error ? e.message : String(e))
@@ -481,6 +498,26 @@ function NewGroupView({ onBack, onCreated }: { onBack: () => void; onCreated: (g
         <Field label="世界观设定" value={world} onChange={setWorld} multiline rows={5} />
         <Field label="总管基调" value={tone} onChange={setTone} multiline rows={2} />
       </Cells>
+      <Cells>
+        <Cell title="场景（地图）" />
+        {scenes.map((s, i) => (
+          <button key={s.name} className="cell" onClick={() => setActive(s.name)}>
+            <div className="cell-title">
+              <div className="main">{s.name}{active === s.name ? '（当前场景）' : ''}</div>
+              <div className="sub">{s.description !== '' ? s.description : '（无描述）'}</div>
+            </div>
+            <button className="mem-del" onClick={e => {
+              e.stopPropagation()
+              setScenes(list => list.filter((_, j) => j !== i))
+              setActive(a => (a === s.name ? (scenes.find((_, j) => j !== i)?.name ?? '') : a))
+            }}>移除</button>
+          </button>
+        ))}
+        {scenes.length === 0 && <div className="hint">（建好场景，点选其一作为开局地点）</div>}
+        <Field label="场景名称" value={draftName} onChange={setDraftName} placeholder="如：我的卧室" />
+        <Field label="场景描述" value={draftDesc} onChange={setDraftDesc} multiline rows={3} placeholder="这个场景是什么样子" />
+      </Cells>
+      <button className="btn-plain" disabled={draftName.trim() === ''} onClick={addScene}>＋ 添加场景</button>
       <button className="btn-primary" disabled={busy || name.trim() === ''} onClick={() => void create()}>创建</button>
     </div>
   )

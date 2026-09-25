@@ -10,7 +10,7 @@ import React, { useCallback, useEffect, useRef, useState } from 'react'
 import { avatarUrl, getJson, postJson, postStream, readNdjson, type Ev, type Msg, type Snapshot } from './api.ts'
 import { applyRules } from './regex.ts'
 import { Avatar, Confirm, Modal, NavBar, useLongPress, useToast } from './ui.tsx'
-import { Check, CheckSquare, Ellipsis, Pencil, RefreshCw, Trash2 } from './icons.tsx'
+import { Ban, Check, CheckSquare, Ellipsis, MapPin, Pencil, RefreshCw, Trash2, X } from './icons.tsx'
 
 interface Props { group: string; onBack: () => void; onOpenInfo: () => void }
 
@@ -36,6 +36,9 @@ export function ChatView({ group, onBack, onOpenInfo }: Props): React.ReactEleme
   const turnKey = useRef(0)
   /** 重掷进行中：被重掷的旧回复（引擎在原 id 上物理改写）在快照刷新前先从列表隐藏，避免新旧同屏。 */
   const [rerollId, setRerollId] = useState<number | null>(null)
+  /** ⊘ 场景手选：弹窗挑选后，本轮发送直接按"已移动到该场景"处理（跳过换场景判定）。 */
+  const [scenePick, setScenePick] = useState(false)
+  const [pendingScene, setPendingScene] = useState<string | null>(null)
   const scroller = useRef<HTMLDivElement>(null)
   const pinned = useRef(true)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
@@ -128,8 +131,10 @@ export function ChatView({ group, onBack, onOpenInfo }: Props): React.ReactEleme
       type: 'msg', id: -1, role: 'user', name: snap.userName || '你', text,
       round: 0, visible_to: 'all', ts: new Date().toISOString(),
     })
-    void run('/message', { text })
-  }, [input, busy, snap, run])
+    const scene = pendingScene
+    setPendingScene(null)
+    void run('/message', { text, ...(scene !== null ? { scene } : {}) })
+  }, [input, busy, snap, run, pendingScene])
 
   const autoGrow = useCallback((): void => {
     const el = textareaRef.current
@@ -271,7 +276,15 @@ export function ChatView({ group, onBack, onOpenInfo }: Props): React.ReactEleme
         ) : (
           <>
             {status !== '' && <div className="composer-status">{status}</div>}
+            {status === '' && pendingScene !== null && <div className="composer-status">本轮将前往：{pendingScene}</div>}
             <div className="composer-bar">
+              <button
+                className={'composer-btn' + (pendingScene !== null ? ' armed' : '')}
+                aria-label="选择场景" disabled={busy}
+                onClick={() => setScenePick(true)}
+              >
+                <Ban size={20} />
+              </button>
               <textarea
                 ref={textareaRef}
                 className="composer-input"
@@ -287,6 +300,21 @@ export function ChatView({ group, onBack, onOpenInfo }: Props): React.ReactEleme
           </>
         )}
       </div>
+
+      {/* ⊘ 场景手选（悬浮）：选中的场景随本轮发送生效——不再走换场景判定，直接按"是"处理 */}
+      <Modal open={scenePick} onClose={() => setScenePick(false)} title="前往哪个场景？">
+        {(snap?.scenes ?? []).map(s => (
+          <button key={s.name} className="menu-item" onClick={() => { setPendingScene(s.name); setScenePick(false) }}>
+            <MapPin size={18} /> {s.name}{snap?.scene === s.name ? '（当前）' : ''}
+          </button>
+        ))}
+        {(snap?.scenes.length ?? 0) === 0 && <div className="hint">（还没有场景——到聊天信息的「场景」里创建）</div>}
+        {pendingScene !== null && (
+          <button className="menu-item" style={{ color: 'var(--danger)' }} onClick={() => { setPendingScene(null); setScenePick(false) }}>
+            <X size={18} /> 取消前往（{pendingScene}）
+          </button>
+        )}
+      </Modal>
 
       {/* 长按菜单（悬浮） */}
       <Modal open={menuMsg !== null} onClose={() => setMenuMsg(null)} title={menuMsg === null ? '' : `${menuMsg.name} 的消息`}>

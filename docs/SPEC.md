@@ -70,13 +70,19 @@ a fallback full director (deepseek, §6.1c), and a correction window (§6.3).
    群设定.yaml from disk. Disk is the source of truth [INV 3].
 2. If the log has no presence line yet, append one for the current scene (reason `初始`).
 3. Fast-path pre-flight (only when `settings.routerId` points at an existing provider): one Jev
-   call (`jevRoute`, §6.1a) answers who speaks next, three-layer scene corrections, the knowledge
-   set for this message, the retelling trigger set (§5.7), and the status-ledger gate. If the
-   call itself fails → `undefined` → whole turn to the full director. If only the **route pick**
+   call (`jevRoute`, §6.1a) answers who speaks next, three-layer scene corrections (flat groups)
+   or scene-change + per-character locations (map groups), the knowledge set for this message,
+   the retelling trigger set (§5.7), and the status-ledger gate. If the call itself fails →
+   `undefined` → whole turn to the full director. If only the **route pick**
    is unusable (low confidence / out-of-roster — typical for pure-narration messages) →
    `picked` is returned empty: routing falls back to the full director while scene / knowledge /
    retelling / gate judgments from the same answers still apply (each is threshold-guarded and
    stands on its own).
+3a. Map groups: apply the scene move **before** the user message — ⊘ manual pick, or the
+   `scene_change` answer (confidence-guarded; strict). Followers (present ≥0.7) move with the
+   user; leavers (present ≤0.3 among the previous occupants) fall where their `location_<角色>`
+   answer says (a created scene, or 其他 = off-map); ambiguous keeps. The destination's colocated
+   occupants hear the arrival line.
 4. Append the user `msg` line. `visible_to` = knowledge audience (§4.3/§4.4): the Jev `knows` set
    filtered by per-link `since` anchors; when the fast path is unavailable, fallback =
    present ∩ full perception (keyword rule). The snapshot is written at birth — context window and
@@ -85,11 +91,12 @@ a fallback full director (deepseek, §6.1c), and a correction window (§6.3).
    and heal stale entries (§5.3). Then, if the retelling trigger set is non-empty, stage-2 extra
    memory runs synchronously (before routing — a relayed-to character must already hold what was
    retold to him, §5.7).
-6. Apply scene corrections (fast-path `scene`, or fallback director `presence_updates`) — **after**
-   the snapshot: characters entering now hear the next message, not this one. Names are normalized
+6. Apply scene corrections (fast-path `scene`, map dialogue-entrants/leavers, or fallback
+   director `presence_updates`) — **after** the snapshot: characters entering now hear the next
+   message, not this one. Names are normalized
    via `resolveCharacterName` ("甲" matches "角色甲"); unmatched names are dropped.
-7. Scene-perception trigger (§5.8): present-after minus present-before (pure code) → background
-   snapshot job for entrants.
+7. Entry-kit trigger (§5.8/§5.9): present-after minus present-before (flat) / location-changed
+   entrants (map, pure code) → background kit for entrants.
 8. Append the `route` row and emit the route event. If the picked speaker has no speech rights
    (not in 现场 ∪ 接入 — e.g. single-direction overhearers), emit an info prompt and end the turn
    without calling the character model (the gated bookkeeper may still run on the user message).
@@ -176,7 +183,8 @@ a fallback full director (deepseek, §6.1c), and a correction window (§6.3).
   .env                        # optional keys (see §2); gitignored
   groups/                     # user data, gitignored
     <群聊名>/
-      群设定.yaml             # era / world / tone
+      群设定.yaml             # era / world / tone / scene（初始当前场景）
+      场景/                    # 地图：一个场景一个 md 文件（§3.5a）
       用户.md                 # user persona (frontmatter name + free prose)
       在场.yaml               # scene cache derived from presence rows (§3.9)
       剧情.jsonl              # event log = single source of truth; msg lines are the current context
@@ -201,7 +209,7 @@ Then one JSON object per line:
 |---|---|---|
 | `msg` | `id, role(user\|character\|system), name, text, round, visible_to("all"\|[名]), ts` | `id` is monotonic: `nextMsgId = max(header.lastMsgId, existing ids) + 1`. **User edits/deletes/rerolls physically rewrite/remove msg lines** — the log is the current context. `visible_to` = knowledge-audience snapshot taken at append time (§4.4). |
 | `route` | `round, picked, reason, fallback` | one per director decision (including each relay hop; relay rows carry reason `接力`) |
-| `presence` | `present[], remote?[{character, perceive(语音\|视听), note?, since?}], overhear?[{same}], reason, ts` | scene change (§4); omitted layers = unchanged |
+| `presence` | `scene?, locations?{角色: 场景}, present[], remote?[{character, perceive(语音\|视听), note?, since?}], overhear?[{same}], reason, ts` | scene change (§4); map rows carry the active scene and every character's location (missing key = 其他); omitted layers = unchanged |
 | `ledger` | `character, section(status\|knowledge\|personality\|relationship), op(set\|append\|unset\|retract), content` | payloads in §3.3; `personality`/`relationship` sections are retired (replay ignores them) |
 | `director` | `text, reply, applied[], ts` | correction-window archive; never shown to characters (§6.3) |
 | `rename` | `from, to, ts` | character rename; historical rows are mapped to the current name via the name chain (§3.10) |
@@ -217,8 +225,9 @@ Then one JSON object per line:
 Append-only, one JSON row per judgment or bookkeeping action, written by hard-coded code at each
 judgment site (`judgeLog`). **It never enters any character or director context** — it exists so
 humans can audit what the backend actually decided instead of guessing from the chat column.
-Phases: `主判定` (the per-turn Jev call: picked, confidence, scene kept/changed, `knows`, `told`,
-`stateDirty`, `elapsedMs`, and `answers` — every question's raw answer including probabilities),
+Phases: `主判定` (the per-turn Jev call: picked, confidence, scene kept/changed, `sceneChange`
+(map groups), `knows`, `told`, `stateDirty`, `elapsedMs`, and `answers` — every question's raw
+answer including probabilities),
 `回复判定` (the merged post-reply call: audience, told, gate, relay), `额外记忆判定` (stage-2:
 candidate rounds, granted rounds), `总管路由` (fallback director result), `记账` (gate skip note
 or per-entry deepseek bookkeeping outcome), `现场所见` (scene-perception snapshot: targets and
@@ -283,7 +292,18 @@ world: |
   <world, multi-line>
 tone: |
   <director tone; optional; director-only, never sent to characters>
+scene: <初始当前场景名>   # 建群时指定；此后只随 presence 行演进
 ```
+
+### 3.5a Scenes (场景, the map)
+
+`groups/<群>/场景/<场景名>.md` — frontmatter `name` + body = the scene description. One scene,
+one file. **Names are immutable and scenes cannot be deleted** (positions reference them by
+name); descriptions are user-editable. The only writers are the user surfaces (scaffold group
+creation, 场景 page, HTTP scene endpoints) — the engine and every AI path are read-only.
+`listScenes()` returns all scenes sorted by name. Every scene's full text is injected into every
+character each turn (§6.2) and into the judge's state (§6.1a) — the map is what makes presence a
+code fact instead of a guess.
 
 ### 3.6 用户.md
 
@@ -343,11 +363,24 @@ overhear:           # one-directional perceivers (can know, cannot interact; hid
 
 ## 4. Scene and perception
 
-Scene membership is judged by the fast-path judge (§6.1a) every turn and corrected by the slow
-director and the correction window; the frontend only displays it. All judgments are **abstract**:
-they ask whether someone has *any way* to perceive and whether the scene can *interact* with them
-in real time — means (phone, eavesdropping, surveillance, powers) are never enumerated and never
-keyword-matched.
+**Map groups** (群设定.scene set): space is fixed by the map (§3.5a). Every character has a
+**location** (one of the created scenes, or 其他 = off-map); the **active scene** is where the
+user is (⊘ manual pick, or the scene-change judgment below). Presence is a **code fact**:
+`present` = characters whose location equals the active scene — no model guessing. What the judge
+decides each turn is (a) whether the user **explicitly moved** to a created scene (extremely
+strict binary: only an explicit depiction of arriving/entering counts), (b) per character, whether
+the dialogue **explicitly** depicts him entering (then his location becomes the active scene) or
+leaving (his location becomes his `location_<角色>` answer — a created scene, or 其他 when the
+dialogue does not say or the place is off-map), and (c) who can perceive the message. Characters
+colocated in the destination scene are there by record — they hear the arrival line, and they are
+**not** entry-kit targets (nothing is new to them); only characters whose location changed are
+(§5.8/§5.9).
+
+**Flat groups** (no scenes): presence is the explicit list judged abstractly as before — the judge
+asks whether someone has *any way* to perceive and whether the scene can *interact* in real time;
+means are never enumerated and never keyword-matched. Slow-director and correction-window
+`presence_updates` (with the optional `scene` field) correct both modes; the frontend only
+displays.
 
 ### 4.1 Three layers
 
@@ -365,7 +398,10 @@ correction window).
 
 ### 4.2 Normalization and speech rights
 
-- `normalizeScene`: keep existing characters only; layer priority 现场 > 接入 > 单向感知.
+- `normalizeScene`: keep existing characters only; layer priority 现场 > 接入 > 单向感知. Map
+  groups: `present` is derived from `locations` (location == active scene), so an explicitly
+  edited present list re-writes those characters' locations (checked = active scene) and never
+  touches the unchecked ones' locations.
 - `speakableNames()` = present ∪ remote. The routing roster contains only speakable characters;
   an empty roster falls back to all characters (anti-stall), and the final interception check
   still blocks a pick without speech rights.
@@ -378,7 +414,9 @@ correction window).
   noul question — "can this character perceive the content of this message?" — judged from the
   narrative, scene notes, and the character's status text (whispering, turned away, distance,
   impairments, channel limits). ≥0.5 → in the knowledge audience; <0.5 → fully excluded (context
-  and ledger).
+  and ledger). Map groups: characters colocated with the speaker (in `present`) are in the
+  audience by record unless the judgment explicitly says they cannot hear (a missing answer keeps
+  them in — they are standing there).
 - Fallback (fast path unavailable): audience = present ∩ full perception, where the reserved
   status field `感知` (or `感官`) wins over a scan of all status fields (`失聪|耳聋|听不见|聋` →
   no hearing; `失明|眼瞎|瞎|看不见` → no sight). Conservative: when in doubt, include (the
@@ -390,7 +428,9 @@ correction window).
 ### 4.4 visible_to
 
 Every msg line carries the knowledge-audience snapshot in `visible_to` (the speaker is always
-included). User messages: snapshot written at append time from the fast-path judgment. Character
+included). User messages: on a map group the **scene move (judged or ⊘-picked) is applied before
+the snapshot** — the destination's occupants hear the arrival line; dialogue-summoned entrants do
+not (the snapshot precedes their entry). Character
 replies: judged after streaming completes, before append, independently of the user message's
 judgment (not hearing one whisper does not imply not hearing a later shout). `visible_to` governs
 both the message window (§6.2) and ledger transplant (§5.2) — context and memory agree from
@@ -481,7 +521,10 @@ Messages cover what was *said*; they do not cover what a character *sees* on arr
 in the room was described in messages he never received). When a turn's scene corrections bring
 in characters who were not in the scene at turn start (pure code: present-after minus
 present-before; no Jev cost), the system generates **one** observable-state description and
-injects it into every entrant's ledger (`source = 现场所见`, no `mid`, current round):
+injects it into every entrant's ledger (`source = 现场所见`, no `mid`, current round). Map
+groups narrow the entrant set to characters whose **location changed** into the active scene —
+followers and dialogue-summoned entrants; characters colocated in the destination by record are
+not entrants (nothing there is new to them):
 
 - `askSceneSummarizer` (deepseek, `record_scene` tool) reads the present notes, **all**
   characters' status ledgers (traces of the absent — a corpse — belong to the room), and the last
@@ -659,7 +702,9 @@ overhearing; **overhearers are never listed to scene members**; an appearance li
 personality/status-ledger stay hidden `[WHY]` people in a conversation see each other's looks,
 but physical changes are inferred from context rather than read from others' ledgers); user
 persona; memory injection
-(`buildMemory`, §5.5); era/world; rules; closing instruction (`roleplayInstruction`: the output
+(`buildMemory`, §5.5); era/world; the **map section** (`【场景】`: the active scene plus every
+scene's full description — the world's places are fixed data, never guessed); rules; closing
+instruction (`roleplayInstruction`: the output
 is the character's reaction — usually with spoken lines, but pure action/expression/silence is a
 legal output when the story demands it, since the relay can hand the turn to a character whose
 response is silence; no speaking for others).
@@ -694,10 +739,10 @@ perceived what; the overhear layer is director-and-player only.
 | endpoint | note |
 |---|---|
 | `GET /api/groups` | group list |
-| `GET /api/group/{name}` | snapshot: `{name, era, world, tone, userName, present[], remote[], overhear[], absent[], characters[{name,dirName}], messages(effective view), routes}` |
+| `GET /api/group/{name}` | snapshot: `{name, era, world, tone, scene, scenes[{name,description}], userName, present[], remote[], overhear[], absent[], characters[{name,dirName}], messages(effective view), routes}` |
 | `GET /api/group/{name}/status` | per-character status-ledger lines + memory counts |
 | `GET /api/group/{name}/judgments` | tail (last 200, newest first) of 判定.jsonl (§3.2a); for the sidebar run-log panel |
-| `POST /api/group/{name}/message` | body `{text}` → event stream (§1.1) |
+| `POST /api/group/{name}/message` | body `{text, scene?}` (scene = ⊘-picked target) → event stream (§1.1) |
 | `POST /api/group/{name}/roll` | reroll last character message → event stream |
 | client disconnect | the generator keeps running; bookkeeping still completes |
 
@@ -718,7 +763,8 @@ stale-entry heal (§5.3).
 | `GET\|POST /api/group/{name}/character/{dir}/memory` · `DELETE .../memory/{index}` | memory view / add (`用户指定`) / retract by index |
 | `GET\|PUT /api/group/{name}/avatar` · `GET\|PUT /api/group/{name}/user/avatar` · `GET\|PUT /api/group/{name}/character/{dir}/avatar` | avatars — display-only, never sent to any model or director. PUT body = raw image bytes (JPEG/PNG/WebP/GIF, magic-byte checked, ≤2 MiB; the client downscales to a square JPEG before upload). GET → 404 = unset. Storage: `头像.dat` in the group dir (group avatar) / character dir (character avatar), `用户头像.dat` in the group dir (user persona avatar) |
 | `GET\|PUT /api/group/{name}/character/{dir}/ledger` | status ledger read / whole-snapshot user update |
-| `GET\|PUT /api/group/{name}/presence` | scene layers; `remote`/`overhear` omitted = keep that layer; manual present fixes trigger the scene-perception snapshot for new entrants |
+| `GET\|PUT /api/group/{name}/presence` | scene layers; `scene` = active scene (map groups); `remote`/`overhear` omitted = keep that layer; checked members' locations move to the active scene, unchecked keep theirs; manual fixes trigger the entry kit for new entrants |
+| `GET\|POST /api/group/{name}/scenes` · `PUT .../scenes/{scene}` | scene map: list / create (name immutable once created, no delete) / edit description |
 | `GET\|POST /api/group/{name}/director` | correction window history / speak |
 | `GET\|PUT /api/rules` | global rules |
 | `GET\|POST /api/models` · `PUT\|DELETE /api/models/{id}` · `POST /api/models/{id}/activate` · `PUT /api/models/router` | provider management; deleting the active provider falls back to the first; the router endpoint sets/clears the fast-path provider (deleting that provider clears it too) |
@@ -823,6 +869,8 @@ theme only — deliberate). Desktop widths letterbox the app into a centered 520
   filter; ＋ → new-group page) · **全局** (a two-entry hub: 全局规则 = 规则.md editor, save =
   PUT /api/rules; **正则替换** = display-layer rewrite rules, see below) · 模型配置 (custom
   dialogue provider + optional Jev key, per §7.5 amendment). View stack: chat, chat-info, new group.
+  The **new-group page** builds the map at creation: scene rows (名称 + 描述, added/removed
+  locally) with one checked as the 初始当前场景; creation POSTs `{name, era, world, tone, scenes, scene}`.
 - **Display-layer regex** (`web/src/regex.ts`, user-requested): user-defined
   `pattern → replacement` rules applied **only when rendering** chat bubbles (messages and the
   streaming transcript), using the browser's native `RegExp` — no dependency, no model exposure.
@@ -831,7 +879,10 @@ theme only — deliberate). Desktop widths letterbox the app into a centered 520
   before saving (invalid patterns rejected), support `$1` back-references, and an empty
   replacement deletes the match.
 - **Chat** (`chat.tsx`): chat column shows messages + streaming text only (§7.5 decision); no
-  timestamps are displayed. User = green bubbles right with own avatar; characters = white
+  timestamps are displayed. The composer's left button (⊘, circle-with-slash) opens a floating
+  scene picker listing the group's scenes (current one marked); picking one arms the next send —
+  the message POSTs with `scene`, the turn skips the scene-change judgment and lands the user in
+  that scene; a cancel row disarms. User = green bubbles right with own avatar; characters = white
   bubbles left with avatar and name label. Long-press (450 ms; desktop right-click) opens an
   action sheet: 修改 / 删除 / 批量删除 (+ 重掷这条回复 on the last character message). 批量删除
   enters a select mode: checkboxes beside rows, tapping toggles, the composer is replaced by a
@@ -852,11 +903,16 @@ theme only — deliberate). Desktop widths letterbox the app into a centered 520
   layout viewport unchanged (e.g. iOS Safari) would cover the composer — accepted: the fleet is
   Android + desktop.
 - **聊天信息** (`groupinfo.tsx`, the ⋯ button): avatar block (group avatar + member avatars +
-  我) and six pages — 群聊设定 · 我的设定 (user persona + user avatar) · 纠正窗口 (rendered
+  我) and seven pages — 群聊设定 · 我的设定 (user persona + user avatar) · 纠正窗口 (rendered
   as a chat: user green bubbles right, 总管 white bubbles left with name label, applied summary
   under the reply) · 此时明确现场者 (present checkboxes only — no remote/overhear display) ·
+  **场景** (map page: create-scene form + list; tapping a scene edits its description in a modal —
+  names are immutable and scenes cannot be deleted) ·
   角色 (list → character page = 个人资料 draft form + 记忆 panel + 状态账本 section) ·
-  运行日志 (判定.jsonl tail, rows expandable to raw JSON). Content editing happens in centered
+  运行日志 (判定.jsonl tail, rows expandable to raw JSON).
+  The **character form** carries 初始所在场景: a radio list over the group's scenes when creating
+  (chosen once, immutable afterwards — the edit page shows it read-only), absent when the group
+  has no scenes. Content editing happens in centered
   floating modals (`Modal`): the message action menu and message editor in the chat, and each
   状态账本 field in the character page (tap a field row → modal editor with its own 保存; the
   PUT carries only that field — the backend merges, omitted fields carry forward). Ledger
@@ -897,6 +953,7 @@ Convention [INV 11]: fixtures are temporary and always deleted. Offline checks n
 | `selfcheck:presence` | offline | three-layer yaml round-trip (with `since`) · parse semantics (omitted=keep/empty=clear/unknown=语音) · perception keywords · visible_to snapshots |
 | `selfcheck:engine` | offline | bad-line tolerance + id continuity · text-retract no-resurrection (restart/replay) · edit living-ledger (physical ledger-row rewrite, respects retracts) · deleted-message physical removal (no text left in log) + memory cleanup + id monotonicity · rename chains |
 | `selfcheck:router` | offline | Jev hit / three-layer derivation / knowledge audience (incl. overhearers) / `told` stage-1 + `state_dirty` parsing (missing = safe side) · low-confidence, out-of-roster → route-only fallback with raw answers logged · scene/knowledge salvage when route unusable · `jevExtraRounds` stage-2 thresholds / failure grants nothing · `missingRounds`/`transplantRounds` units (verbatim, mid, own-speech prefix) · end-to-end merged judgment (1 call/reply) · extra-memory grant (end-append order, ledger rows, idempotence on re-telling) · gate (zero deepseek calls when clean, exactly one when dirty) · bookkeeper has no roster authority (overreach discarded) · scene-perception snapshot (entrant detection, injection before entrant speaks via relay, manual-fix entries snapshotted too) · off-story experiences (absence anchor pure-code, discovery merged per entry, event×participant limited-POV renders injected to all participants, first-time entrants skipped) · judgment log (判定.jsonl rows with phases + raw answers + elapsed) · relay (user turn / cumulative decay: ×0 right after a speech — no consecutive output, that judgment does not advance the multiplier; `RELAY_DECAY` applied at every other judgment, cumulative across re-speeches; no hard cap, the undecaying user weight ends the chain; hard block hands the floor back to the user on just-spoke re-picks and all-zero distributions) · fallback = single full director · unconfigured = fast path off |
+| `selfcheck:scene` | offline | scene file layer (create / duplicate reject / description editable / name immutable / invalid name) · group creation builds the map + initial scene · character 初始场景 placement · ⊘ manual move skips scene_change (questions assert) and still moves · destination occupants present by record and hear the arrival line · followers placed, leavers fall to their location answer (其他 clears) · judged move (confidence-guarded) · strict no-move · dialogue entrant lands post-snapshot (not in visible_to) with the entry kit injected · colocated-by-record characters are not entry-kit targets · map full text + active scene injected into characters |
 | `acceptance-*` (m1–m5, isolation, models, context-edit, presence, director) | online | end-to-end behaviors per milestone; re-run after any fast-path or memory change |
 
 `DSH_DEBUG=1` prints director/judge failure causes.

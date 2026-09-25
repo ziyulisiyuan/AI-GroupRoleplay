@@ -11,17 +11,18 @@ import {
   type Draft, type JudgeRow, type MemoryEntry, type Snapshot,
 } from './api.ts'
 import { Avatar, AvatarPicker, Cell, Cells, CheckCell, Field, Modal, NavBar, useToast } from './ui.tsx'
+import type { Scene } from './api.ts'
 
 export const LEDGER_KEYS = ['生理状态', '心理状态', '外观状态', '位置状态', '性格演变', '姓名变化', '人物关系变化'] as const
 
 type InfoView =
-  | 'hub' | 'settings' | 'me' | 'director' | 'presence' | 'log'
+  | 'hub' | 'settings' | 'me' | 'director' | 'presence' | 'log' | 'scenes'
   | { char: string }                                        // 角色资料收纳页（'' = 新建角色表单）
   | { charSub: string; page: 'profile' | 'memory' | 'ledger' }
 
 const VIEW_TITLES: Record<Exclude<InfoView, { char: string } | { charSub: string; page: 'profile' | 'memory' | 'ledger' }>, string> = {
   hub: '聊天信息', settings: '群聊设定', me: '我的设定', director: '对总管说（纠正）',
-  presence: '此时明确现场者', log: '运行日志',
+  presence: '此时明确现场者', log: '运行日志', scenes: '场景',
 }
 
 export function InfoRoot({ group, onExit }: { group: string; onExit: () => void }): React.ReactElement {
@@ -61,14 +62,15 @@ export function InfoRoot({ group, onExit }: { group: string; onExit: () => void 
         {top === 'director' && <DirectorView group={group} onChanged={refresh} />}
         {top === 'presence' && <PresenceView group={group} snap={snap} onChanged={refresh} />}
         {top === 'log' && <LogView group={group} />}
+        {top === 'scenes' && <ScenesView group={group} snap={snap} onChanged={refresh} />}
         {typeof top !== 'string' && 'char' in top && (
           top.char === ''
-            ? <CharProfileView key="new" group={group} dirName="" onChanged={refresh}
+            ? <CharProfileView key="new" group={group} dirName="" scenes={snap?.scenes ?? []} onChanged={refresh}
                 onCreated={name => setStack(s => [...s.slice(0, -1), { char: name }])} />
             : <CharHubView key={top.char} group={group} dirName={top.char} snap={snap} avatarV={avatarV} bump={bump} go={push} />
         )}
         {typeof top !== 'string' && 'page' in top && top.page === 'profile' && (
-          <CharProfileView key={`p-${top.charSub}`} group={group} dirName={top.charSub} onChanged={refresh} />
+          <CharProfileView key={`p-${top.charSub}`} group={group} dirName={top.charSub} scenes={snap?.scenes ?? []} onChanged={refresh} />
         )}
         {typeof top !== 'string' && 'page' in top && top.page === 'memory' && (
           <CharMemoryView key={`m-${top.charSub}`} group={group} dirName={top.charSub} />
@@ -131,6 +133,9 @@ function HubView({ group, snap, avatarV, bump, go }: {
       <Cells>
         <Cell title="纠正窗口" arrow onTap={() => go('director')} />
         <Cell title="此时明确现场者" arrow onTap={() => go('presence')} />
+      </Cells>
+      <Cells>
+        <Cell title="场景" sub={snap !== null && snap.scene !== '' ? `当前：${snap.scene} · 共 ${snap.scenes.length} 个` : `共 ${snap?.scenes.length ?? 0} 个`} arrow onTap={() => go('scenes')} />
       </Cells>
       <Cells>
         <Cell title="运行日志" arrow onTap={() => go('log')} />
@@ -345,9 +350,88 @@ function PresenceView({ group, snap, onChanged }: {
   )
 }
 
+/* ---------- 场景（地图）：名称一经创建不可改不可删，描述可改；仅用户可写 ---------- */
+
+function ScenesView({ group, snap, onChanged }: {
+  group: string; snap: Snapshot | null; onChanged: () => Promise<void>
+}): React.ReactElement {
+  const toast = useToast()
+  const [scenes, setScenes] = useState<Scene[] | null>(null)
+  const [name, setName] = useState('')
+  const [desc, setDesc] = useState('')
+  const [editing, setEditing] = useState<Scene | null>(null)
+  const [editDesc, setEditDesc] = useState('')
+
+  const load = useCallback(async (): Promise<void> => {
+    try {
+      setScenes((await getJson<{ scenes: Scene[] }>(`/api/group/${enc(group)}/scenes`)).scenes)
+    } catch (e) {
+      toast(e instanceof Error ? e.message : String(e))
+    }
+  }, [group, toast])
+  useEffect(() => { void load() }, [load])
+
+  const add = async (): Promise<void> => {
+    if (name.trim() === '') { toast('场景名称不能为空'); return }
+    try {
+      await postJson(`/api/group/${enc(group)}/scenes`, { name: name.trim(), description: desc.trim() })
+      setName(''); setDesc('')
+      await load()
+      await onChanged()
+      toast('场景已创建')
+    } catch (e) {
+      toast(e instanceof Error ? e.message : String(e))
+    }
+  }
+
+  const saveDesc = async (): Promise<void> => {
+    if (editing === null) return
+    try {
+      await putJson(`/api/group/${enc(group)}/scenes/${enc(editing.name)}`, { description: editDesc })
+      setEditing(null)
+      await load()
+      await onChanged()
+      toast('描述已保存')
+    } catch (e) {
+      toast(e instanceof Error ? e.message : String(e))
+    }
+  }
+
+  if (scenes === null) return <div className="empty">加载中……</div>
+  return (
+    <>
+      <Cells>
+        <div className="hint" style={{ padding: 'var(--s-3) var(--s-4) 0' }}>当前场景：{snap !== null && snap.scene !== '' ? snap.scene : '（未定）'}</div>
+        {scenes.map(s => (
+          <button key={s.name} className="cell" onClick={() => { setEditing(s); setEditDesc(s.description) }}>
+            <div className="cell-title">
+              <div className="main">{s.name}{snap?.scene === s.name ? '（当前）' : ''}</div>
+              <div className="sub">{s.description !== '' ? s.description : '（无描述）'}</div>
+            </div>
+          </button>
+        ))}
+        {scenes.length === 0 && <div className="hint">（还没有场景）</div>}
+        <Field label="新场景名称" value={name} onChange={setName} placeholder="如：李府大院" />
+        <Field label="新场景描述" value={desc} onChange={setDesc} multiline rows={3} placeholder="这个场景是什么样子" />
+      </Cells>
+      <button className="btn-primary" disabled={name.trim() === ''} onClick={() => void add()}>创建场景</button>
+
+      <Modal open={editing !== null} onClose={() => setEditing(null)} title={`场景 · ${editing?.name ?? ''}`}>
+        <div className="field">
+          <div className="field-label">描述（名称不可改）</div>
+          <textarea className="field-input" rows={6} value={editDesc} onChange={e => setEditDesc(e.target.value)} />
+        </div>
+        <div style={{ padding: '0 var(--s-4) var(--s-2)' }}>
+          <button className="btn-primary" style={{ width: '100%', margin: 0 }} onClick={() => void saveDesc()}>保存</button>
+        </div>
+      </Modal>
+    </>
+  )
+}
+
 /* ---------- 角色资料：收纳页（头像 + 三入口）与三个子页 ---------- */
 
-const EMPTY_DRAFT: Draft = { name: '', appearance: '', background: '', personality: '', relationships: '' }
+const EMPTY_DRAFT: Draft = { name: '', appearance: '', background: '', personality: '', relationships: '', scene: '' }
 
 /** 角色资料收纳页：头像 + 个人资料/记忆/状态账本三个入口。 */
 function CharHubView({ group, dirName, snap, avatarV, bump, go }: {
@@ -380,10 +464,11 @@ function CharHubView({ group, dirName, snap, avatarV, bump, go }: {
   )
 }
 
-/** 个人资料：五项初始定义（新建模式下即创建表单）。 */
-function CharProfileView({ group, dirName, onChanged, onCreated }: {
+/** 个人资料：五项初始定义（新建模式下即创建表单）。初始所在场景：建角色时从地图选定，此后只显示。 */
+function CharProfileView({ group, dirName, scenes, onChanged, onCreated }: {
   group: string
   dirName: string
+  scenes: Scene[]
   onChanged: () => Promise<void>
   onCreated?: (name: string) => void
 }): React.ReactElement {
@@ -443,6 +528,25 @@ function CharProfileView({ group, dirName, onChanged, onCreated }: {
         <Field label="初始性格" value={draft.personality} onChange={v => setDraft({ ...draft, personality: v })} multiline rows={3} />
         <Field label="初始人物关系" value={draft.relationships} onChange={v => setDraft({ ...draft, relationships: v })} multiline rows={3} />
       </Cells>
+      {isNew ? (
+        scenes.length > 0 ? (
+          <Cells>
+            <div className="hint" style={{ padding: 'var(--s-3) var(--s-4) 0' }}>初始所在场景</div>
+            {scenes.map(s => (
+              <CheckCell key={s.name} on={draft.scene === s.name} label={s.name}
+                onToggle={on => { if (on) setDraft(d => ({ ...d, scene: s.name })) }} />
+            ))}
+          </Cells>
+        ) : (
+          <Cells>
+            <div className="hint" style={{ padding: 'var(--s-3) var(--s-4) 0' }}>群还没有场景——先到聊天信息的「场景」里建，角色才有初始所在场景</div>
+          </Cells>
+        )
+      ) : (
+        <Cells>
+          <Cell title="初始所在场景" sub={draft.scene !== '' ? draft.scene : '（无）'} />
+        </Cells>
+      )}
       <button className="btn-primary" disabled={busy || !dirty || draft.name.trim() === ''} onClick={() => void save()}>
         {busy ? '保存中…' : isNew ? '创建' : '保存'}
       </button>

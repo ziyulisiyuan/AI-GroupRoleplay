@@ -32,6 +32,10 @@ export interface AssembleInput {
   /** §3.11：单向感知者（**只用于识别"自己是否在单向感知"**——现场角色的场景段不显示他们，
    *  被感知者不该知道有人在听；不给别人看是本模块的职责边界）。 */
   overhear?: RemoteLink[]
+  /** 地图（全部场景，名+描述全文）：地图群每轮全量注入。 */
+  scenes?: Array<{ name: string; description: string }>
+  /** 当前场景名（地图群）。 */
+  activeScene?: string
 }
 
 /** 组装角色输入（§4.2 #1-#4+#6；#2.5 用户设定；#5.5 全局规则）。 */
@@ -41,7 +45,7 @@ export function assembleGroup(
   history: MsgLine[],
   input: AssembleInput = {},
 ): { system: string; messages: Array<{ role: 'user' | 'assistant'; content: string }> } {
-  const { files, memoryText = '', userPersona, rules = '', presentNames, remote = [], overhear = [], appearances } = input
+  const { files, memoryText = '', userPersona, rules = '', presentNames, remote = [], overhear = [], appearances, scenes, activeScene } = input
   const personality = files !== undefined ? personalityPrompt(files.personality) : ''
   const relationships = files !== undefined ? relationshipsPrompt(files.relationships) : ''
 
@@ -60,6 +64,14 @@ export function assembleGroup(
     settings.era !== '' ? `【时代背景】${settings.era}` : '',
     settings.world !== '' ? `【世界观】${settings.world}` : '',
   ].filter(s => s !== '')
+  // 地图（§4）：世界由这些场景构成，全部内容每轮注入——空间对角色不再是脑补
+  const mapSection = scenes !== undefined && scenes.length > 0
+    ? [
+        '【场景（这个世界的地点，你就在其中之一）】',
+        `当前场景：${activeScene ?? '（未定）'}`,
+        ...scenes.map(s => `- ${s.name}：${s.description}`),
+      ].join('\n')
+    : ''
   const rulesSection = rules.trim() !== '' ? `【规则（用户设定）】\n${rules.trim()}` : ''
   // 当前场景人员：让角色知道屋里有谁（避免出现"某某还在外面"这种与自己视野矛盾的台词），
   // 以及谁不在现场、只通过通道接入（通道传到什么他才知道什么，不能越通道行动或感知）。
@@ -74,6 +86,7 @@ export function assembleGroup(
     : ''
   const sceneLines = [
     '【当前场景】',
+    activeScene !== undefined ? `地点：${activeScene}` : '',
     `现场：${persona.name}（你）${others.length > 0 ? `、${others.join('、')}` : ''}`,
     appearanceLine,
     remoteOthers.length > 0
@@ -93,6 +106,7 @@ export function assembleGroup(
     user !== '' ? user : '',
     memoryText !== '' ? memoryText : '',
     ...world,
+    mapSection !== '' ? mapSection : '',
     rulesSection,
     roleplayInstruction(persona.name),
   ].filter(s => s !== '').join('\n')
@@ -119,6 +133,7 @@ export function assembleGroup(
 const PRESENCE_ITEM_SCHEMA = {
   type: 'object',
   properties: {
+    scene: { type: 'string', description: '当前所在场景名（地图群）：用户这段剧情移动到了哪个场景；没有移动就不要填' },
     present: { type: 'array', items: { type: 'string' }, description: '当前**在现场**的完整角色名列表' },
     remote: {
       type: 'array',
@@ -278,7 +293,8 @@ export async function routeNextSpeaker(input: RouteInput): Promise<RouteResult> 
     ...input.rosterLines.map(l => `- ${l}`),
     input.presentNames !== undefined
       ? `[当前场景人员（你的代管记录——判定模型不可用，由你代为维护）]\n${(input.presentNotes ?? input.presentNames).join('、') || '（无）'}\n`
-        + '**代管规则（极其严苛，两条铁律）**：名单里不在场的角色，只有对话**明确描写他进场/出现/被叫到现场**才能加入；名单里在场的角色，只有对话**明确描写他失去意识或离开**才能移出。"他住这里""可能在附近""他是这里的人"这类推测一律不算——有明确描写才用 presence_updates 给出修正后的完整名单，没有就不动这份名单。它决定谁能在这里发言、谁会被自动登记这里发生的事。'
+        + '**代管规则（极其严苛，两条铁律）**：名单里不在场的角色，只有对话**明确描写他进场/出现/被叫到现场**才能加入；名单里在场的角色，只有对话**明确描写他失去意识或离开**才能移出。"他住这里""可能在附近""他是这里的人"这类推测一律不算——有明确描写才用 presence_updates 给出修正后的完整名单，没有就不动这份名单。它决定谁能在这里发言、谁会被自动登记这里发生的事。\n'
+        + '用户这段剧情移动到了某个场景（场景名给出时），用 scene 字段给出该场景名，present 为移动后在场的人。'
       : '',
     input.tone !== '' ? `[群聊基调]\n${input.tone}` : '',
     input.rules !== undefined && input.rules.trim() !== '' ? `[规则（用户设定）]\n${input.rules.trim()}` : '',
@@ -370,6 +386,14 @@ export interface JevRouteInput {
   tone: string
   rules?: string
   timeoutMs?: number
+  /** 地图：全部场景（名+描述全文）。非空 = 地图群，追加换场景与位置判定。 */
+  scenes?: Array<{ name: string; description: string }>
+  /** 当前场景名（地图群）。 */
+  activeScene?: string
+  /** 各角色所在场景（地图群；缺键 = 其他）。 */
+  locations?: Record<string, string>
+  /** 用户手选的目标场景（⊘ 按钮）：设置时不再问换场景判定，直接按"是"处理。 */
+  manualScene?: string
   /** 判定日志回调（判定.jsonl 用，只给人看）：成功带全部原始答案与耗时，失败带原因。 */
   log?: (entry: Record<string, unknown>) => void
 }
@@ -379,8 +403,16 @@ export interface JevRouteResult {
    *  但同一结果里的场景/知情/转告/状态门判定照常生效（各自带阈值，单独站得住）。 */
   picked: string
   reason: string
-  /** 场景名单修正（与当前一致时 undefined，不落 presence 行）。各层 since 由 setScene 继承。 */
+  /** 场景名单修正（无地图群；与当前一致时 undefined，不落 presence 行）。各层 since 由 setScene 继承。 */
   scene?: { present: string[]; remote: RemoteLink[]; overhear: RemoteLink[] }
+  /** 地图群：本轮用户换到的场景（'' = 未移动/置信不足/无效）。⊘ 手选时直接为手选值。 */
+  sceneChange?: string
+  /** 地图群：各角色的在场判断值（缺答案 = 按记录现状）。 */
+  presentNoul?: Record<string, number>
+  /** 地图群：各角色的位置去向（有效场景名；undefined = 其他/未提及）。 */
+  locationChoice?: Record<string, string | undefined>
+  /** 各角色的知情判断值（缺答案的语义由调用方按在场事实补齐）。 */
+  knowsNoul?: Record<string, number>
   /** 知情名单：Jev 判定**能感知到**本轮用户发言的角色（= 该消息的 visible_to；知情 = 原文移植）。 */
   knows: Set<string>
   /** 额外记忆触发名单：这条发言在向谁**转告**他原本不知道的事（懒人转述）。二段逐轮判定另行触发。 */
@@ -403,10 +435,21 @@ export async function jevRoute(input: JevRouteInput): Promise<JevRouteResult | u
   for (const c of input.roster) criteria[c.name] = overviews.get(c.name) ?? ''
   const absentNow = input.allNames.filter(n => !input.present.includes(n))
   const statusOf = new Map(input.statusNotes.map(l => [l.split('｜')[0]?.trim() ?? '', l.split('｜').slice(1).join('｜').trim()]))
+  // 地图（§4）：非空 = 地图群，追加换场景与位置判定
+  const scenes = input.scenes ?? []
+  const isMap = scenes.length > 0
+  const activeScene = input.activeScene ?? ''
+  const sceneCriteria = Object.fromEntries(scenes.map(s => [s.name, s.description]))
   const state = [
     '判断抽象情景（能否感知/能否互动，与手段无关）。',
     `候选：${input.roster.map(c => c.name).join('、')}（可发言）`,
     `场景：${input.presentNotes.join('、') || '（无）'}`,
+    isMap ? [
+      `[场景地图]`,
+      `当前场景：${activeScene || '（未定）'}`,
+      ...scenes.map(s => `- ${s.name}：${s.description}`),
+      `[人员位置] ${input.allNames.map(n => `${n}=${input.locations?.[n] ?? '其他'}`).join('、')}`,
+    ].join('\n') : '',
     input.statusNotes.length > 0 ? `状态：${input.statusNotes.join('；')}（原文）` : '',
     input.userText !== undefined ? `用户刚说：${input.userText}` : '',
   ].filter(s => s !== '').join('\n')
@@ -419,14 +462,38 @@ export async function jevRoute(input: JevRouteInput): Promise<JevRouteResult | u
       criteria,
     },
   }
+  // 换场景判定（地图群）：极严苛二元——只有明确描写到达/进入某个已建场景才算
+  if (isMap && input.manualScene === undefined) {
+    questions['scene_change'] = {
+      type: 'choice',
+      instructions: '判断：用户这段话是否在**明确描写他移动到了某个场景**（走进/来到/回到/被带进选项中的某个场景）。极其严苛：只有明确写出到达或进入该场景的动作才算；只是提到地名、打算去、让别人去、比喻或回忆都不算。没有移动 = 选"未移动"。',
+      criteria: { ...sceneCriteria, 未移动: '用户本轮没有移动场景' },
+    }
+  }
   // 在场判断（全角色）
   for (const n of input.allNames) {
+    const loc = input.locations?.[n]
     questions[`present_${n}`] = {
       type: 'noul',
-      instructions: `根据对话判断：${n} 此刻是否在当前场景现场（人在场景里）。两个方向的判定标准不同：
+      instructions: isMap
+        ? `根据对话判断：${n} 此刻是否与用户同处一个场景（他记录的位置：${loc ?? '其他'}；当前场景：${activeScene || '未定'}；用户这段话若在移动场景，以对话为准）。两个方向的判定标准不同：
+- 记录里**不在场**的角色：只有对话**明确描写他进场/出现/被叫到现场**才算在场（给出 0.9 左右）；"他住在这里""他可能在附近""他是这里的人"这类推测**不算**（给 0.3~0.7 即视为维持不在场）。
+- 记录里**在场**的角色：被描写失去意识或离开才算不在（给出 0.1 左右）；对话仍发生在场内则保持在场（给出 0.9 左右）。
+对话是最新事实：记录落后于剧情时以对话为准，更新记录正是你的职责。`
+        : `根据对话判断：${n} 此刻是否在当前场景现场（人在场景里）。两个方向的判定标准不同：
 - 记录里**不在场**的角色：只有对话**明确描写他进场/出现/被叫到现场**才算在场（给出 0.9 左右）；"他住在这里""他可能在附近""他是这里的人"这类推测**不算**——在场名单是权威记录，你的职责是依据明确描写更新它，不是往里猜测（给 0.3~0.7 即视为维持不在场）。
 - 记录里**在场**的角色：被描写失去意识或离开才算不在（给出 0.1 左右）；对话仍发生在场内则保持在场（给出 0.9 左右）。
 对话是最新事实：记录落后于剧情时以对话为准，更新记录正是你的职责。`,
+    }
+  }
+  // 位置去向（地图群，全角色）：在/不在与去向一次答齐——离开者去了哪、图外者是否到了某场景
+  if (isMap) {
+    for (const n of input.allNames) {
+      questions[`location_${n}`] = {
+        type: 'choice',
+        instructions: `结合对话判断：${n} 此刻所在的场景（他记录的位置：${input.locations?.[n] ?? '其他'}；当前场景：${activeScene || '未定'}）。对话明确描写他移动/到达某场景就选该场景；对话没提、或去的地方不在场景列表 = 选"其他"。与你对他是否在用户身边（present）的判断保持一致。`,
+        criteria: { ...sceneCriteria, 其他: '图外，或对话没有提及他的去向' },
+      }
     }
   }
   // 不在场者：两个抽象是非题——"有没有办法知道"与"能不能实时互动"，由答案推导层级
@@ -526,10 +593,12 @@ export async function jevRoute(input: JevRouteInput): Promise<JevRouteResult | u
     // 知情名单：确定感知不到（< 阈值）的不给；缺答案时现场者保持（代码保底）、其他人不给。
     // 通道/单向感知者受各自的 since 锚点约束（接入之前的事不知道）——由调用方按 id 过滤。
     const knows = new Set<string>()
+    const knowsNoul: Record<string, number> = {}
     for (const n of input.allNames) {
       const g = answers[`knows_${n}`]
       const wasPresent = input.present.includes(n)
       const p = g?.type === 'noul' ? g.noul : wasPresent ? 1 : 0
+      knowsNoul[n] = p
       if (p >= JEV_THRESHOLDS.gateKeep) knows.add(n)
     }
 
@@ -542,12 +611,36 @@ export async function jevRoute(input: JevRouteInput): Promise<JevRouteResult | u
     const dirtyAns = answers['state_dirty']
     const stateDirty = dirtyAns?.type === 'noul' ? dirtyAns.noul >= JEV_THRESHOLDS.gateKeep : true
 
+    // 地图群：换场景与位置演算原料（⊘ 手选时 scene_change 未问，直接按手选值）
+    let sceneChange: string | undefined
+    let presentNoul: Record<string, number> | undefined
+    let locationChoice: Record<string, string | undefined> | undefined
+    if (isMap) {
+      const sceneNames = scenes.map(s => s.name)
+      if (input.manualScene !== undefined) sceneChange = input.manualScene
+      else {
+        const sc = answers['scene_change']
+        sceneChange = sc?.type === 'choice' && sceneNames.includes(sc.choice) && sc.confidence >= JEV_THRESHOLDS.confidenceMin ? sc.choice : ''
+      }
+      presentNoul = {}
+      for (const n of input.allNames) {
+        const a = answers[`present_${n}`]
+        presentNoul[n] = a?.type === 'noul' ? a.noul : (input.present.includes(n) ? 1 : 0)
+      }
+      locationChoice = {}
+      for (const n of input.allNames) {
+        const a = answers[`location_${n}`]
+        locationChoice[n] = a?.type === 'choice' && sceneNames.includes(a.choice) ? a.choice : undefined
+      }
+    }
+
     if (!routeUsable) {
       input.log?.({
         note: '路由不可用——路由回退完整总管，场景/知情/转告/状态门判定照常生效',
         route: route?.type === 'choice' ? route.choice : String(route?.type ?? '无答案'),
         confidence: route?.type === 'choice' ? route.confidence : undefined,
         ...(sceneUnchanged ? { scene: '未变' } : { scene: { present: [...present], remote: remote.map(l => `${l.character}(${l.perceive})`), overhear: overhear.map(l => `${l.character}(${l.perceive})`) } }),
+        ...(sceneChange !== undefined ? { sceneChange } : {}),
         knows: [...knows],
         told: [...told],
         stateDirty,
@@ -558,6 +651,7 @@ export async function jevRoute(input: JevRouteInput): Promise<JevRouteResult | u
         picked: '',
         reason: 'Jev路由置信不足或名单外——路由回退完整总管，场景/知情判定照常生效',
         ...(sceneUnchanged ? {} : { scene: { present, remote, overhear } }),
+        ...(sceneChange !== undefined ? { sceneChange, presentNoul, locationChoice, knowsNoul } : {}),
         knows,
         told,
         stateDirty,
@@ -567,7 +661,8 @@ export async function jevRoute(input: JevRouteInput): Promise<JevRouteResult | u
     input.log?.({
       picked: route.choice,
       confidence: route.confidence,
-      ...(sceneUnchanged ? { scene: '未变' } : { scene: { present, remote: remote.map(l => `${l.character}(${l.perceive})`), overhear: overhear.map(l => `${l.character}(${l.perceive})`) } }),
+      ...(sceneUnchanged ? { scene: '未变' } : { scene: { present: [...present], remote: remote.map(l => `${l.character}(${l.perceive})`), overhear: overhear.map(l => `${l.character}(${l.perceive})`) } }),
+      ...(sceneChange !== undefined ? { sceneChange } : {}),
       knows: [...knows],
       told: [...told],
       stateDirty,
@@ -579,6 +674,7 @@ export async function jevRoute(input: JevRouteInput): Promise<JevRouteResult | u
       picked: route.choice,
       reason: `Jev·置信${route.confidence.toFixed(2)}`,
       ...(sceneUnchanged ? {} : { scene: { present, remote, overhear } }),
+      ...(sceneChange !== undefined ? { sceneChange, presentNoul, locationChoice, knowsNoul } : {}),
       knows,
       told,
       stateDirty,
@@ -625,6 +721,8 @@ export async function jevAfterReply(input: {
   userName: string
   statusNotes: string[]
   presentNotes: string[]
+  /** 地图群当前在场者：知情缺答案时按在场事实默认在列（人就在屋里）。 */
+  present?: string[]
   /** 最近对话（不含本段回复——回复原文单独给）。 */
   recent: string
   tone: string
@@ -678,6 +776,7 @@ export async function jevAfterReply(input: {
     for (const n of input.candidates) {
       const g = answers[`knows_${n}`]
       if (g?.type === 'noul' && g.noul >= JEV_THRESHOLDS.gateKeep) audience.add(n)
+      else if (g === undefined && input.present?.includes(n)) audience.add(n) // 在场者缺答案按在场事实在列
     }
     const told = new Set<string>()
     for (const n of input.candidates) {

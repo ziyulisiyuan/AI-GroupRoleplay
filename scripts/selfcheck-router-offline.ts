@@ -709,7 +709,7 @@ try {
     session.store.append('user', '你', '（甲离场期间，乙和丙一直在照顾甲的猫）', 'all')
     // 甲回归（手动修正路径）→ 入场包：现场所见 + 事件补全
     session.setScene({ present: ['角色甲', '角色乙', '角色丙'], remote: [], overhear: [] }, '甲回归')
-    session.maybeSnapshotEntrants(['角色乙', '角色丙'], '测试进场')
+    session.maybeSnapshotEntrants({ present: ['角色乙', '角色丙'], remote: [], overhear: [] }, '测试进场')
     const memOf2 = (n: string): string => {
       try { return fsReadFileSync(join(accDir, '角色', n, '记忆.jsonl'), 'utf8') } catch { return '' }
     }
@@ -728,7 +728,7 @@ try {
     assert.equal(povHits.length, 2, '每个（事件×参与者）各渲染一次')
     // 首次进场（丁，无离场史）→ 不触发事件发现，只拿现场所见
     session.setScene({ present: ['角色甲', '角色乙', '角色丙', '角色丁'], remote: [], overhear: [] }, '丁首次进场')
-    session.maybeSnapshotEntrants(['角色甲', '角色乙', '角色丙'], '丁首进')
+    session.maybeSnapshotEntrants({ present: ['角色甲', '角色乙', '角色丙'], remote: [], overhear: [] }, '丁首进')
     for (let i = 0; i < 80; i++) {
       if (memOf2('角色丁').includes('现场所见')) break
       await new Promise(r => setTimeout(r, 250))

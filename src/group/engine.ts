@@ -12,8 +12,9 @@ import { config } from '../config.ts'
 import { StoryStore, type MsgLine, type RouteLine } from '../store.ts'
 import { hasGroupSettings, loadCharacters, loadGroupSettings, loadUserPersona, type CharacterPersona, type UserPersona } from './persona.ts'
 import { loadRules } from './rules.ts'
-import { canWitness, emptyScene, loadScene, perceives, saveScene, type RemoteLink, type SceneAccess } from './presence.ts'
-import { askDirector, askOffStoryDiscovery, askOffStoryPOV, askSceneSummarizer, assembleGroup, askBookkeeper, jevAfterReply, jevExtraRounds, jevRoute, routeNextSpeaker, type JevAfterReplyResult, type RouteResult } from './host.ts'
+import { canWitness, loadScene, perceives, saveScene, type RemoteLink, type SceneAccess } from './presence.ts'
+import { listScenes, type Scene } from './scene.ts'
+import { askDirector, askOffStoryDiscovery, askOffStoryPOV, askSceneSummarizer, assembleGroup, askBookkeeper, jevAfterReply, jevExtraRounds, jevRoute, routeNextSpeaker, JEV_THRESHOLDS, type JevAfterReplyResult, type RouteResult } from './host.ts'
 import { turnFromMessages } from '../host.ts'
 import { resolveRouter } from '../settings.ts'
 import { LEDGER_KEYS, loadFiles, saveMemory, savePersonality, saveRelationships, saveStatus, type CharacterFiles } from './status.ts'
@@ -55,23 +56,33 @@ export class GroupSession {
     this.userPersona = loadUserPersona(groupDir)
     this.rules = loadRules()
     const saved = loadScene(groupDir)
-    // 场景来源优先级：日志里最后一次 presence 行（事实源）→ 在场.yaml → 全员现场
-    // presence 行里的旧角色名经名字链（rename 行）归一到当前名，改名者不会被静默踢出现场
+    // 场景来源优先级：日志里最后一次 presence 行（事实源）→ 在场.yaml → 地图初始状态 → 全员现场
+    // 名字经名字链（rename 行）归一到当前名，改名者不会被静默踢出现场
     const fromLog = this.store.lastScene()
     const rawName = (scene: SceneAccess): SceneAccess => ({
+      ...(scene.scene !== undefined ? { scene: scene.scene, locations: { ...(scene.locations ?? {}) } } : {}),
       present: scene.present.map(n => this.store.nameOf(n)),
       remote: scene.remote.map(l => ({ ...l, character: this.store.nameOf(l.character) })),
       overhear: scene.overhear.map(l => ({ ...l, character: this.store.nameOf(l.character) })),
     })
     const nonEmpty = (s: SceneAccess): boolean => s.present.length > 0 || s.remote.length > 0 || s.overhear.length > 0
     const raw = fromLog !== undefined ? rawName(fromLog)
-      : (nonEmpty(saved) ? rawName(saved) : { present: this.characters.map(c => c.name), remote: [], overhear: [] })
+      : (nonEmpty(saved) ? rawName(saved) : this.mapDefaultScene())
     this.scene = raw
     this.byName = new Map(this.characters.map(c => [c.name, c]))
     this.roster = this.characters.map(c => ({ name: c.name }))
     this.rosterLines = this.characters.map(c =>
       `${c.name}｜${c.appearance.split(/[，。.！!？?\n]/)[0] ?? ''}`,
     )
+  }
+
+  /** 地图群尚无 presence 行时的初始状态：当前场景 = 建群时指定；各角色站在自己的初始场景。 */
+  private mapDefaultScene(): SceneAccess {
+    if (this.settings.scene === '') return { present: this.characters.map(c => c.name), remote: [], overhear: [] }
+    const locations: Record<string, string> = {}
+    for (const c of this.characters) if (c.scene !== '') locations[c.name] = c.scene
+    const present = this.characters.map(c => c.name).filter(n => locations[n] === this.settings.scene)
+    return { scene: this.settings.scene, locations, present, remote: [], overhear: [] }
   }
 
   /** 全角色外观层（名字 → 角色.md 外观）：assembleGroup 注入在场者外观用（§6.2，仅外观层）。 */
@@ -105,16 +116,28 @@ export class GroupSession {
     return [...new Set([...this.presentNames(), ...this.remoteLinks().map(l => l.character)])]
   }
 
-  /** 规范化：只留存在的角色，且现场 > 接入 > 偷听（同一人只保留最高一层）。 */
+  /** 规范化：只留存在的角色，且现场 > 接入 > 偷听（同一人只保留最高一层）。
+   *  地图群下 present 由 locations 推导（位置 = 当前场景者为现场）；无地图群用显式名单。 */
   private normalizeScene(scene: SceneAccess): SceneAccess {
-    const present = [...new Set(scene.present.filter(n => this.byName.has(n)))]
+    const exists = (n: string): boolean => this.byName.has(n)
+    const layerPick = (links: RemoteLink[], seen: Set<string>): RemoteLink[] =>
+      links.flatMap(l => {
+        if (!exists(l.character) || seen.has(l.character)) return []
+        seen.add(l.character)
+        return [{ ...l }]
+      })
+    if (scene.scene === undefined) {
+      const present = [...new Set(scene.present.filter(exists))]
+      const seen = new Set(present)
+      return { present, remote: layerPick(scene.remote, seen), overhear: layerPick(scene.overhear, seen) }
+    }
+    const locations: Record<string, string> = {}
+    for (const [n, sc] of Object.entries(scene.locations ?? {})) {
+      if (exists(n) && sc !== '') locations[n] = sc
+    }
+    const present = this.characters.map(c => c.name).filter(n => locations[n] === scene.scene)
     const seen = new Set(present)
-    const pick = (links: RemoteLink[]): RemoteLink[] => links.flatMap(l => {
-      if (!this.byName.has(l.character) || seen.has(l.character)) return []
-      seen.add(l.character)
-      return [{ ...l }]
-    })
-    return { present, remote: pick(scene.remote), overhear: pick(scene.overhear) }
+    return { scene: scene.scene, locations, present, remote: layerPick(scene.remote, seen), overhear: layerPick(scene.overhear, seen) }
   }
 
   private sameScene(a: SceneAccess, b: SceneAccess): boolean {
@@ -140,13 +163,18 @@ export class GroupSession {
     next.remote = withSince(next.remote)
     next.overhear = withSince(next.overhear)
     this.scene = next
-    this.store.appendPresence(next.present, reason, next.remote, next.overhear)
+    this.store.appendPresence(next.present, reason, next.remote, next.overhear, next.scene, next.locations)
     saveScene(this.groupDir, next)
   }
 
   /** 当前场景快照（供总管提示与前端显示）。 */
   sceneAccess(): SceneAccess {
-    return { present: this.presentNames(), remote: this.remoteLinks(), overhear: this.overhearLinks() }
+    return {
+      ...(this.scene.scene !== undefined ? { scene: this.scene.scene, locations: { ...(this.scene.locations ?? {}) } } : {}),
+      present: this.presentNames(),
+      remote: this.remoteLinks(),
+      overhear: this.overhearLinks(),
+    }
   }
 
   /**
@@ -196,8 +224,8 @@ export class GroupSession {
     return p === undefined ? undefined : join(this.groupDir, '角色', p.dirName)
   }
 
-  /** 前端初始渲染快照：应用 swipe 后的消息 + 路由行。 */
-  snapshot(): { name: string; era: string; world: string; tone: string; userName: string; present: string[]; remote: RemoteLink[]; overhear: RemoteLink[]; absent: string[]; characters: Array<{ name: string; dirName: string }>; messages: MsgLine[]; routes: RouteLine[] } {
+  /** 前端初始渲染快照：消息 + 路由行 + 场景（当前场景与地图）。 */
+  snapshot(): { name: string; era: string; world: string; tone: string; scene: string; scenes: Scene[]; userName: string; present: string[]; remote: RemoteLink[]; overhear: RemoteLink[]; absent: string[]; characters: Array<{ name: string; dirName: string }>; messages: MsgLine[]; routes: RouteLine[] } {
     const routes = this.store.allLines.filter((l): l is RouteLine => l.type === 'route')
     const present = this.presentNames()
     const remote = this.remoteLinks()
@@ -207,6 +235,8 @@ export class GroupSession {
       era: this.settings.era,
       world: this.settings.world,
       tone: this.settings.tone,
+      scene: this.scene.scene ?? '',
+      scenes: listScenes(this.groupDir),
       userName: this.userPersona.name,
       present,
       remote,
@@ -490,12 +520,19 @@ export class GroupSession {
   }
 
   /**
-   * 入场包触发：对比进场前后的现场名单（纯代码差集，不花 Jev），
-   * 新进现场者 → 后台入场包（现场所见 + 事件补全）注入其记忆。
+   * 入场包触发（纯代码差集，不花 Jev）：地图群下认"位置发生了变化"的新现场者——
+   * 随行/被叫进来的人要拿到现场所见，一直在目的地的人不算进场；无地图群 = present 差集。
    * 说话回合与用户手动修正都走这里；接力判到进场者发言时 speakAs 会先等注入完成。
    */
-  maybeSnapshotEntrants(beforePresent: readonly string[], note = '新进现场'): void {
-    const entrants = this.sceneAccess().present.filter(n => !beforePresent.includes(n) && this.byName.has(n))
+  maybeSnapshotEntrants(before: SceneAccess, note = '新进现场'): void {
+    const after = this.sceneAccess()
+    const beforeLoc = before.locations ?? {}
+    const afterLoc = after.locations ?? {}
+    const entrants = after.present.filter(n =>
+      this.byName.has(n)
+      && (after.scene === undefined
+        ? !before.present.includes(n)
+        : afterLoc[n] !== beforeLoc[n]))
     if (entrants.length === 0) return
     const job = this.beginEntryKit(entrants)
     this.sceneSnapshot = job
@@ -551,6 +588,7 @@ export class GroupSession {
         remote: this.remoteLinks(),
         overhear: this.overhearLinks(),
         appearances: this.appearanceMap,
+        ...(this.settings.scene !== '' ? { scenes: listScenes(this.groupDir), activeScene: this.scene.scene } : {}),
       },
     )
     yield { type: 'speaker', name: last.name }
@@ -567,17 +605,18 @@ export class GroupSession {
     yield { type: 'reply', name: last.name, text: full }
   }
 
-  /** 用户公开发言：路由 → 角色回复 → 记账。 */
-  async *speak(text: string): AsyncGenerator<SessionEvent> {
+  /** 用户公开发言：路由 → 角色回复 → 记账。manualScene = ⊘ 手选的目标场景（跳过换场景判定）。 */
+  async *speak(text: string, manualScene?: string): AsyncGenerator<SessionEvent> {
     await this.drainBg() // 上一轮的后台记账先完成，避免与新一轮写入交错
     this.reloadBooks()
     if (this.characters.length === 0) {
       yield { type: 'info', text: '这个群还没有角色——先在左侧「＋ 新建角色」建一个再说话' }
       return
     }
-    // 当前场景先落盘（若尚无记录，以现有配置/全员为准），供总管参考
+    // 当前场景先落盘（若尚无记录，以地图初始状态/全员为准），供总管参考
     const before = this.sceneAccess()
-    if (this.store.lastScene() === undefined) this.store.appendPresence(before.present, '初始', before.remote, before.overhear)
+    const isMap = this.settings.scene !== ''
+    if (this.store.lastScene() === undefined) this.store.appendPresence(before.present, '初始', before.remote, before.overhear, before.scene, before.locations)
 
     // 可发言者 = 现场者 ∪ 远程接入者（单向偷听者不能插话；仅当可发言者皆空时退回全员，避免剧情卡死）。
     const speakable = new Set(this.speakableNames())
@@ -608,6 +647,7 @@ export class GroupSession {
         tone: this.settings.tone,
         rules: this.rules,
         timeoutMs: config.jevTimeoutMs,
+        ...(isMap ? { scenes: listScenes(this.groupDir), activeScene: before.scene ?? '', locations: before.locations ?? {}, manualScene } : {}),
         log: e => this.judgeLog({ phase: '主判定', ...e }),
       })
     }
@@ -646,11 +686,55 @@ export class GroupSession {
       })
     }
 
-    // 用户发言落盘：visible_to = Jev 知情名单（§4.3）——在场感知、经通道感知都算；
-    // 通道/单向感知者受各自 since 约束；Jev 不可用时回退"现场 ∩ 感知完整"。
-    // 快照在场景修正之前写定：刚进场的人从下一轮起听到，本轮这句仍按旧场景与旧名单。
-    const knows = quick?.knows ?? new Set(this.witnesses())
-    const audience = this.audienceOf(knows, this.store.nextMsgId)
+    // ── 地图群：本轮场景落定（⊘ 手选优先；否则换场景判定），先于用户消息——
+    // 目的地里的人听得见进门这句；跟随者（判定在场）随行落位，离开者按去向（其他/某场景）留在原地。
+    // 手选是用户指令：不配快路径也生效（此时只移动，不做跟随/离开演算）。
+    if (isMap && (manualScene !== undefined || quick !== undefined)) {
+      const target = manualScene ?? (quick?.sceneChange ?? '')
+      if (target !== '' && target !== (before.scene ?? '')) {
+        const locations: Record<string, string> = { ...(before.locations ?? {}) }
+        if (quick !== undefined) {
+          for (const c of this.characters) {
+            const n = c.name
+            const wasPresent = before.present.includes(n)
+            const p = quick.presentNoul?.[n] ?? (wasPresent ? 1 : 0)
+            if (p >= JEV_THRESHOLDS.perceiveMin || (wasPresent && p > JEV_THRESHOLDS.interactMax)) {
+              locations[n] = target // 跟随者随行；目的地里的人原位不动
+              continue
+            }
+            if (wasPresent && p <= JEV_THRESHOLDS.interactMax) {
+              const to = quick.locationChoice?.[n]
+              if (to !== undefined && to !== '') locations[n] = to
+              else delete locations[n] // 其他（图外）
+            }
+          }
+        }
+        const present = this.characters.map(c => c.name).filter(n => locations[n] === target)
+        const next: SceneAccess = { scene: target, locations, present, remote: before.remote, overhear: before.overhear }
+        if (!this.sameScene(next, before)) {
+          const applied = this.normalizeScene(next)
+          this.setScene(applied, manualScene !== undefined ? '用户手选场景' : '地图判定')
+          yield { type: 'info', text: `场景更新：${sceneSummary(applied)}（${manualScene !== undefined ? '手选' : '判定'}）` }
+        }
+      }
+    }
+
+    // 用户发言落盘：visible_to = 知情名单（§4.3）。
+    // 地图群：与用户同处一地者按在场事实默认在列（knows 明确判"听不到"才剔除），其他人按 knows 阈值；
+    // 无地图群：Jev knows 名单（缺答案=现场者保底）；Jev 不可用时回退"现场 ∩ 感知完整"。
+    // 通道/单向感知者受各自 since 约束。
+    let audience: string[]
+    if (isMap && quick !== undefined) {
+      const knowsNoul = quick.knowsNoul ?? {}
+      const inRoom = new Set(this.presentNames())
+      const base = this.characters
+        .map(c => c.name)
+        .filter(n => (inRoom.has(n) ? knowsNoul[n] ?? 1 : knowsNoul[n] ?? 0) >= JEV_THRESHOLDS.gateKeep)
+      audience = this.audienceOf(new Set(base), this.store.nextMsgId)
+    } else {
+      const knows = quick?.knows ?? new Set(this.witnesses())
+      audience = this.audienceOf(knows, this.store.nextMsgId)
+    }
     const userMsg = this.store.append('user', this.userPersona.name, text, audience)
     this.backfillAll()
 
@@ -662,22 +746,56 @@ export class GroupSession {
       yield* this.grantExtraMemory(quick.told, text, routerLlm)
     }
 
-    if (quick !== undefined) {
-      // 快路径：三层场景修正此刻落盘（晚于快照——刚进场者听不到刚才那句）
+    if (isMap && quick !== undefined) {
+      // 地图群：对话驱动的进出（场景已定后）——明确进场的落位当前场景（晚于快照：听不到召唤他的
+      // 这句）；明确离开的按去向落位（他们听到过这句话——离开发生在发言之后）。
+      const cur = this.sceneAccess()
+      const active = cur.scene ?? ''
+      const locations: Record<string, string> = { ...(cur.locations ?? {}) }
+      let changed = false
+      for (const c of this.characters) {
+        const n = c.name
+        const wasPresent = cur.present.includes(n)
+        const p = quick.presentNoul?.[n] ?? (wasPresent ? 1 : 0)
+        if (!wasPresent && p >= JEV_THRESHOLDS.perceiveMin && locations[n] !== active) {
+          locations[n] = active
+          changed = true
+          continue
+        }
+        if (wasPresent && p <= JEV_THRESHOLDS.interactMax) {
+          const to = quick.locationChoice?.[n]
+          if (to !== undefined && to !== '') locations[n] = to
+          else delete locations[n] // 其他（图外）
+          changed = true
+        }
+      }
+      if (changed) {
+        const present = this.characters.map(c => c.name).filter(n => locations[n] === active)
+        const next: SceneAccess = { ...(active !== '' ? { scene: active, locations } : {}), present, remote: cur.remote, overhear: cur.overhear }
+        if (!this.sameScene(next, cur)) {
+          const applied = this.normalizeScene(next)
+          this.setScene(applied, '地图判定')
+          yield { type: 'info', text: `场景更新：${sceneSummary(applied)}（判定）` }
+        }
+      }
+    } else if (quick !== undefined) {
+      // 无地图群：三层场景修正此刻落盘（晚于快照——刚进场者听不到刚才那句）
       if (quick.scene !== undefined && !this.sameScene(quick.scene, this.sceneAccess())) {
         const applied = this.normalizeScene(quick.scene)
         this.setScene(applied, 'Jev场景判断')
         yield { type: 'info', text: `场景更新：${sceneSummary(applied)}（Jev）` }
       }
     } else {
-      // 回退路径：总管判断的场景人员变动（谁进来/离开/接入/开始偷听）。
+      // 回退路径：总管判断的场景人员变动（谁进来/离开/接入/开始偷听；scene = 用户移动到的场景）。
       // 名单里的名字经 resolveCharacterName 对号（"甲"↔"角色甲"），对不上的丢弃。
       for (const p of route!.presenceUpdates) {
         const resolved = this.resolvePresence(p)
         if (resolved === undefined) continue
         const cur = this.sceneAccess()
+        const withLoc = this.applyPresenceToLocations(cur, resolved.scene, resolved.present)
         const next: SceneAccess = {
-          present: resolved.present,
+          ...(withLoc.scene !== undefined ? { scene: withLoc.scene, locations: withLoc.locations } : {}),
+          present: withLoc.present,
           remote: resolved.remote ?? cur.remote,
           overhear: resolved.overhear ?? cur.overhear,
         }
@@ -688,9 +806,10 @@ export class GroupSession {
       }
     }
 
-    // ── 现场所见（§5.8）：本轮有新进现场者（纯代码判定：修正后 present − 轮初 present）→
-    // 后台生成现状快照并注入其记忆；接力判到进场者发言时，speakAs 组装前会先等注入完成。
-    this.maybeSnapshotEntrants(before.present, '新进现场')
+    // ── 入场包（§5.8/§5.9）：本轮有新进现场者 → 后台生成现状快照与离场经历注入其记忆；
+    // 地图群下只认"位置发生了变化"的新现场者（一直在目的地的人不算进场）；接力判到进场者
+    // 发言时，speakAs 组装前会先等注入完成。
+    this.maybeSnapshotEntrants(before, '新进现场')
 
     yield { type: 'route', picked, reason, fallback: route?.fallback ?? false }
     this.store.appendRoute(picked, reason, route?.fallback ?? false)
@@ -784,8 +903,9 @@ export class GroupSession {
     this.backfillAll()
   }
 
-  /** 总管/用户给的场景名单 → 对号到本群角色（对不上的名字丢弃）；present 非数组返回 undefined。 */
-  private resolvePresence(p: { present: string[]; remote?: RemoteLink[]; overhear?: RemoteLink[]; reason?: string }): { present: string[]; remote?: RemoteLink[]; overhear?: RemoteLink[] } | undefined {
+  /** 总管/用户给的场景名单 → 对号到本群角色（对不上的名字丢弃）；present 非数组返回 undefined。
+   *  scene = 用户移动到的场景名（地图群；缺省 = 当前场景不变）。 */
+  private resolvePresence(p: { scene?: unknown; present: string[]; remote?: RemoteLink[]; overhear?: RemoteLink[]; reason?: string }): { scene?: string; present: string[]; remote?: RemoteLink[]; overhear?: RemoteLink[] } | undefined {
     if (!Array.isArray(p.present)) return undefined
     const present = [...new Set(p.present
       .map(n => resolveCharacterName(this.roster, n))
@@ -794,7 +914,22 @@ export class GroupSession {
       const c = resolveCharacterName(this.roster, l.character)
       return c === undefined ? [] : [{ ...l, character: c }]
     })
-    return { present, remote: pick(p.remote), overhear: pick(p.overhear) }
+    return {
+      ...(typeof p.scene === 'string' && p.scene.trim() !== '' ? { scene: p.scene.trim() } : {}),
+      present,
+      remote: pick(p.remote),
+      overhear: pick(p.overhear),
+    }
+  }
+
+  /** 总管/纠正给的场景名单 → 地图群的位置演算：成员落位当前/新场景，未列出者位置不动。 */
+  private applyPresenceToLocations(base: SceneAccess, scene: string | undefined, present: string[]): SceneAccess {
+    if (base.scene === undefined && scene === undefined) return { ...base, present }
+    const target = scene ?? base.scene ?? ''
+    const locations: Record<string, string> = { ...(base.locations ?? {}) }
+    for (const n of present) locations[n] = target
+    const nextPresent = this.characters.map(c => c.name).filter(n => locations[n] === target)
+    return { scene: target || undefined, locations, present: nextPresent, remote: base.remote, overhear: base.overhear }
   }
 
   private async *speakAs(name: string, history: MsgLine[]): AsyncGenerator<SessionEvent, { text: string; msgId?: number; judge?: JevAfterReplyResult }> {
@@ -819,6 +954,7 @@ export class GroupSession {
       remote: this.remoteLinks(),
       overhear: this.overhearLinks(),
       appearances: this.appearanceMap,
+      ...(this.settings.scene !== '' ? { scenes: listScenes(this.groupDir), activeScene: this.scene.scene } : {}),
     })
     if (messages.length === 0) {
       // 视野内没有任何可说的话（如失聪者被兜底选中）：不调模型，按空回复处理
@@ -852,6 +988,7 @@ export class GroupSession {
             userName: this.userPersona.name,
             statusNotes: this.statusNotes(),
             presentNotes: this.presentNotes(),
+            present: this.presentNames(),
             recent: this.store.effectiveMessages().slice(-config.contextWindow).map(m => `${m.name}：${m.text}`).join('\n'),
             tone: this.settings.tone,
             rules: this.rules,
@@ -1070,8 +1207,10 @@ export class GroupSession {
       const resolved = this.resolvePresence(p)
       if (resolved === undefined) continue
       const cur = this.sceneAccess()
+      const withLoc = this.applyPresenceToLocations(cur, resolved.scene, resolved.present)
       const next = this.normalizeScene({
-        present: resolved.present,
+        ...(withLoc.scene !== undefined ? { scene: withLoc.scene, locations: withLoc.locations } : {}),
+        present: withLoc.present,
         remote: resolved.remote ?? cur.remote,
         overhear: resolved.overhear ?? cur.overhear,
       })
@@ -1159,12 +1298,13 @@ function stripNameEcho(text: string, name: string): string {
   return out
 }
 
-/** 一句话描述场景人员（现场 + 接入 + 单向感知），用于事件与日志摘要。 */
+/** 一句话描述场景（当前地点 + 现场 + 接入 + 单向感知），用于事件与日志摘要。 */
 export function sceneSummary(scene: SceneAccess): string {
   const present = scene.present.length > 0 ? scene.present.join('、') : '（无）'
   const remote = scene.remote.map(l => `${l.character}（${l.note ?? '远程'}）`).join('、')
   const overhear = scene.overhear.map(l => `${l.character}（${l.note ?? '单向感知'}）`).join('、')
   return [
+    scene.scene !== undefined ? `当前 ${scene.scene}` : '',
     `现场 ${present}`,
     remote === '' ? '' : `接入 ${remote}`,
     overhear === '' ? '' : `感知 ${overhear}`,

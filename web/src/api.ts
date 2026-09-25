@@ -17,11 +17,14 @@ export interface Msg {
 export interface Route { type: 'route'; round: number; picked: string; reason: string; fallback: boolean }
 export interface Character { name: string; dirName: string }
 export interface RemoteLink { character: string; perceive: '语音' | '视听'; note?: string; since?: number }
+export interface Scene { name: string; description: string }
 export interface Snapshot {
   name: string
   era: string
   world: string
   tone: string
+  scene: string
+  scenes: Scene[]
   userName: string
   present: string[]
   remote: RemoteLink[]
@@ -31,7 +34,7 @@ export interface Snapshot {
   messages: Msg[]
   routes: Route[]
 }
-export interface Draft { name: string; appearance: string; background: string; personality: string; relationships: string }
+export interface Draft { name: string; appearance: string; background: string; personality: string; relationships: string; scene?: string }
 export interface Provider { id: string; name: string; baseUrl: string; apiKey: string; model: string; reasoningEffort: string }
 export interface ModelsInfo { providers: Provider[]; activeId: string; routerId: string; current: { baseUrl: string; apiKey: string; model: string; reasoningEffort: string; source: string } }
 /** SessionEvent 的孪生（engine.ts）。 */

@@ -17,8 +17,9 @@ import {
   createCharacter, createGroup, isValidName, readCharacterDraft, saveGroupSettings, saveUserPersona, updateCharacter,
   type CharacterDraft,
 } from './group/scaffold.ts'
-import { loadUserPersona } from './group/persona.ts'
+import { loadGroupSettings, loadUserPersona } from './group/persona.ts'
 import { parseRemoteList } from './group/presence.ts'
+import { createScene, listScenes, saveSceneDescription } from './group/scene.ts'
 import { loadRules, saveRules } from './group/rules.ts'
 import { loadSettings, saveSettings, resolveLlm, healOrphanSettingsBackup, type Provider } from './settings.ts'
 import { registerStatic } from './server-static.ts'
@@ -79,10 +80,11 @@ async function runEvents(c: Context, gen: AsyncGenerator<SessionEvent>): Promise
 }
 
 app.post('/api/group/:name/message', async c => {
-  const body = await c.req.json<Record<string, string>>().catch(() => ({}) as Record<string, string>)
-  const text = (body.text ?? '').trim()
+  const body = await c.req.json<Record<string, unknown>>().catch(() => ({}) as Record<string, unknown>)
+  const text = String(body.text ?? '').trim()
   if (text === '') return c.json({ error: 'text 不能为空' }, 400)
-  return runEvents(c, getSession(c.req.param('name')).speak(text))
+  const scene = typeof body.scene === 'string' && body.scene.trim() !== '' ? body.scene.trim() : undefined
+  return runEvents(c, getSession(c.req.param('name')).speak(text, scene))
 })
 
 app.post('/api/group/:name/roll', c => runEvents(c, getSession(c.req.param('name')).roll()))
@@ -95,24 +97,57 @@ function groupDir(name: string): string {
 }
 
 app.post('/api/groups', async c => {
-  const body = await c.req.json<Record<string, unknown>>().catch(() => ({} as Record<string, unknown>))
+  const body = await c.req.json<Record<string, unknown>>().catch(() => ({}) as Record<string, unknown>)
   const name = String(body.name ?? '').trim()
   const dir = groupDir(name)
   if (existsSync(dir)) return c.json({ error: `群聊「${name}」已存在` }, 400)
-  createGroup(dir, {
-    era: String(body.era ?? ''),
-    world: String(body.world ?? ''),
-    tone: String(body.tone ?? ''),
+  const scenes = (Array.isArray(body.scenes) ? body.scenes : []).flatMap(x => {
+    const o = (x ?? {}) as Record<string, unknown>
+    const sn = String(o.name ?? '').trim()
+    const sd = String(o.description ?? '').trim()
+    return sn === '' ? [] : [{ name: sn, description: sd }]
   })
+  const scene = String(body.scene ?? '').trim()
+  createGroup(dir, { era: String(body.era ?? ''), world: String(body.world ?? ''), tone: String(body.tone ?? ''), scene }, scenes)
   return c.json({ ok: true, name })
 })
 
 app.put('/api/group/:name/settings', async c => {
-  const body = await c.req.json<Record<string, unknown>>().catch(() => ({} as Record<string, unknown>))
+  const body = await c.req.json<Record<string, unknown>>().catch(() => ({}) as Record<string, unknown>)
   const dir = groupDir(c.req.param('name'))
   if (!existsSync(dir)) return c.json({ error: '群聊不存在' }, 400)
-  saveGroupSettings(dir, { era: String(body.era ?? ''), world: String(body.world ?? ''), tone: String(body.tone ?? '') })
+  // scene（初始当前场景）是建群时定下的出发点，这里原样保留
+  const saved = loadGroupSettings(dir)
+  saveGroupSettings(dir, { era: String(body.era ?? ''), world: String(body.world ?? ''), tone: String(body.tone ?? ''), scene: saved.scene })
   sessions.delete(c.req.param('name')) // 设定变了，丢弃缓存的会话
+  return c.json({ ok: true })
+})
+
+// ---------- 场景（地图，§3.5a）：名称一经创建不可改不可删，描述可改；仅用户可写 ----------
+
+app.get('/api/group/:name/scenes', c => c.json({ scenes: listScenes(groupDir(c.req.param('name'))) }))
+
+app.post('/api/group/:name/scenes', async c => {
+  const body = await c.req.json<Record<string, unknown>>().catch(() => ({}) as Record<string, unknown>)
+  const dir = groupDir(c.req.param('name'))
+  if (!existsSync(dir)) return c.json({ error: '群聊不存在' }, 400)
+  try {
+    createScene(dir, String(body.name ?? '').trim(), String(body.description ?? '').trim())
+  } catch (e) {
+    return c.json({ error: e instanceof Error ? e.message : String(e) }, 400)
+  }
+  sessions.delete(c.req.param('name')) // 地图变了，丢弃缓存的会话
+  return c.json({ ok: true })
+})
+
+app.put('/api/group/:name/scenes/:scene', async c => {
+  const dir = groupDir(c.req.param('name'))
+  if (!existsSync(dir)) return c.json({ error: '群聊不存在' }, 400)
+  try {
+    saveSceneDescription(dir, c.req.param('scene'), String((await c.req.json<Record<string, unknown>>().catch(() => ({}) as Record<string, unknown>)).description ?? '').trim())
+  } catch (e) {
+    return c.json({ error: e instanceof Error ? e.message : String(e) }, 400)
+  }
   return c.json({ ok: true })
 })
 
@@ -141,6 +176,7 @@ function draftFrom(body: Record<string, unknown>): CharacterDraft {
     background: String(body.background ?? ''),
     personality: String(body.personality ?? ''),
     relationships: String(body.relationships ?? ''),
+    scene: String(body.scene ?? '').trim(),
   }
 }
 
@@ -197,16 +233,24 @@ app.get('/api/group/:name/presence', c => {
 })
 
 app.put('/api/group/:name/presence', async c => {
-  const body = await c.req.json<Record<string, unknown>>().catch(() => ({} as Record<string, unknown>))
+  const body = await c.req.json<Record<string, unknown>>().catch(() => ({}) as Record<string, unknown>)
   const present = Array.isArray(body.present) ? (body.present as unknown[]).map(String) : []
   const s = getSession(c.req.param('name'))
   // remote/overhear 不传 = 保持现状（用户只勾选现场者时不应顺手断开正在进行的接入/偷听）
   const cur = s.sceneAccess()
   const remote = parseRemoteList(body.remote) ?? cur.remote
   const overhear = parseRemoteList(body.overhear) ?? cur.overhear
-  s.setScene({ present, remote, overhear }, '用户手动修正')
+  // scene 手动换场景（地图群）；present 勾选 = 位置落位当前场景（地图群），无地图群 = 显式名单
+  const scene = typeof body.scene === 'string' && body.scene.trim() !== '' ? body.scene.trim() : cur.scene
+  const locations: Record<string, string> = { ...(cur.locations ?? {}) }
+  if (scene !== undefined) {
+    for (const n of present) locations[n] = scene
+    const kept = new Set([...present, ...remote.map(l => l.character), ...overhear.map(l => l.character)])
+    for (const n of Object.keys(locations)) if (!kept.has(n) && cur.present.includes(n)) delete locations[n]
+  }
+  s.setScene({ ...(scene !== undefined ? { scene, locations } : {}), present, remote, overhear }, '用户手动修正')
   // 手动修正带人进场，同样触发"现场所见"（§5.8）：进门就该看见
-  s.maybeSnapshotEntrants(cur.present, '手动修正进场')
+  s.maybeSnapshotEntrants(cur, '手动修正进场')
   return c.json({ ok: true })
 })
 

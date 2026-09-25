@@ -28,7 +28,8 @@
     "selfcheck:engine": "tsx scripts/selfcheck-engine-offline.ts",
     "selfcheck:router": "tsx scripts/selfcheck-router-offline.ts",
     "accept:presence": "tsx scripts/acceptance-presence.ts",
-    "accept:director": "tsx scripts/acceptance-director.ts"
+    "accept:director": "tsx scripts/acceptance-director.ts",
+    "selfcheck:scene": "tsx scripts/selfcheck-scene-offline.ts"
   },
   "devDependencies": {
     "@types/js-yaml": "^4.0.9",

@@ -47,6 +47,10 @@ export interface LedgerLine {
 /** 场景人员变更（判定层从剧情判断：谁进入/离开现场、谁接入或单向感知，SPEC §4）。 */
 export interface PresenceLine {
   type: 'presence'
+  /** 当前场景名（地图群）；无地图群缺省。 */
+  scene?: string
+  /** 各角色所在场景（地图群：角色名 → 场景名；缺键 = 其他）。 */
+  locations?: Record<string, string>
   present: string[]
   /** 通道接入（不在现场、当下双向连通）；缺省 = 无接入。 */
   remote?: RemoteLink[]
@@ -206,9 +210,17 @@ export class StoryStore {
   }
 
   /** 场景人员变更落盘（append-only；在场.yaml 由其重放重建）。 */
-  appendPresence(present: string[], reason: string, remote: RemoteLink[] = [], overhear: RemoteLink[] = []): void {
+  appendPresence(
+    present: string[],
+    reason: string,
+    remote: RemoteLink[] = [],
+    overhear: RemoteLink[] = [],
+    scene?: string,
+    locations?: Record<string, string>,
+  ): void {
     const line: PresenceLine = {
       type: 'presence',
+      ...(scene !== undefined ? { scene, locations: { ...(locations ?? {}) } } : {}),
       present: [...present],
       ...(remote.length > 0 ? { remote: remote.map(l => ({ ...l })) } : {}),
       ...(overhear.length > 0 ? { overhear: overhear.map(l => ({ ...l })) } : {}),
@@ -224,6 +236,7 @@ export class StoryStore {
     const line = [...this.lines].reverse().find((l): l is PresenceLine => l.type === 'presence')
     if (line === undefined) return undefined
     return {
+      ...(line.scene !== undefined ? { scene: line.scene, locations: { ...(line.locations ?? {}) } } : {}),
       present: [...line.present],
       remote: (line.remote ?? []).map(l => ({ ...l })),
       overhear: (line.overhear ?? []).map(l => ({ ...l })),

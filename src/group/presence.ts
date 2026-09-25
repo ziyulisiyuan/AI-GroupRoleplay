@@ -1,17 +1,23 @@
 /**
- * 场景接入（SPEC §3.11）：谁在这个场景里、谁通过通道接入。
+ * 场景接入（SPEC §4）：谁在这个场景里、谁通过通道接入。
  * 位置：groups/<群聊>/在场.yaml（机器字段 → yaml；事实源是 剧情.jsonl 的 presence 行）。
  *
- * 两层，别混淆：
- *   present —— **现场**：人就在这个场景里。默认能发言、能听、能看。
+ * 地图群（群设定.scene 非空）：
+ *   scene     —— 当前场景名（故事跟随用户；⊘ 手选或换场景判定可切换）。
+ *   locations —— 各角色所在场景（角色名 → 场景名）；缺键 = 其他（图外）。
+ *   present   —— 现场 = 位置等于当前场景的角色（代码事实，不靠模型猜）。
+ * 无地图群：scene/locations 缺省，present 为显式名单。
+ *
  *   remote  —— **通道接入**：人不在现场，但当下双向连通（此刻能感知这里、这里也能与他互动）。
  *              perceive=语音 者只感知到声音；perceive=视听 者还能看到画面。
  *              接入者**可以发言**；他能否感知某条消息与其他角色走同一套知情判定，另受自己 since 锚点约束。
+ *   overhear —— **单向感知**（偷听/监控/隔墙有耳——能知道这里的事、但无法实时互动，现场角色不知道他在听）。
+ *              结构与 remote 相同（含各自独立的 since 起点）。
  *
  * 判定标准只有"当下双向"：只满足单向或延迟投递的传达不是接入——那是物件或转述，
  * 不构成感知，也不会进入任何人的账本。
  *
- * 缺省（文件不存在）：视为全员现场（向后兼容旧群）。
+ * 缺省（文件不存在）：视为全员现场（调用方处理）。
  */
 import { existsSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
@@ -33,10 +39,13 @@ export interface RemoteLink {
 }
 
 export interface SceneAccess {
+  /** 当前场景名（地图群）；无地图群为 undefined。 */
+  scene?: string
+  /** 各角色所在场景（地图群：角色名 → 场景名）；缺键 = 其他（图外）。 */
+  locations?: Record<string, string>
+  /** 现场：地图群下 = 位置等于当前场景的角色；无地图群 = 显式名单。 */
   present: string[]
   remote: RemoteLink[]
-  /** 单向感知（偷听/监控/隔墙有耳——能知道这里的事、但无法实时互动，现场角色不知道他在听）。
-   *  结构与 remote 相同（含各自独立的 since 起点）。 */
   overhear: RemoteLink[]
 }
 
@@ -68,13 +77,20 @@ export function parseRemoteList(value: unknown): RemoteLink[] | undefined {
 }
 
 /** 读取场景接入；缺省返回空（调用方按"全员现场"处理）。 */
-/** 读取场景接入；缺省返回空（调用方按"全员现场"处理）。 */
 export function loadScene(groupDir: string): SceneAccess {
   const file = presencePath(groupDir)
   if (!existsSync(file)) return emptyScene()
   const raw = (loadYaml(readFileSync(file, 'utf8').replace(/^\uFEFF/, '')) ?? {}) as Record<string, unknown>
   const present = (Array.isArray(raw.present) ? raw.present : []).map(v => String(v).trim()).filter(v => v !== '')
+  const scene = typeof raw.scene === 'string' && raw.scene.trim() !== '' ? raw.scene.trim() : undefined
+  const locations: Record<string, string> = {}
+  if (scene !== undefined && raw.locations !== null && typeof raw.locations === 'object') {
+    for (const [k, v] of Object.entries(raw.locations as Record<string, unknown>)) {
+      if (typeof v === 'string' && v.trim() !== '') locations[k.trim()] = v.trim()
+    }
+  }
   return {
+    ...(scene !== undefined ? { scene, locations } : {}),
     present,
     remote: parseRemoteList(raw.remote) ?? [],
     overhear: parseRemoteList(raw.overhear) ?? [],
@@ -83,7 +99,7 @@ export function loadScene(groupDir: string): SceneAccess {
 
 export function saveScene(groupDir: string, scene: SceneAccess): void {
   const present = [...new Set(scene.present.map(v => v.trim()).filter(v => v !== ''))]
-  const encodeLinks = (links: RemoteLink[]): ReturnType<typeof Array.prototype.flatMap> => {
+  const encodeLinks = (links: RemoteLink[]): Array<{ character: string; perceive: RemotePerceive; note?: string; since?: number }> => {
     const seen = new Set<string>()
     return links.flatMap(l => {
       const character = l.character.trim()
@@ -97,11 +113,23 @@ export function saveScene(groupDir: string, scene: SceneAccess): void {
       }]
     })
   }
-  writeFileSync(presencePath(groupDir), dumpYaml({ present, remote: encodeLinks(scene.remote), overhear: encodeLinks(scene.overhear) }, { lineWidth: -1 }), 'utf8')
+  writeFileSync(
+    presencePath(groupDir),
+    dumpYaml(
+      {
+        ...(scene.scene !== undefined ? { scene: scene.scene, locations: scene.locations ?? {} } : {}),
+        present,
+        remote: encodeLinks(scene.remote),
+        overhear: encodeLinks(scene.overhear),
+      },
+      { lineWidth: -1 },
+    ),
+    'utf8',
+  )
 }
 
 /**
- * 感知能力（SPEC §3.11）。
+ * 感知能力（SPEC §4）。
  * 规则：若存在保留字段 `感知`（或 `感官`），**以它为准**（可写 `感知: 正常` 显式覆盖）；
  * 否则扫描全部状态字段的文本找关键词（总管常把"被刺瞎了"写进 身体状况）。
  */
@@ -114,7 +142,7 @@ export function perceives(status: Record<string, string>): { hearing: boolean; s
 }
 
 /**
- * 该角色能否作为**自动目击者**（SPEC §3.11）。
+ * 该角色能否作为**自动目击者**（SPEC §4）。
  *
  * 保守规则：要求听觉与视觉都正常。理由：剧情消息里语音与动作描写混在一起，
  * 程序无法可靠区分"他是听见的"还是"他看见的"；若放宽到"听或看其一"，失聪者就会

@@ -16,6 +16,8 @@ export interface CharacterPersona {
   appearance: string
   /** 角色.md 正文（背景等自由补充）。 */
   body: string
+  /** 初始所在场景（建角色时从地图里选定，此后只显示不可改；空 = 无/图外）。 */
+  scene: string
 }
 
 function str(v: unknown): string {
@@ -39,6 +41,7 @@ export function loadCharacter(file: string): CharacterPersona {
     name: str(fm.name) || dirName,
     appearance: str(fm.appearance),
     body: (m[2] ?? '').trim(),
+    scene: str(fm.scene),
   }
 }
 
@@ -53,11 +56,13 @@ export function loadCharacters(groupDir: string): CharacterPersona[] {
     .map(loadCharacter)
 }
 
-/** 群设定（SPEC §3.2）：era / world / tone（tone 只给总管，永不下发角色）。 */
+/** 群设定（SPEC §3.5）：era / world / tone（tone 只给总管，永不下发角色）；scene = 建群时指定的初始当前场景。 */
 export interface GroupSettings {
   era: string
   world: string
   tone: string
+  /** 初始当前场景名（地图群的出发点；空 = 无地图）。此后它只随 presence 行演进。 */
+  scene: string
 }
 
 /**
@@ -93,10 +98,10 @@ export function hasGroupSettings(groupDir: string): boolean {
   return existsSync(groupSettingsPath(groupDir))
 }
 
-/** 读取群设定（era / world / tone）。 */
+/** 读取群设定（era / world / tone / scene）。 */
 export function loadGroupSettings(groupDir: string): GroupSettings {
   const file = groupSettingsPath(groupDir)
-  if (!existsSync(file)) return { era: '', world: '', tone: '' }
+  if (!existsSync(file)) return { era: '', world: '', tone: '', scene: '' }
   const fm = (loadYaml(stripBom(readFileSync(file, 'utf8'))) ?? {}) as Record<string, unknown>
-  return { era: str(fm.era), world: str(fm.world), tone: str(fm.tone) }
+  return { era: str(fm.era), world: str(fm.world), tone: str(fm.tone), scene: str(fm.scene) }
 }

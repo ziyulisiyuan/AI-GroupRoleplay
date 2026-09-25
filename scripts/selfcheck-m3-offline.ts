@@ -18,8 +18,8 @@ import type { CharacterPersona, GroupSettings } from '../src/group/persona.ts'
 const dir = mkdtempSync(join(tmpdir(), 'm3-selfcheck-'))
 try {
   const store = StoryStore.open(join(dir, 'g'), 'g')
-  const settings: GroupSettings = { era: '', world: '', tone: '' }
-  const persona: CharacterPersona = { dirName: '角色甲', name: '角色甲', appearance: '', body: '' }
+  const settings: GroupSettings = { era: '', world: '', tone: '', scene: '' }
+  const persona: CharacterPersona = { dirName: '角色甲', name: '角色甲', appearance: '', body: '', scene: '' }
   const SECRET = '（测试机密）'
 
   store.append('user', '你', '（公开发言一）')

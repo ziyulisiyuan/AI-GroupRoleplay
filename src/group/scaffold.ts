@@ -8,6 +8,7 @@ import { join } from 'node:path'
 import { dump as dumpYaml } from 'js-yaml'
 import { groupSettingsPath, loadCharacter, loadCharacters, userPersonaPath, type GroupSettings, type UserPersona } from './persona.ts'
 import { emptyFiles, loadFiles, saveMemory, savePersonality, saveRelationships, saveStatus } from './status.ts'
+import { createScene, type Scene } from './scene.ts'
 import { StoryStore } from '../store.ts'
 
 /** 角色资料草稿（前端编辑器的字段集合）。 */
@@ -21,6 +22,8 @@ export interface CharacterDraft {
   personality: string
   /** 初始人物关系 → 人物关系.md 备注 */
   relationships: string
+  /** 初始所在场景（建角色时从地图选定；此后不可改——更新时忽略此字段） */
+  scene?: string
 }
 
 /** 群聊名/角色名合法性（同时防路径穿越）。 */
@@ -30,13 +33,14 @@ export function isValidName(name: string): boolean {
 }
 
 export function saveGroupSettings(groupDir: string, s: GroupSettings): void {
-  writeFileSync(groupSettingsPath(groupDir), dumpYaml({ era: s.era, world: s.world, tone: s.tone }, { lineWidth: -1 }), 'utf8')
+  writeFileSync(groupSettingsPath(groupDir), dumpYaml({ era: s.era, world: s.world, tone: s.tone, scene: s.scene }, { lineWidth: -1 }), 'utf8')
 }
 
-/** 建群：目录 + 群设定.yaml + 空的 用户.md 模板。已存在则抛错。 */
-export function createGroup(groupDir: string, s: GroupSettings): void {
+/** 建群：目录 + 群设定.yaml（含初始当前场景）+ 场景文件 + 空的 用户.md 模板。已存在则抛错。 */
+export function createGroup(groupDir: string, s: GroupSettings, scenes: Scene[] = []): void {
   if (existsSync(groupDir)) throw new Error('同名群聊已存在')
   mkdirSync(join(groupDir, '角色'), { recursive: true })
+  for (const sc of scenes) createScene(groupDir, sc.name, sc.description)
   saveGroupSettings(groupDir, s)
   saveUserPersona(groupDir, { name: '你', text: '' })
 }
@@ -47,11 +51,12 @@ export function saveUserPersona(groupDir: string, p: UserPersona): void {
   writeFileSync(userPersonaPath(groupDir), `---\n${fm}\n---\n\n${p.text.trim()}\n`, 'utf8')
 }
 
-function roleMarkdown(draft: CharacterDraft): string {
+function roleMarkdown(draft: CharacterDraft, scene: string): string {
   const fm = dumpYaml(
     {
       name: draft.name.trim(),
       appearance: draft.appearance,
+      ...(scene !== '' ? { scene } : {}),
     },
     { lineWidth: -1 },
   ).trimEnd()
@@ -65,7 +70,7 @@ export function createCharacter(groupDir: string, draft: CharacterDraft): string
   const dir = join(groupDir, '角色', name)
   if (existsSync(dir)) throw new Error(`角色「${name}」已存在`)
   mkdirSync(dir, { recursive: true })
-  writeFileSync(join(dir, '角色.md'), roleMarkdown({ ...draft, name }), 'utf8')
+  writeFileSync(join(dir, '角色.md'), roleMarkdown(draft, draft.scene?.trim() ?? ''), 'utf8')
   const files = emptyFiles()
   files.personality.base = draft.personality.trim()
   files.relationships.base = draft.relationships.trim()
@@ -76,7 +81,7 @@ export function createCharacter(groupDir: string, draft: CharacterDraft): string
   return name
 }
 
-/** 读取角色资料草稿（供编辑器回填）。 */
+/** 读取角色资料草稿（供编辑器回填；scene 只展示不可改）。 */
 export function readCharacterDraft(groupDir: string, dirName: string): CharacterDraft {
   const dir = join(groupDir, '角色', dirName)
   const roleFile = join(dir, '角色.md')
@@ -89,6 +94,7 @@ export function readCharacterDraft(groupDir: string, dirName: string): Character
     background: persona.body,
     personality: files.personality.base,
     relationships: files.relationships.base,
+    scene: persona.scene,
   }
 }
 
@@ -102,13 +108,14 @@ export function updateCharacter(groupDir: string, dirName: string, draft: Charac
   if (!existsSync(dir)) throw new Error(`角色不存在: ${dirName}`)
   const name = draft.name.trim()
   if (!isValidName(name)) throw new Error('非法角色名')
-  const oldName = loadCharacter(join(dir, '角色.md')).name
+  const oldPersona = loadCharacter(join(dir, '角色.md'))
+  const oldName = oldPersona.name
   if (oldName !== name) {
     const clash = loadCharacters(groupDir).find(c => c.dirName !== dirName && c.name === name)
     if (clash !== undefined) throw new Error(`角色名「${name}」已被 ${clash.dirName} 使用`)
     StoryStore.open(groupDir, groupDir.split(/[\\/]/).pop() ?? '').appendRename(oldName, name)
   }
-  writeFileSync(join(dir, '角色.md'), roleMarkdown({ ...draft, name }), 'utf8')
+  writeFileSync(join(dir, '角色.md'), roleMarkdown(draft, oldPersona.scene), 'utf8')
   const files = loadFiles(dir)
   files.personality.base = draft.personality.trim()
   files.relationships.base = draft.relationships.trim()

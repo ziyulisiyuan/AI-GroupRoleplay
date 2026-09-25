@@ -317,6 +317,19 @@ button.cell:active, .cell.tap:active { background: var(--bg-press); }
 }
 .composer-send:active { background: var(--brand-press); }
 .composer-send:disabled { background: #c9e9d6; color: #fff; }
+.composer-btn {
+  flex: none;
+  width: 36px;
+  height: 36px;
+  border-radius: var(--r-btn);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--bg-page);
+  color: var(--text-2);
+}
+.composer-btn.armed { background: var(--brand); color: #fff; }
+.composer-btn:disabled { opacity: 0.5; }
 
 /* 批量删除模式：输入条位置换成选择操作条 */
 .batch-bar { display: flex; align-items: center; gap: var(--s-2); padding: var(--s-2) var(--s-3) calc(var(--s-2) + env(safe-area-inset-bottom)); min-height: calc(var(--composer-bar) + env(safe-area-inset-bottom)); background: var(--bg-page); }
