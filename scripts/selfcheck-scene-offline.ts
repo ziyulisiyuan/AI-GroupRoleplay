@@ -233,7 +233,7 @@ try {
     state_dirty: { type: 'noul', noul: 0.1 },
   } })
   writeTestSettings(ds3.port, jev3.port)
-  for await (const ev of session.speak('（说起郡县旁的湖泊）')) void ev
+  for await (const ev of session.speak('（说起湖泊）')) void ev
   assert.equal(session.snapshot().scene, '大院', '极严苛：提到未建图地点/未明确移动 = 不动')
 
   // ── 5) 对话进场：丙被点名进来 → 落位当前场景，但听不到召唤这句；入场包注入

@@ -178,7 +178,7 @@ function SettingsView({ group, snap, onSaved }: { group: string; snap: Snapshot 
   return (
     <>
       <Cells>
-        <Field label="时代背景" value={era ?? ''} onChange={setEra} placeholder="如：架空的大晟王朝末年" />
+        <Field label="时代背景" value={era ?? ''} onChange={setEra} />
         <Field label="世界观设定" value={world} onChange={setWorld} multiline rows={6} />
         <Field label="总管基调" value={tone} onChange={setTone} multiline rows={3} />
       </Cells>
