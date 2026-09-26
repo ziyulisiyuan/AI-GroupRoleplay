@@ -706,7 +706,8 @@ export class GroupSession {
           if ((before.locations ?? {})[n] !== oldScene) continue // 非同行者：他们的落位在消息之后统一处理
           const to = quick?.locationChoice?.[n]
           if (to !== undefined && to !== '') locations[n] = to
-          else if (quick !== undefined) delete locations[n] // 其他（图外）；缺答案 = 留守原地
+          else if (to === '') delete locations[n] // 其他（图外）
+          // 缺答案（undefined，含手选无判定）= 留守原地
         }
         const present = this.characters.map(c => c.name).filter(n => locations[n] === target)
         const next: SceneAccess = { scene: target, locations, present, remote: before.remote, overhear: before.overhear }
@@ -758,12 +759,13 @@ export class GroupSession {
           const n = c.name
           const to = quick.locationChoice[n]
           const recorded = locations[n]
-          if (to !== undefined) {
-            if (to !== recorded) { locations[n] = to; changed = true }
-          } else if (recorded !== undefined) {
-            delete locations[n] // 其他（图外）
+          if (to === '') {
+            if (recorded !== undefined) { delete locations[n]; changed = true } // 其他（图外）
+          } else if (to !== undefined && to !== recorded) {
+            locations[n] = to
             changed = true
           }
+          // 缺答案（undefined）= 位置不动
         }
       }
       const remote = quick.links?.remote ?? cur.remote
@@ -1199,6 +1201,7 @@ export class GroupSession {
     await this.drainBg()
     this.reloadBooks()
     if (text.trim() === '') throw new Error('内容不能为空')
+    const before = this.sceneAccess()
     const recent = this.store.effectiveMessages().slice(-8).map(m => `${m.name}：${m.text}`).join('\n')
     const result = await askDirector({
       rosterLines: this.rosterLines,
@@ -1227,6 +1230,8 @@ export class GroupSession {
       this.setScene(next, p.reason)
       applied.push(`场景 → ${sceneSummary(next)}`)
     }
+    // 纠正窗口带人进场同样触发入场包（§5.8）：进门就该看见；回归者补离场经历
+    this.maybeSnapshotEntrants(before, '纠正窗口进场')
     for (const r of result.retracts) {
       const n = this.retractKnowledge(r.character, r)
       if (n > 0) applied.push(`${r.character} 记忆 -${n} 条`)

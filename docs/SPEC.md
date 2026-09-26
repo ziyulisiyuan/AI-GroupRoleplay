@@ -541,10 +541,10 @@ not entrants (nothing there is new to them):
   entrant must see the scene before speaking (the reverse of normal bookkeeping, which is
   post-reply background). A status note ("（X 环顾四周……）") marks the wait.
 - Failures or empty summaries grant nothing (manual memory panel still works). Entries are
-  retractable via the memory panel / correction window. **Manual presence fixes
-  (`PUT presence`) trigger the snapshot too** for the characters the fix brought in — entering
-  means seeing, regardless of who updated the roster. Bookkeeper-driven scene corrections do not
-  (they run after the turn and the next turn's diff covers them).
+  retractable via the memory panel / correction window. **Correction-window placements trigger
+  the snapshot too** for the characters they bring in — entering means seeing, regardless of who
+  placed them. Bookkeeper-driven scene corrections do not (they run after the turn and the next
+  turn's diff covers them).
 
 ### 5.9 Off-story experiences (事件补全 / 离场经历)
 

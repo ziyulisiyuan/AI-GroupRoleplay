@@ -407,7 +407,7 @@ export interface JevRouteResult {
   links?: { remote: RemoteLink[]; overhear: RemoteLink[] }
   /** 地图群：本轮用户换到的场景（'' = 未移动/置信不足/无效）。⊘ 手选时直接为手选值。 */
   sceneChange?: string
-  /** 地图群：各角色的最新位置（有效场景名；undefined = 其他/未提及）——唯一的在场机制。 */
+  /** 地图群：各角色的最新位置——有效场景名；'' = 其他（图外，显式判定）；undefined = 缺答案（位置不动）。 */
   locationChoice?: Record<string, string | undefined>
   /** 各角色的知情判断值（缺答案的语义由调用方按在场事实补齐）。 */
   knowsNoul?: Record<string, number>
@@ -538,7 +538,7 @@ export async function jevRoute(input: JevRouteInput): Promise<JevRouteResult | u
       && route.confidence >= JEV_THRESHOLDS.confidenceMin
 
     // 地图群：换场景与位置判定（⊘ 手选时 scene_change 未问，直接按手选值）。
-    // locationChoice 是唯一的在场机制：每个角色的最新位置（undefined = 其他/未提及）。
+    // locationChoice 是唯一的在场机制：每个角色的最新位置（'' = 其他/图外；undefined = 缺答案，位置不动）。
     let sceneChange: string | undefined
     let locationChoice: Record<string, string | undefined> | undefined
     if (isMap) {
@@ -551,7 +551,9 @@ export async function jevRoute(input: JevRouteInput): Promise<JevRouteResult | u
       locationChoice = {}
       for (const n of input.allNames) {
         const a = answers[`location_${n}`]
-        locationChoice[n] = a?.type === 'choice' && sceneNames.includes(a.choice) ? a.choice : undefined
+        locationChoice[n] = a?.type === 'choice'
+          ? (sceneNames.includes(a.choice) ? a.choice : '') // 选了图外地点或无效作答 = 其他
+          : undefined // 缺答案：引擎侧保持记录位置，不因丢答清位
       }
     }
 
