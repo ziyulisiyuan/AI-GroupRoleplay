@@ -135,6 +135,10 @@ export class GroupSession {
     for (const [n, sc] of Object.entries(scene.locations ?? {})) {
       if (exists(n) && sc !== '') locations[n] = sc
     }
+    // 显式 present 名单 = 成员资格声明：位置缺失者落位当前场景（平面式调用方的兼容语义）
+    for (const n of scene.present) {
+      if (exists(n) && locations[n] === undefined) locations[n] = scene.scene
+    }
     const present = this.characters.map(c => c.name).filter(n => locations[n] === scene.scene)
     const seen = new Set(present)
     return { scene: scene.scene, locations, present, remote: layerPick(scene.remote, seen), overhear: layerPick(scene.overhear, seen) }
@@ -591,7 +595,7 @@ export class GroupSession {
         remote: this.remoteLinks(),
         overhear: this.overhearLinks(),
         appearances: this.appearanceMap,
-        ...(this.settings.scene !== '' ? { scenes: listScenes(this.groupDir), activeScene: this.scene.scene } : {}),
+        ...(this.scene.scene !== undefined ? { scenes: listScenes(this.groupDir), activeScene: this.scene.scene } : {}),
       },
     )
     yield { type: 'speaker', name: last.name }
@@ -618,7 +622,7 @@ export class GroupSession {
     }
     // 当前场景先落盘（若尚无记录，以地图初始状态/全员为准），供总管参考
     const before = this.sceneAccess()
-    const isMap = this.settings.scene !== ''
+    const isMap = before.scene !== undefined
     if (this.store.lastScene() === undefined) this.store.appendPresence(before.present, '初始', before.remote, before.overhear, before.scene, before.locations)
 
     // 可发言者 = 现场者 ∪ 远程接入者（单向偷听者不能插话；仅当可发言者皆空时退回全员，避免剧情卡死）。
@@ -689,28 +693,20 @@ export class GroupSession {
       })
     }
 
-    // ── 地图群：本轮场景落定（⊘ 手选优先；否则换场景判定），先于用户消息——
-    // 目的地里的人听得见进门这句；跟随者（判定在场）随行落位，离开者按去向（其他/某场景）留在原地。
-    // 手选是用户指令：不配快路径也生效（此时只移动，不做跟随/离开演算）。
+    // ── 地图群 · 阶段一（先于用户消息）：用户移动场景；**同行者**（此前与用户同处一地）
+    // 按位置判定随行/留守/转往他处——随行者与目的地原住民都在发言现场，听得见这句话。
+    // 手选是用户指令：不配快路径也生效（此时只移动，同行者位置不动）。
     if (isMap && (manualScene !== undefined || quick !== undefined)) {
       const target = manualScene ?? (quick?.sceneChange ?? '')
-      if (target !== '' && target !== (before.scene ?? '')) {
+      const oldScene = before.scene ?? ''
+      if (target !== '' && target !== oldScene) {
         const locations: Record<string, string> = { ...(before.locations ?? {}) }
-        if (quick !== undefined) {
-          for (const c of this.characters) {
-            const n = c.name
-            const wasPresent = before.present.includes(n)
-            const p = quick.presentNoul?.[n] ?? (wasPresent ? 1 : 0)
-            if (p >= JEV_THRESHOLDS.perceiveMin || (wasPresent && p > JEV_THRESHOLDS.interactMax)) {
-              locations[n] = target // 跟随者随行；目的地里的人原位不动
-              continue
-            }
-            if (wasPresent && p <= JEV_THRESHOLDS.interactMax) {
-              const to = quick.locationChoice?.[n]
-              if (to !== undefined && to !== '') locations[n] = to
-              else delete locations[n] // 其他（图外）
-            }
-          }
+        for (const c of this.characters) {
+          const n = c.name
+          if ((before.locations ?? {})[n] !== oldScene) continue // 非同行者：他们的落位在消息之后统一处理
+          const to = quick?.locationChoice?.[n]
+          if (to !== undefined && to !== '') locations[n] = to
+          else if (quick !== undefined) delete locations[n] // 其他（图外）；缺答案 = 留守原地
         }
         const present = this.characters.map(c => c.name).filter(n => locations[n] === target)
         const next: SceneAccess = { scene: target, locations, present, remote: before.remote, overhear: before.overhear }
@@ -750,31 +746,35 @@ export class GroupSession {
     }
 
     if (isMap && quick !== undefined) {
-      // 地图群：对话驱动的进出（场景已定后）——明确进场的落位当前场景（晚于快照：听不到召唤他的
-      // 这句）；明确离开的按去向落位（他们听到过这句话——离开发生在发言之后）。
+      // 地图群 · 阶段二（晚于用户消息）：位置判定的统一落位——对话明确描写的进场者此刻才
+      // 出现（听不到召唤他的这句）、离开者此刻离去、图外移动照记；接入/单向感知链接同步修正。
+      // 已在阶段一落位的同行者此处幂等。全部以 location 答案为准（缺答案 = 位置不动）。
       const cur = this.sceneAccess()
       const active = cur.scene ?? ''
       const locations: Record<string, string> = { ...(cur.locations ?? {}) }
       let changed = false
-      for (const c of this.characters) {
-        const n = c.name
-        const wasPresent = cur.present.includes(n)
-        const p = quick.presentNoul?.[n] ?? (wasPresent ? 1 : 0)
-        if (!wasPresent && p >= JEV_THRESHOLDS.perceiveMin && locations[n] !== active) {
-          locations[n] = active
-          changed = true
-          continue
-        }
-        if (wasPresent && p <= JEV_THRESHOLDS.interactMax) {
-          const to = quick.locationChoice?.[n]
-          if (to !== undefined && to !== '') locations[n] = to
-          else delete locations[n] // 其他（图外）
-          changed = true
+      if (quick.locationChoice !== undefined) {
+        for (const c of this.characters) {
+          const n = c.name
+          const to = quick.locationChoice[n]
+          const recorded = locations[n]
+          if (to !== undefined) {
+            if (to !== recorded) { locations[n] = to; changed = true }
+          } else if (recorded !== undefined) {
+            delete locations[n] // 其他（图外）
+            changed = true
+          }
         }
       }
-      if (changed) {
-        const present = this.characters.map(c => c.name).filter(n => locations[n] === active)
-        const next: SceneAccess = { ...(active !== '' ? { scene: active, locations } : {}), present, remote: cur.remote, overhear: cur.overhear }
+      const remote = quick.links?.remote ?? cur.remote
+      const overhear = quick.links?.overhear ?? cur.overhear
+      const next: SceneAccess = {
+        ...(active !== '' ? { scene: active, locations } : {}),
+        present: this.characters.map(c => c.name).filter(n => locations[n] === active),
+        remote,
+        overhear,
+      }
+      if (changed || quick.links !== undefined) {
         if (!this.sameScene(next, cur)) {
           const applied = this.normalizeScene(next)
           this.setScene(applied, '地图判定')
@@ -782,13 +782,19 @@ export class GroupSession {
         }
       }
     } else if (quick !== undefined) {
-      // 无地图群：三层场景修正此刻落盘（晚于快照——刚进场者听不到刚才那句）
-      if (quick.scene !== undefined && !this.sameScene(quick.scene, this.sceneAccess())) {
-        const applied = this.normalizeScene(quick.scene)
-        this.setScene(applied, 'Jev场景判断')
+      // 无地图群：链接修正落盘（接入/单向感知）；现场名单由总管代管与纠正窗口维护
+      const cur = this.sceneAccess()
+      const next: SceneAccess = {
+        present: cur.present,
+        remote: quick.links?.remote ?? cur.remote,
+        overhear: quick.links?.overhear ?? cur.overhear,
+      }
+      if (!this.sameScene(next, cur)) {
+        const applied = this.normalizeScene(next)
+        this.setScene(applied, 'Jev链接判定')
         yield { type: 'info', text: `场景更新：${sceneSummary(applied)}（Jev）` }
       }
-    } else {
+    } else if (route !== undefined) {
       // 回退路径：总管判断的场景人员变动（谁进来/离开/接入/开始偷听；scene = 用户移动到的场景）。
       // 名单里的名字经 resolveCharacterName 对号（"甲"↔"角色甲"），对不上的丢弃。
       for (const p of route!.presenceUpdates) {
@@ -957,7 +963,7 @@ export class GroupSession {
       remote: this.remoteLinks(),
       overhear: this.overhearLinks(),
       appearances: this.appearanceMap,
-      ...(this.settings.scene !== '' ? { scenes: listScenes(this.groupDir), activeScene: this.scene.scene } : {}),
+      ...(this.scene.scene !== undefined ? { scenes: listScenes(this.groupDir), activeScene: this.scene.scene } : {}),
     })
     if (messages.length === 0) {
       // 视野内没有任何可说的话（如失聪者被兜底选中）：不调模型，按空回复处理

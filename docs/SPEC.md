@@ -79,10 +79,11 @@ a fallback full director (deepseek, §6.1c), and a correction window (§6.3).
    retelling / gate judgments from the same answers still apply (each is threshold-guarded and
    stands on its own).
 3a. Map groups: apply the scene move **before** the user message — ⊘ manual pick, or the
-   `scene_change` answer (confidence-guarded; strict). Followers (present ≥0.7) move with the
-   user; leavers (present ≤0.3 among the previous occupants) fall where their `location_<角色>`
-   answer says (a created scene, or 其他 = off-map); ambiguous keeps. The destination's colocated
-   occupants hear the arrival line.
+   `scene_change` answer (confidence-guarded; strict). The user's **companions** (characters
+   recorded in the previous active scene) fall where their `location_<角色>` answer says: the
+   target scene (followed), their recorded location (stayed behind), another scene, or 其他 =
+   off-map; a missing answer keeps their recorded location. Characters recorded in the
+   destination scene are colocated by record. All of them hear the arrival line.
 4. Append the user `msg` line. `visible_to` = knowledge audience (§4.3/§4.4): the Jev `knows` set
    filtered by per-link `since` anchors; when the fast path is unavailable, fallback =
    present ∩ full perception (keyword rule). The snapshot is written at birth — context window and
@@ -603,10 +604,19 @@ text; transport failures throw and are caught). Questions:
   route **deliberately does
   not offer the user as a choice**: a user message always gets a character response. Handing the
   floor back to the user is the relay's job (below), where the context makes the choice honest.
-- `present_<角色>` for every character (noul "is he in the scene right now"): ≥0.7 in, ≤0.3 out,
-  in between = keep current state (no presence row). **Dialogue takes precedence over records**:
-  the scene record and the status ledger can lag behind the story — when the dialogue depicts
-  someone arriving, judge him present (updating the record is this judge's own job).
+  Map groups add to the same call: the **map state** (active scene, every scene's full
+  description, every character's location), `scene_change` — a `choice` over the created scenes
+  plus 未移动, worded **extremely strictly** (only an explicit depiction of arriving at / entering
+  that scene counts; mentioning a place, intending to go, or sending someone else does not) —
+  and the per-character `location_<角色>` questions (below). `⊘` (the composer button) sets the
+  target scene directly: the question is skipped and the pick applies as-is.
+- `location_<角色>` for every character (choice over the created scenes plus 其他) — **the only
+  presence mechanism**: the answer becomes the character's location, and presence derives from it
+  (location == active scene). Extremely strict: the location changes only when the dialogue
+  **explicitly depicts** him moving/arriving/being taken somewhere; when the dialogue does not
+  mention him, the answer is his recorded location; off-map places = 其他. **Dialogue takes
+  precedence over records** when it explicitly depicts movement (updating the record is this
+  judge's own job).
 - `perceive_<角色>` / `interact_<角色>` for off-scene characters (abstract criteria, §4.1):
   derive remote (both high) / overhear (perceive high, interact low) / absent; ambiguous keeps the
   current layer; `mode_<角色>` (choice 语音/视听) sets the modality; existing notes and `since`
@@ -765,14 +775,13 @@ stale-entry heal (§5.3).
 | `GET\|POST /api/group/{name}/character/{dir}/memory` · `DELETE .../memory/{index}` | memory view / add (`用户指定`) / retract by index |
 | `GET\|PUT /api/group/{name}/avatar` · `GET\|PUT /api/group/{name}/user/avatar` · `GET\|PUT /api/group/{name}/character/{dir}/avatar` | avatars — display-only, never sent to any model or director. PUT body = raw image bytes (JPEG/PNG/WebP/GIF, magic-byte checked, ≤2 MiB; the client downscales to a square JPEG before upload). GET → 404 = unset. Storage: `头像.dat` in the group dir (group avatar) / character dir (character avatar), `用户头像.dat` in the group dir (user persona avatar) |
 | `GET\|PUT /api/group/{name}/character/{dir}/ledger` | status ledger read / whole-snapshot user update |
-| `GET\|PUT /api/group/{name}/presence` | scene layers; `scene` = active scene (map groups); `remote`/`overhear` omitted = keep that layer; checked members' locations move to the active scene, unchecked keep theirs; manual fixes trigger the entry kit for new entrants |
 | `GET\|POST /api/group/{name}/scenes` · `PUT .../scenes/{scene}` | scene map: list / create (name immutable once created, no delete) / edit description |
 | `GET\|POST /api/group/{name}/director` | correction window history / speak |
 | `GET\|PUT /api/rules` | global rules |
 | `GET\|POST /api/models` · `PUT\|DELETE /api/models/{id}` · `POST /api/models/{id}/activate` · `PUT /api/models/router` | provider management; deleting the active provider falls back to the first; the router endpoint sets/clears the fast-path provider (deleting that provider clears it too) |
 
 Errors: thrown → 400 `{"error"}`. Session cache `Map<群名, GroupSession>`; invalidated on group
-settings/user/character/rules changes; status/memory/presence changes do not invalidate (the
+settings/user/character/rules changes; status/memory/location changes do not invalidate (the
 engine re-reads disk every turn).
 
 ### 7.3 CLI
@@ -905,14 +914,15 @@ theme only — deliberate). Desktop widths letterbox the app into a centered 520
   layout viewport unchanged (e.g. iOS Safari) would cover the composer — accepted: the fleet is
   Android + desktop.
 - **聊天信息** (`groupinfo.tsx`, the ⋯ button): avatar block (group avatar + member avatars +
-  我) and seven pages — 群聊设定 · 我的设定 (user persona + user avatar) · 纠正窗口 (rendered
+  我) and six pages — 群聊设定 · 我的设定 (user persona + user avatar) · 纠正窗口 (rendered
   as a chat: user green bubbles right, 总管 white bubbles left with name label, applied summary
-  under the reply) · 此时明确现场者 (present checkboxes only — no remote/overhear display) ·
+  under the reply) ·
   **场景** (map page: create-scene form + list; tapping a scene edits its description in a modal —
   names are immutable and scenes cannot be deleted) ·
   角色 (list → character page = 个人资料 draft form + 记忆 panel + 状态账本 section;
-  the form shows 初始所在场景 read-only and, on map groups, 目前所在场景 — the engine-maintained
-  location from the presence row, marked （当前） when it equals the active scene) ·
+  the form shows 目前所在场景 read-only — the engine-maintained location from the presence
+  row; scene membership is fully derived from the location table, so there is no separate
+  presence-checkbox page) ·
   运行日志 (判定.jsonl tail, rows expandable to raw JSON).
   The **character form** carries 初始所在场景: a radio list over the group's scenes when creating
   (chosen once, immutable afterwards — the edit page shows it read-only), absent when the group

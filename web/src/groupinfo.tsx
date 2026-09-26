@@ -16,13 +16,13 @@ import type { Scene } from './api.ts'
 export const LEDGER_KEYS = ['生理状态', '心理状态', '外观状态', '位置状态', '性格演变', '姓名变化', '人物关系变化'] as const
 
 type InfoView =
-  | 'hub' | 'settings' | 'me' | 'director' | 'presence' | 'log' | 'scenes'
+  | 'hub' | 'settings' | 'me' | 'director' | 'log' | 'scenes'
   | { char: string }                                        // 角色资料收纳页（'' = 新建角色表单）
   | { charSub: string; page: 'profile' | 'memory' | 'ledger' }
 
 const VIEW_TITLES: Record<Exclude<InfoView, { char: string } | { charSub: string; page: 'profile' | 'memory' | 'ledger' }>, string> = {
   hub: '聊天信息', settings: '群聊设定', me: '我的设定', director: '对总管说（纠正）',
-  presence: '此时明确现场者', log: '运行日志', scenes: '场景',
+  log: '运行日志', scenes: '场景',
 }
 
 export function InfoRoot({ group, onExit }: { group: string; onExit: () => void }): React.ReactElement {
@@ -60,7 +60,6 @@ export function InfoRoot({ group, onExit }: { group: string; onExit: () => void 
         {top === 'settings' && <SettingsView group={group} snap={snap} onSaved={refresh} />}
         {top === 'me' && <MeView group={group} snap={snap} avatarV={avatarV} bump={bump} onSaved={refresh} />}
         {top === 'director' && <DirectorView group={group} onChanged={refresh} />}
-        {top === 'presence' && <PresenceView group={group} snap={snap} onChanged={refresh} />}
         {top === 'log' && <LogView group={group} />}
         {top === 'scenes' && <ScenesView group={group} snap={snap} onChanged={refresh} />}
         {typeof top !== 'string' && 'char' in top && (
@@ -132,7 +131,6 @@ function HubView({ group, snap, avatarV, bump, go }: {
       </Cells>
       <Cells>
         <Cell title="纠正窗口" arrow onTap={() => go('director')} />
-        <Cell title="此时明确现场者" arrow onTap={() => go('presence')} />
       </Cells>
       <Cells>
         <Cell title="场景" sub={snap !== null && snap.scene !== '' ? `当前：${snap.scene} · 共 ${snap.scenes.length} 个` : `共 ${snap?.scenes.length ?? 0} 个`} arrow onTap={() => go('scenes')} />
@@ -308,44 +306,6 @@ function DirectorView({ group, onChanged }: { group: string; onChanged: () => Pr
         />
         <button disabled={busy || input.trim() === ''} onClick={() => void send()}>{busy ? '总管思考中…' : '发送'}</button>
       </div>
-    </>
-  )
-}
-
-/* ---------- 此时明确现场者 ---------- */
-
-function PresenceView({ group, snap, onChanged }: {
-  group: string; snap: Snapshot | null; onChanged: () => Promise<void>
-}): React.ReactElement {
-  const toast = useToast()
-  const [present, setPresent] = useState<Set<string>>(new Set())
-  const [ready, setReady] = useState(false)
-  useEffect(() => {
-    if (snap !== null && !ready) { setPresent(new Set(snap.present)); setReady(true) }
-  }, [snap, ready])
-
-  const toggle = async (name: string, on: boolean): Promise<void> => {
-    const next = new Set(present)
-    if (on) next.add(name)
-    else next.delete(name)
-    setPresent(next)
-    try {
-      // 只提交现场层；remote/overhear 不传 = 保持现状（后端语义）
-      await putJson(`/api/group/${enc(group)}/presence`, { present: [...next] })
-      await onChanged()
-    } catch (e) {
-      toast(e instanceof Error ? e.message : String(e))
-    }
-  }
-
-  if (snap === null) return <div className="empty">加载中……</div>
-  return (
-    <>
-      <Cells>
-        {snap.characters.map(c => (
-          <CheckCell key={c.dirName} on={present.has(c.name)} label={c.name} onToggle={on => void toggle(c.name, on)} />
-        ))}
-      </Cells>
     </>
   )
 }

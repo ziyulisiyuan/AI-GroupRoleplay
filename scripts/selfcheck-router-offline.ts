@@ -17,6 +17,7 @@ import { existsSync, rmSync, writeFileSync } from 'node:fs'
 import { readFileSync as fsReadFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { config } from '../src/config.ts'
+import { createScene } from '../src/group/scene.ts'
 import { buildGroupFixture, TEST_CAST } from './lib/fixture.ts'
 
 const accName = '_selfcheck-router'
@@ -134,6 +135,12 @@ const baseInput = (port: number): Parameters<typeof jevRoute>[0] => ({
   userText: '大家好',
   tone: '',
   timeoutMs: 1000,
+  scenes: [
+    { name: '大院', description: '（青石大院）' },
+    { name: '卧室', description: '（狭小卧房）' },
+  ],
+  activeScene: '大院',
+  locations: { 角色甲: '大院', 角色乙: '大院', 角色丙: '卧室' },
 })
 
 const writeTestSettings = (dsPort: number, jevPort: number): void => {
@@ -143,16 +150,17 @@ const writeTestSettings = (dsPort: number, jevPort: number): void => {
 const { jevRoute, jevAfterReply, jevExtraRounds } = await import('../src/group/host.ts')
 
 try {
-  // ── 1) jevRoute：命中与三层推导（抽象是非题：perceive=有没有办法知道 / interact=能不能实时互动）
-  //        + 额外记忆一段触发（told）+ 状态总门（state_dirty）
+  // ── 1) jevRoute：命中与位置判定（location choice = 唯一在场机制）+ 链接推导
+  //        （perceive=有没有办法知道 / interact=能不能实时互动）+ 转告触发 + 状态总门
   {
     const m = await mockJev({ answers: {
       next_speaker: { type: 'choice', choice: '角色乙', confidence: 0.92, probabilities: { 角色甲: 0.08, 角色乙: 0.92 } },
-      present_角色甲: { type: 'noul', noul: 0.95 },
-      present_角色乙: { type: 'noul', noul: 0.9 },
-      present_角色丙: { type: 'noul', noul: 0.05 },
+      scene_change: { type: 'choice', choice: '未移动', confidence: 0.9, probabilities: {} },
+      location_角色甲: { type: 'choice', choice: '大院', confidence: 0.9, probabilities: {} },
+      location_角色乙: { type: 'choice', choice: '大院', confidence: 0.9, probabilities: {} },
+      location_角色丙: { type: 'choice', choice: '卧室', confidence: 0.9, probabilities: {} },
       perceive_角色乙: { type: 'noul', noul: 0.9 },
-      interact_角色乙: { type: 'noul', noul: 0.9 },  // 能知道 + 能互动 → 接入
+      interact_角色乙: { type: 'noul', noul: 0.9 },  // 乙被判定同场景 → 不应有链接
       perceive_角色丙: { type: 'noul', noul: 0.95 },
       interact_角色丙: { type: 'noul', noul: 0.1 },  // 能知道 + 不能互动 → 单向感知（偷听）
       mode_角色乙: { type: 'choice', choice: '语音', confidence: 0.9, probabilities: {} },
@@ -169,11 +177,13 @@ try {
     assert.ok(r !== undefined, '命中且高置信应返回结果')
     assert.equal(r?.picked, '角色乙')
     assert.match(r?.reason ?? '', /Jev·置信0\.92/)
-    assert.deepEqual(r?.scene?.present.sort(), ['角色乙', '角色甲'].sort(), '乙 noul 0.9 → 进场')
-    assert.equal(r?.scene?.remote.length, 0, '能互动的乙已进现场，不在接入层')
-    const over = r?.scene?.overhear.find(l => l.character === '角色丙')
+    assert.equal(r?.sceneChange, '', '未移动 → 空串（不落场景行）')
+    assert.deepEqual(r?.locationChoice?.['角色甲'], '大院', '位置判定：甲留大院')
+    assert.deepEqual(r?.locationChoice?.['角色丙'], '卧室', '位置判定：丙在卧室')
+    const over = r?.links?.overhear.find(l => l.character === '角色丙')
     assert.ok(over !== undefined, '丙能知道但不能互动 → 单向感知层')
     assert.equal(over?.perceive, '视听')
+    assert.equal(r?.links?.remote.length, 0, '无双向接入')
     assert.ok(!r?.knows.has('角色甲'), '知情 <0.5 的角色不得进知情名单')
     assert.ok(r?.knows.has('角色乙') && r?.knows.has('角色丙'), '能感知到的角色必须在知情名单（知情=原文移植）')
     assert.deepEqual([...(r?.told ?? [])], ['角色丙'], '额外记忆一段触发：只有过线的丙')
@@ -186,9 +196,7 @@ try {
     const logs: Array<Record<string, unknown>> = []
     const m = await mockJev({ answers: {
       next_speaker: { type: 'choice', choice: '角色甲', confidence: 0.3, probabilities: {} },
-      present_角色甲: { type: 'noul', noul: 0.95 },
-      present_角色乙: { type: 'noul', noul: 0.1 },
-      present_角色丙: { type: 'noul', noul: 0.1 },
+      location_角色甲: { type: 'choice', choice: '大院', confidence: 0.9, probabilities: {} },
     } })
     const r = await jevRoute({ ...baseInput(m.port), log: e => logs.push(e) })
     assert.ok(r !== undefined && r.picked === '', '置信度低于阈值：路由必须置空（回退完整总管）')
@@ -199,9 +207,7 @@ try {
     const logs2: Array<Record<string, unknown>> = []
     const m2 = await mockJev({ answers: {
       next_speaker: { type: 'choice', choice: '不存在的人', confidence: 0.99, probabilities: {} },
-      present_角色甲: { type: 'noul', noul: 0.95 },
-      present_角色乙: { type: 'noul', noul: 0.1 },
-      present_角色丙: { type: 'noul', noul: 0.1 },
+      location_角色甲: { type: 'choice', choice: '大院', confidence: 0.9, probabilities: {} },
     } })
     const r2 = await jevRoute({ ...baseInput(m2.port), log: e => logs2.push(e) })
     assert.ok(r2 !== undefined && r2.picked === '', '名单外的选择：路由置空回退')
@@ -209,25 +215,25 @@ try {
     m2.server.close()
   }
 
-  // ── 2b) 路由不可用但场景判定明确：路由回退、场景/知情照常生效（实测事故回归钉：
-  //        纯叙述发言让路由置信塌到 0.22，而 present_小王 已到 0.89——连坐会把进场判定一起扔掉）
+  // ── 2b) 路由不可用但位置/知情判定明确：路由回退、位置/知情照常生效（不连坐）
   {
     const logs: Array<Record<string, unknown>> = []
     const m = await mockJev({ answers: {
       next_speaker: { type: 'choice', choice: '角色甲', confidence: 0.22, probabilities: {} },
-      present_角色甲: { type: 'noul', noul: 0.95 },
-      present_角色乙: { type: 'noul', noul: 0.1 },
-      present_角色丙: { type: 'noul', noul: 0.89 },  // 丙过进场线
+      scene_change: { type: 'choice', choice: '未移动', confidence: 0.9, probabilities: {} },
+      location_角色甲: { type: 'choice', choice: '大院', confidence: 0.9, probabilities: {} },
+      location_角色乙: { type: 'choice', choice: '大院', confidence: 0.9, probabilities: {} },
+      location_角色丙: { type: 'choice', choice: '大院', confidence: 0.9, probabilities: {} },  // 丙被明确描写进场
       knows_角色甲: { type: 'noul', noul: 0.9 },
       knows_角色乙: { type: 'noul', noul: 0.2 },
       knows_角色丙: { type: 'noul', noul: 0.8 },
     } })
     const r = await jevRoute({ ...baseInput(m.port), log: e => logs.push(e) })
     assert.ok(r !== undefined && r.picked === '', '路由置信 0.22 → 路由置空回退')
-    assert.ok(r?.scene !== undefined && r.scene.present.includes('角色丙'), '场景判定不与路由连坐：丙照常进场')
+    assert.deepEqual(r?.locationChoice?.['角色丙'], '大院', '位置判定不与路由连坐：丙照常落位大院')
     assert.ok(r?.knows.has('角色甲') && r?.knows.has('角色丙'), '知情判定照常生效')
     assert.ok(!r?.knows.has('角色乙'), '知情阈值照常拦截')
-    assert.ok(logs.some(l => typeof l.note === 'string' && String(l.note).includes('照常生效')), '回退日志必须说明场景/知情判定仍然生效')
+    assert.ok(logs.some(l => typeof l.note === 'string' && String(l.note).includes('照常生效')), '回退日志必须说明位置/知情判定仍然生效')
     m.server.close()
   }
 
@@ -235,9 +241,9 @@ try {
   {
     const m = await mockJev({ answers: {
       next_speaker: { type: 'choice', choice: '角色甲', confidence: 0.9, probabilities: {} },
-      present_角色甲: { type: 'noul', noul: 0.5 }, // 模糊：保持在场
-      present_角色乙: { type: 'noul', noul: 0.5 }, // 模糊：保持不在场
-      present_角色丙: { type: 'noul', noul: 0.5 },
+      location_角色甲: { type: 'choice', choice: '大院', confidence: 0.9, probabilities: {} }, // 与记录一致：维持
+      location_角色乙: { type: 'choice', choice: '大院', confidence: 0.9, probabilities: {} },
+      location_角色丙: { type: 'choice', choice: '卧室', confidence: 0.9, probabilities: {} },
       perceive_角色乙: { type: 'noul', noul: 0.5 }, // 模糊：不达"能知道"线 → 不进任何层
       interact_角色乙: { type: 'noul', noul: 0.5 },
       perceive_角色丙: { type: 'noul', noul: 0.5 },
@@ -250,7 +256,7 @@ try {
       // told_* / state_dirty 均缺答案
     } })
     const r = await jevRoute(baseInput(m.port))
-    assert.equal(r?.scene, undefined, '全部模糊时场景必须保持现状（不落 presence 行）')
+    assert.deepEqual(r?.locationChoice?.['角色甲'], '大院', '位置答案与记录一致 = 维持现状')
     assert.ok(r?.knows.has('角色甲'), '知情模糊时现场者保持（代码保底：宁可多记，可撤回）')
     assert.equal(r?.told.size, 0, '转告缺答案 = 未触发（二段判定不该乱跑）')
     assert.equal(r?.stateDirty, true, '状态总门缺答案 = 需要记账（安全侧：宁可白跑不可丢账）')
@@ -616,7 +622,7 @@ try {
     ds.server.close(); jev.server.close()
   }
 
-  // ── 4e) 现场所见：场景修正带新角色进场 → 后台生成现状快照注入；
+  // ── 4e) 现场所见：位置判定把丙带进当前场景 → 后台生成现状快照注入；
   //         接力判到进场者发言 → speakAs 组装前必须等注入完成（先看见，再发言）
   {
     const ds = await mockDeepseek({
@@ -630,17 +636,15 @@ try {
     }
     const clean = { state_dirty: { type: 'noul', noul: 0.1 } }
     const jev = await mockJev({ answers: [
-      { // 第1次：主判定 → 甲接话；场景修正把丙带进现场；丙对进场前的消息不知情
+      { // 第1次：主判定 → 甲接话；位置判定把丙带进当前场景；丙对进场前的消息不知情
         next_speaker: { type: 'choice', choice: '角色甲', confidence: 0.9, probabilities: {} },
-        present_角色甲: { type: 'noul', noul: 0.98 },
-        present_角色乙: { type: 'noul', noul: 0.9 },
-        present_角色丙: { type: 'noul', noul: 0.9 },  // 丙进场
-        perceive_角色丙: { type: 'noul', noul: 0.9 },
-        interact_角色丙: { type: 'noul', noul: 0.9 },
-        mode_角色丙: { type: 'choice', choice: '视听', confidence: 0.9, probabilities: {} },
+        scene_change: { type: 'choice', choice: '未移动', confidence: 0.9, probabilities: {} },
+        location_角色甲: { type: 'choice', choice: '大院', confidence: 0.9, probabilities: {} },
+        location_角色乙: { type: 'choice', choice: '大院', confidence: 0.9, probabilities: {} },
+        location_角色丙: { type: 'choice', choice: '大院', confidence: 0.9, probabilities: {} },  // 丙进场
         knows_角色甲: { type: 'noul', noul: 0.9 },
         knows_角色乙: { type: 'noul', noul: 0.9 },
-        knows_角色丙: { type: 'noul', noul: 0.05 },   // 进场前的消息他看不到（快照在修正前写定）
+        knows_角色丙: { type: 'noul', noul: 0.05 },   // 进场前的消息他看不到（快照在落位前写定）
         ...lowTold, ...clean,
       },
       { // 第2次：甲回复的合并判定 → 接力判给丙（刚进场者！）
@@ -658,10 +662,16 @@ try {
     ] })
     rmSync(accDir, { recursive: true, force: true })
     buildGroupFixture(accDir, { chars: TEST_CAST })
+    createScene(accDir, '大院', '（青石大院）')
+    createScene(accDir, '卧室', '（狭小卧房）')
+    writeFileSync(join(accDir, '群设定.yaml'), "era: （测试时代）\nworld: （测试世界）\ntone: ''\nscene: 大院\n", 'utf8')
+    // 丙的初始场景 = 卧室（其余默认大院）
+    const bingMd = join(accDir, '角色', '角色丙', '角色.md')
+    writeFileSync(bingMd, fsReadFileSync(bingMd, 'utf8').replace('---\n', '---\nscene: 卧室\n'), 'utf8')
     writeTestSettings(ds.port, jev.port)
     const { GroupSession } = await import('../src/group/engine.ts')
     const session = GroupSession.open(accName)
-    session.setScene({ present: ['角色甲', '角色乙'], remote: [], overhear: [] }, '初始：丙不在场')
+    session.setScene({ scene: '大院', locations: { 角色甲: '大院', 角色乙: '大院', 角色丙: '卧室' }, present: ['角色甲', '角色乙'], remote: [], overhear: [] }, '初始：丙在卧室')
     const events: Array<{ type: string; text?: string; picked?: string }> = []
     for await (const ev of session.speak('（推开门把丙叫了进来）都进来吧')) {
       events.push(ev.type === 'route' ? { type: 'route', picked: ev.picked } : { type: ev.type, text: 'text' in ev ? ev.text : undefined })
@@ -916,7 +926,7 @@ try {
     ds.server.close(); jev.server.close()
   }
 
-  // ── 5b) 端到端：路由置信塌掉但场景判定明确 → 路由走完整总管，Jev 的场景修正照常落地（不连坐）
+  // ── 5b) 端到端（地图群）：路由置信塌掉但位置判定明确 → 路由走完整总管，Jev 的位置落定照常生效（不连坐）
   {
     const ds = await mockDeepseek({
       route: { next_speaker: '角色甲', reason: '回退路由' },
@@ -924,24 +934,28 @@ try {
     })
     const jev = await mockJev({ answers: {
       next_speaker: { type: 'choice', choice: '角色甲', confidence: 0.15, probabilities: {} },  // 路由置信塌掉
-      present_角色甲: { type: 'noul', noul: 0.98 },
-      present_角色乙: { type: 'noul', noul: 0.9 },
-      present_角色丙: { type: 'noul', noul: 0.9 },  // 丙进场
+      scene_change: { type: 'choice', choice: '未移动', confidence: 0.9, probabilities: {} },
+      location_角色甲: { type: 'choice', choice: '大院', confidence: 0.9, probabilities: {} },
+      location_角色乙: { type: 'choice', choice: '大院', confidence: 0.9, probabilities: {} },
+      location_角色丙: { type: 'choice', choice: '大院', confidence: 0.9, probabilities: {} },  // 丙进场
       knows_角色甲: { type: 'noul', noul: 0.9 },
       knows_角色乙: { type: 'noul', noul: 0.9 },
       knows_角色丙: { type: 'noul', noul: 0.9 },
     } })
+    createScene(accDir, '大院', '（青石大院）')
+    createScene(accDir, '卧室', '（狭小卧房）')
+    writeFileSync(join(accDir, '群设定.yaml'), "era: （测试时代）\nworld: （测试世界）\ntone: ''\nscene: 大院\n", 'utf8')
     writeTestSettings(ds.port, jev.port)
     const { GroupSession } = await import('../src/group/engine.ts')
     const session = GroupSession.open(accName)
-    session.setScene({ present: ['角色甲', '角色乙'], remote: [], overhear: [] }, '初始：丙不在场')
+    session.setScene({ scene: '大院', locations: { 角色甲: '大院', 角色乙: '大院', 角色丙: '卧室' }, present: ['角色甲', '角色乙'], remote: [], overhear: [] }, '初始：丙在卧室')
     const events: Array<{ type: string; picked?: string; text?: string }> = []
     for await (const ev of session.speak('（丙轻轻推门走了进来）')) {
       events.push(ev.type === 'route' ? { type: 'route', picked: ev.picked } : { type: ev.type, text: 'text' in ev ? ev.text : undefined })
     }
     const route = events.find(e => e.type === 'route')
     assert.equal(route?.picked, '角色甲', '路由由回退的完整总管决定')
-    assert.ok(session.snapshot().present.includes('角色丙'), 'Jev 的进场判定必须照常落地（不与路由连坐）')
+    assert.ok(session.snapshot().present.includes('角色丙'), 'Jev 的位置落定必须照常生效（不与路由连坐）')
     assert.equal(ds.hits.filter(h => h.kind === 'route').length, 1, '回退路径恰一次完整总管路由')
     ds.server.close(); jev.server.close()
   }

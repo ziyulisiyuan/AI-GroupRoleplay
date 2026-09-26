@@ -18,7 +18,6 @@ import {
   type CharacterDraft,
 } from './group/scaffold.ts'
 import { loadGroupSettings, loadUserPersona } from './group/persona.ts'
-import { parseRemoteList } from './group/presence.ts'
 import { createScene, listScenes, saveSceneDescription } from './group/scene.ts'
 import { loadRules, saveRules } from './group/rules.ts'
 import { loadSettings, saveSettings, resolveLlm, healOrphanSettingsBackup, type Provider } from './settings.ts'
@@ -223,35 +222,6 @@ app.post('/api/group/:name/director', async c => {
   if (text === '') return c.json({ error: '内容不能为空' }, 400)
   const result = await getSession(c.req.param('name')).correct(text)
   return c.json(result)
-})
-
-// ---------- 在场者（§3.11） ----------
-
-app.get('/api/group/:name/presence', c => {
-  const s = getSession(c.req.param('name')).snapshot()
-  return c.json({ present: s.present, remote: s.remote, overhear: s.overhear, absent: s.absent, characters: s.characters.map(x => x.name) })
-})
-
-app.put('/api/group/:name/presence', async c => {
-  const body = await c.req.json<Record<string, unknown>>().catch(() => ({}) as Record<string, unknown>)
-  const present = Array.isArray(body.present) ? (body.present as unknown[]).map(String) : []
-  const s = getSession(c.req.param('name'))
-  // remote/overhear 不传 = 保持现状（用户只勾选现场者时不应顺手断开正在进行的接入/偷听）
-  const cur = s.sceneAccess()
-  const remote = parseRemoteList(body.remote) ?? cur.remote
-  const overhear = parseRemoteList(body.overhear) ?? cur.overhear
-  // scene 手动换场景（地图群）；present 勾选 = 位置落位当前场景（地图群），无地图群 = 显式名单
-  const scene = typeof body.scene === 'string' && body.scene.trim() !== '' ? body.scene.trim() : cur.scene
-  const locations: Record<string, string> = { ...(cur.locations ?? {}) }
-  if (scene !== undefined) {
-    for (const n of present) locations[n] = scene
-    const kept = new Set([...present, ...remote.map(l => l.character), ...overhear.map(l => l.character)])
-    for (const n of Object.keys(locations)) if (!kept.has(n) && cur.present.includes(n)) delete locations[n]
-  }
-  s.setScene({ ...(scene !== undefined ? { scene, locations } : {}), present, remote, overhear }, '用户手动修正')
-  // 手动修正带人进场，同样触发"现场所见"（§5.8）：进门就该看见
-  s.maybeSnapshotEntrants(cur, '手动修正进场')
-  return c.json({ ok: true })
 })
 
 // ---------- 手动改上下文（SPEC §3.10） ----------
