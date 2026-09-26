@@ -224,8 +224,8 @@ export class GroupSession {
     return p === undefined ? undefined : join(this.groupDir, '角色', p.dirName)
   }
 
-  /** 前端初始渲染快照：消息 + 路由行 + 场景（当前场景与地图）。 */
-  snapshot(): { name: string; era: string; world: string; tone: string; scene: string; scenes: Scene[]; userName: string; present: string[]; remote: RemoteLink[]; overhear: RemoteLink[]; absent: string[]; characters: Array<{ name: string; dirName: string }>; messages: MsgLine[]; routes: RouteLine[] } {
+  /** 前端初始渲染快照：消息 + 路由行 + 场景（当前场景、地图、各角色位置）。 */
+  snapshot(): { name: string; era: string; world: string; tone: string; scene: string; scenes: Scene[]; locations: Record<string, string>; userName: string; present: string[]; remote: RemoteLink[]; overhear: RemoteLink[]; absent: string[]; characters: Array<{ name: string; dirName: string }>; messages: MsgLine[]; routes: RouteLine[] } {
     const routes = this.store.allLines.filter((l): l is RouteLine => l.type === 'route')
     const present = this.presentNames()
     const remote = this.remoteLinks()
@@ -237,6 +237,7 @@ export class GroupSession {
       tone: this.settings.tone,
       scene: this.scene.scene ?? '',
       scenes: listScenes(this.groupDir),
+      locations: { ...(this.scene.locations ?? {}) },
       userName: this.userPersona.name,
       present,
       remote,
@@ -350,6 +351,7 @@ export class GroupSession {
           const book = await askBookkeeper({
             rosterLines: this.rosterLines,
             presentNotes: this.presentNotes(),
+            locations: { ...(this.scene.locations ?? {}) },
             ledgers: this.ledgerLines(),
             userText,
             speaker: w.speaker,
@@ -418,6 +420,7 @@ export class GroupSession {
       try {
         const summary = await askSceneSummarizer({
           presentNotes: this.presentNotes(),
+          locations: { ...(this.scene.locations ?? {}) },
           ledgers: this.ledgerLines(),
           recent: this.store.effectiveMessages().slice(-12).map(m => `${m.name}：${m.text}`).join('\n'),
           tone: this.settings.tone,
@@ -1194,6 +1197,7 @@ export class GroupSession {
     const result = await askDirector({
       rosterLines: this.rosterLines,
       presentNotes: this.presentNotes(),
+      locations: { ...(this.scene.locations ?? {}) },
       ledgers: this.ledgerLines(),
       settings: this.settings,
       recent,

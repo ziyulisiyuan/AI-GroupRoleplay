@@ -897,6 +897,8 @@ export const BOOKKEEP_TOOL: ToolSpec = {
 export interface BookkeeperInput {
   rosterLines: string[]
   presentNotes: string[]
+  /** 地图群：各角色当前所在场景（判定层记录；缺键 = 其他）。 */
+  locations?: Record<string, string>
   /** 各角色当前状态账本（整体快照更新的基准，形如 "角色甲｜生理状态:..." 行）。 */
   ledgers: string[]
   /** 本轮用户发言。 */
@@ -917,6 +919,9 @@ export async function askBookkeeper(input: BookkeeperInput): Promise<Pick<RouteR
     '[可选角色]',
     ...input.rosterLines.map(l => `- ${l}`),
     `[当前场景人员]\n${input.presentNotes.join('、') || '（无）'}`,
+    input.locations !== undefined && Object.keys(input.locations).length > 0
+      ? `[人员位置（判定层记录，以此为准）]\n${Object.entries(input.locations).map(([k, v]) => `${k}=${v}`).join('、')}`
+      : '',
     input.ledgers.length > 0 ? `[各角色当前状态账本（更新时整体快照：没变化的字段原样带回，变化的字段写新值）]\n${input.ledgers.join('\n')}` : '',
     input.tone !== '' ? `[群聊基调]\n${input.tone}` : '',
     input.rules !== undefined && input.rules.trim() !== '' ? `[规则（用户设定）]\n${input.rules.trim()}` : '',
@@ -998,6 +1003,8 @@ export interface CorrectionResult {
 export interface CorrectionInput {
   rosterLines: string[]
   presentNotes: string[]
+  /** 地图群：各角色当前所在场景（判定层记录；缺键 = 其他）。 */
+  locations?: Record<string, string>
   /** 各角色当前状态账本（整体快照修正的基准）。 */
   ledgers: string[]
   settings: GroupSettings
@@ -1014,6 +1021,9 @@ export async function askDirector(input: CorrectionInput): Promise<CorrectionRes
     '[可选角色]',
     ...input.rosterLines.map(l => `- ${l}`),
     `[当前场景人员]\n${input.presentNotes.join('、') || '（无）'}`,
+    input.locations !== undefined && Object.keys(input.locations).length > 0
+      ? `[人员位置（判定层记录，以此为准）]\n${Object.entries(input.locations).map(([k, v]) => `${k}=${v}`).join('、')}`
+      : '',
     input.ledgers.length > 0 ? `[各角色当前状态账本（修正时整体快照：没变化的字段原样带回，用户要求改的字段写新值）]\n${input.ledgers.join('\n')}` : '',
     input.settings.tone !== '' ? `[群聊基调]\n${input.settings.tone}` : '',
     input.rules !== undefined && input.rules.trim() !== '' ? `[规则（用户设定）]\n${input.rules.trim()}` : '',
@@ -1102,6 +1112,8 @@ export const SCENE_TOOL: ToolSpec = {
  */
 export async function askSceneSummarizer(input: {
   presentNotes: string[]
+  /** 地图群：各角色当前所在场景（判定层记录；缺键 = 其他）。 */
+  locations?: Record<string, string>
   /** 全部角色的状态账本行（不筛在场——尸体/痕迹属于不在场者）。 */
   ledgers: string[]
   /** 最近对话（进场者缺席期间的，只供参考其中留下的可见痕迹）。 */
@@ -1113,6 +1125,9 @@ export async function askSceneSummarizer(input: {
     '有角色刚进入这个场景，他此前不在场、对这里刚发生的事一无所知。写出他此刻进门第一眼看到的现场实况——这将作为目击记录注入他的记忆。',
     '[现场人员]',
     input.presentNotes.join('、') || '（无）',
+    input.locations !== undefined && Object.keys(input.locations).length > 0
+      ? `[人员位置（判定层记录）]\n${Object.entries(input.locations).map(([k, v]) => `${k}=${v}`).join('、')}`
+      : '',
     input.ledgers.length > 0 ? '[各角色当前状态（原始资料，只提取其中肉眼可见的部分）]\n' + input.ledgers.join('\n') : '',
     '[最近对话（他不在场期间发生的事；只能参考其中留下的可见痕迹，不要复述剧情）]',
     input.recent,

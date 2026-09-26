@@ -526,7 +526,8 @@ groups narrow the entrant set to characters whose **location changed** into the 
 followers and dialogue-summoned entrants; characters colocated in the destination by record are
 not entrants (nothing there is new to them):
 
-- `askSceneSummarizer` (deepseek, `record_scene` tool) reads the present notes, **all**
+- `askSceneSummarizer` (deepseek, `record_scene` tool) reads the present notes, the judge's
+  location table, **all**
   characters' status ledgers (traces of the absent — a corpse — belong to the room), and the last
   12 effective messages, and must output a 2–4 sentence plain description of what is observable
   *right now*: postures, positions, injuries, clothing, expressions, blood, traces, furnishings.
@@ -665,7 +666,8 @@ interactMax: 0.3, gateKeep: 0.5, toldMin: 0.5, extraRoundMin: 0.75 }`.
 the bookkeeper has no presence authority: it must not add or remove scene members, and any
 `presence_updates` it emits anyway are discarded by the engine `[WHY]` roster authority belongs to
 the judge and the correction surfaces, not to bookkeeping.
-Position status still tracks movement inside the ledger. **Gated** (fast path): the work list
+Position status still tracks movement inside the ledger, and the prompt carries the judge's
+`[人员位置]` location table as its structured reference. **Gated** (fast path): the work list
 holds the user message and each reply whose judgment opened the status gate (missing answer =
 open); one deepseek call per list entry — the user message can be its own entry with no reply
 section, which also covers no-reply turns (e.g. the picked speaker has no speech rights). An
@@ -720,7 +722,7 @@ list → no call (info 空回复). `stripNameEcho` removes a leading self-name e
 ### 6.3 Correction window
 
 `POST /api/group/{name}/director` → `correct()`. Input: last ≤8 effective messages, roster lines,
-scene notes, the user's text. Output applied in order: presence corrections → knowledge retracts
+scene notes, the judge's location table, the user's text. Output applied in order: presence corrections → knowledge retracts
 → ledger snapshots → knowledge appends. `applied[]` summarizes what actually landed. Archived as
 a `director` row; never enters any character input.
 
@@ -739,7 +741,7 @@ perceived what; the overhear layer is director-and-player only.
 | endpoint | note |
 |---|---|
 | `GET /api/groups` | group list |
-| `GET /api/group/{name}` | snapshot: `{name, era, world, tone, scene, scenes[{name,description}], userName, present[], remote[], overhear[], absent[], characters[{name,dirName}], messages(effective view), routes}` |
+| `GET /api/group/{name}` | snapshot: `{name, era, world, tone, scene, scenes[{name,description}], locations{角色:场景}, userName, present[], remote[], overhear[], absent[], characters[{name,dirName}], messages(effective view), routes}` |
 | `GET /api/group/{name}/status` | per-character status-ledger lines + memory counts |
 | `GET /api/group/{name}/judgments` | tail (last 200, newest first) of 判定.jsonl (§3.2a); for the sidebar run-log panel |
 | `POST /api/group/{name}/message` | body `{text, scene?}` (scene = ⊘-picked target) → event stream (§1.1) |
@@ -908,7 +910,9 @@ theme only — deliberate). Desktop widths letterbox the app into a centered 520
   under the reply) · 此时明确现场者 (present checkboxes only — no remote/overhear display) ·
   **场景** (map page: create-scene form + list; tapping a scene edits its description in a modal —
   names are immutable and scenes cannot be deleted) ·
-  角色 (list → character page = 个人资料 draft form + 记忆 panel + 状态账本 section) ·
+  角色 (list → character page = 个人资料 draft form + 记忆 panel + 状态账本 section;
+  the form shows 初始所在场景 read-only and, on map groups, 目前所在场景 — the engine-maintained
+  location from the presence row, marked （当前） when it equals the active scene) ·
   运行日志 (判定.jsonl tail, rows expandable to raw JSON).
   The **character form** carries 初始所在场景: a radio list over the group's scenes when creating
   (chosen once, immutable afterwards — the edit page shows it read-only), absent when the group

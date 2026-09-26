@@ -62,17 +62,34 @@ for (const persona of characters) {
     + (repaired > 0 ? `（补写 ledger ${repaired} 条）` : ''))
 }
 
-// 在场.yaml 同样是从日志重放的派生缓存（presence 行里的旧名经名字链归一）
+// 在场.yaml 同样是从日志重放的派生缓存（presence 行里的旧名经名字链归一，位置表同）
 const lastScene = store.lastScene()
 if (lastScene !== undefined) {
   const names = new Set(characters.map(c => c.name))
   const fix = (links: typeof lastScene.remote): typeof lastScene.remote =>
     links.map(l => ({ ...l, character: store.nameOf(l.character) })).filter(l => names.has(l.character))
-  const scene = { present: lastScene.present.map(n => store.nameOf(n)).filter(n => names.has(n)), remote: fix(lastScene.remote), overhear: fix(lastScene.overhear) }
+  const mapPart = lastScene.scene !== undefined
+    ? {
+        scene: lastScene.scene,
+        locations: Object.fromEntries(
+          Object.entries(lastScene.locations ?? {})
+            .map(([k, v]) => [store.nameOf(k), v] as const)
+            .filter(([k]) => names.has(k)),
+        ),
+      }
+    : {}
+  const scene = {
+    ...mapPart,
+    present: lastScene.scene !== undefined
+      ? Object.keys(mapPart.locations ?? {}).filter(k => (mapPart.locations as Record<string, string>)[k] === lastScene.scene)
+      : lastScene.present.map(n => store.nameOf(n)).filter(n => names.has(n)),
+    remote: fix(lastScene.remote),
+    overhear: fix(lastScene.overhear),
+  }
   saveScene(groupDir, scene)
   const remote = scene.remote.map(l => `${l.character}（${l.note ?? '远程'}）`).join('、')
   const overhear = scene.overhear.map(l => `${l.character}（${l.note ?? '单向感知'}）`).join('、')
-  console.log(`rebuild 场景: 现场 ${scene.present.length > 0 ? scene.present.join('、') : '（无）'}`
+  console.log(`rebuild 场景: ${lastScene.scene !== undefined ? `当前 ${lastScene.scene}｜` : ''}现场 ${scene.present.length > 0 ? scene.present.join('、') : '（无）'}`
     + (remote !== '' ? `｜接入 ${remote}` : '')
     + (overhear !== '' ? `｜感知 ${overhear}` : ''))
 }

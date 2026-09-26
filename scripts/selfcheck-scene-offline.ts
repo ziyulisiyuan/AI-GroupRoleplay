@@ -214,6 +214,7 @@ try {
   const backMsg = session.snapshot().messages.find(m => m.text === '我回到大院')
   const backVis = backMsg?.visible_to === 'all' ? [] : backMsg?.visible_to ?? []
   assert.deepEqual(backVis, ['角色乙'], '乙（在大院）听见回来这句；甲丙（卧室）听不到')
+  assert.deepEqual(session.snapshot().locations, { 角色甲: '卧室', 角色乙: '大院', 角色丙: '卧室' }, '离开者去向必须有后台记录（presence 行的位置表）')
 
   // ── 4) 严苛不移动：scene_change=未移动 → 提到别处也不动
   jev2.hits.length = 0
@@ -275,6 +276,8 @@ try {
     await sleep(250)
   }
   assert.ok(memOf('角色丙').includes('老槐的影子'), '进场者必须先拿到现场所见再开口')
+  const sceneHit = ds4.hits.filter(h => h.kind === 'scene').at(-1)
+  assert.ok(sceneHit !== undefined && JSON.stringify(sceneHit.body).includes('[人员位置'), '现场所见提示词必须携带判定层的位置表')
 
   // ── 6) 场景全文注入角色
   const streamHit = ds4.hits.filter(h => h.kind === 'stream').at(-1)
@@ -315,6 +318,7 @@ try {
   assert.ok(!session.presentNames().includes('角色乙'), '明确离开 → 不在现场')
   const stored = (session as unknown as { scene: { locations?: Record<string, string> } }).scene
   assert.ok(!Object.keys(stored.locations ?? {}).includes('角色乙'), '去向=其他 → 位置清空（图外）')
+  assert.ok(!Object.keys(session.snapshot().locations).includes('角色乙'), '快照位置表同源：乙已清位')
 
   ds2.server.close(); jev2.server.close()
   ds3.server.close(); jev3.server.close()

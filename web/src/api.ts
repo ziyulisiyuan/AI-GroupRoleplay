@@ -25,6 +25,7 @@ export interface Snapshot {
   tone: string
   scene: string
   scenes: Scene[]
+  locations: Record<string, string>
   userName: string
   present: string[]
   remote: RemoteLink[]

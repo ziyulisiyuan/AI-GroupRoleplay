@@ -65,12 +65,12 @@ export function InfoRoot({ group, onExit }: { group: string; onExit: () => void 
         {top === 'scenes' && <ScenesView group={group} snap={snap} onChanged={refresh} />}
         {typeof top !== 'string' && 'char' in top && (
           top.char === ''
-            ? <CharProfileView key="new" group={group} dirName="" scenes={snap?.scenes ?? []} onChanged={refresh}
+            ? <CharProfileView key="new" group={group} dirName="" scenes={snap?.scenes ?? []} activeScene={snap?.scene ?? ''} onChanged={refresh}
                 onCreated={name => setStack(s => [...s.slice(0, -1), { char: name }])} />
             : <CharHubView key={top.char} group={group} dirName={top.char} snap={snap} avatarV={avatarV} bump={bump} go={push} />
         )}
         {typeof top !== 'string' && 'page' in top && top.page === 'profile' && (
-          <CharProfileView key={`p-${top.charSub}`} group={group} dirName={top.charSub} scenes={snap?.scenes ?? []} onChanged={refresh} />
+          <CharProfileView key={`p-${top.charSub}`} group={group} dirName={top.charSub} scenes={snap?.scenes ?? []} activeScene={snap?.scene ?? ''} locations={snap?.locations ?? {}} onChanged={refresh} />
         )}
         {typeof top !== 'string' && 'page' in top && top.page === 'memory' && (
           <CharMemoryView key={`m-${top.charSub}`} group={group} dirName={top.charSub} />
@@ -482,11 +482,14 @@ function CharHubView({ group, dirName, snap, avatarV, bump, go }: {
   )
 }
 
-/** 个人资料：五项初始定义（新建模式下即创建表单）。初始所在场景：建角色时从地图选定，此后只显示。 */
-function CharProfileView({ group, dirName, scenes, onChanged, onCreated }: {
+/** 个人资料：五项初始定义（新建模式下即创建表单）。初始所在场景：建角色时从地图选定，此后只显示。
+ *  目前所在场景 = 判定层/引擎维护的实时位置（presence 行），只读；编辑走「此时明确现场者」或定位针。 */
+function CharProfileView({ group, dirName, scenes, activeScene, locations, onChanged, onCreated }: {
   group: string
   dirName: string
   scenes: Scene[]
+  activeScene: string
+  locations: Record<string, string>
   onChanged: () => Promise<void>
   onCreated?: (name: string) => void
 }): React.ReactElement {
@@ -537,6 +540,7 @@ function CharProfileView({ group, dirName, scenes, onChanged, onCreated }: {
   }
 
   if (!loaded) return <div className="empty">加载中……</div>
+  const currentLoc = locations[draft.name]
   return (
     <>
       <Cells>
@@ -555,9 +559,10 @@ function CharProfileView({ group, dirName, scenes, onChanged, onCreated }: {
           ))}
         </Cells>
       )}
-      {!isNew && (
+      {!isNew && scenes.length > 0 && (
         <Cells>
           <Cell title="初始所在场景" sub={draft.scene !== '' ? draft.scene : '（无）'} />
+          <Cell title="目前所在场景" sub={(currentLoc ?? '其他') + (currentLoc !== undefined && currentLoc === activeScene ? '（当前）' : '')} />
         </Cells>
       )}
       <button className="btn-primary" disabled={busy || !dirty || draft.name.trim() === ''} onClick={() => void save()}>
