@@ -210,7 +210,7 @@ try {
   assert.ok(!visibleToOf(f4id).includes(C.name), '接入者不在自动登记范围（机制层：不在可见名单）')
   assert.ok(!hasAutoEntryFor(C.name, f4id), '接入者不被自动登记（机制层保证）')
   let told = memoryText(C.name).includes('金色')
-  for (const cue of [`（电话那头${C.name}说没听清，我又对着电话慢慢说了一遍：口令是金色。）`, `（我贴着电话大声说：口令——金——色。）`]) {
+  for (const cue of [`（电话那头${C.name}说没听清，我又对着电话慢慢说了一遍：测试口令。）`, `（我贴着电话大声说：测试口令——逐字。）`]) {
     if (told) break
     await say(cue)
     told = memoryText(C.name).includes('金色')

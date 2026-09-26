@@ -1086,7 +1086,7 @@ export async function askSceneSummarizer(input: {
   presentNotes: string[]
   /** 地图群：各角色当前所在场景（判定层记录；缺键 = 其他）。 */
   locations?: Record<string, string>
-  /** 全部角色的状态账本行（不筛在场——尸体/痕迹属于不在场者）。 */
+  /** 全部角色的状态账本行（不筛在场——现场遗留物属于场景，不属于人）。 */
   ledgers: string[]
   /** 最近对话（进场者缺席期间的，只供参考其中留下的可见痕迹）。 */
   recent: string
