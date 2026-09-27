@@ -64,7 +64,7 @@ export function InfoRoot({ group, onExit }: { group: string; onExit: () => void 
         {top === 'scenes' && <ScenesView group={group} snap={snap} onChanged={refresh} />}
         {typeof top !== 'string' && 'char' in top && (
           top.char === ''
-            ? <CharProfileView key="new" group={group} dirName="" scenes={snap?.scenes ?? []} onChanged={refresh}
+            ? <CharProfileView key="new" group={group} dirName="" scenes={snap?.scenes ?? []} locations={snap?.locations ?? {}} onChanged={refresh}
                 onCreated={name => setStack(s => [...s.slice(0, -1), { char: name }])} />
             : <CharHubView key={top.char} group={group} dirName={top.char} snap={snap} avatarV={avatarV} bump={bump} go={push} />
         )}
