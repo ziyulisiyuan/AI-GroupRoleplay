@@ -11,3 +11,6 @@ settings.yaml
 runtime-node/
 .backup-phone/
 docs/宣传视频/
+
+# ZCode 工具本地配置（AI 编码工具的上下文忽略规则，随 .gitignore 自动同步生成）
+.zcodeignore

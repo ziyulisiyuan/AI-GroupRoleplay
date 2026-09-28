@@ -13,6 +13,8 @@ export interface Msg {
   round: number
   visible_to: 'all' | string[]
   ts: string
+  /** 客观注入的消息行（气泡显示前缀；移植来源=客观）。 */
+  objective?: boolean
 }
 export interface Route { type: 'route'; round: number; picked: string; reason: string; fallback: boolean }
 export interface Character { name: string; dirName: string }

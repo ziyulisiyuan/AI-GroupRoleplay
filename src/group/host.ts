@@ -382,6 +382,8 @@ export interface JevRouteInput {
   userText?: string
   tone: string
   timeoutMs?: number
+  /** 客观注入（用户显式声明）：受众由调用方按现场记录取，知情/转告两题不问（感知判定范畴不适用）。 */
+  objective?: boolean
   /** 地图：全部场景（名+描述全文）。非空 = 地图群，追加换场景与位置判定。 */
   scenes?: Array<{ name: string; description: string }>
   /** 当前场景名（地图群）。 */
@@ -495,19 +497,25 @@ export async function jevRoute(input: JevRouteInput): Promise<JevRouteResult | u
   // 知情判定（全角色）：本条消息的内容，谁该知道？"在场直接感知/经通道感知"都算——
   // 判定抽象情景（能不能感知到这条消息的内容），不列举手段、不做关键词匹配。
   // 结果即该消息的 visible_to（知情 = 原文移植进账本，不做任何总结）。
-  for (const n of input.allNames) {
-    questions[`knows_${n}`] = {
-      type: 'noul',
-      instructions: `结合剧情、场景记录与 ${n} 的状态判断：用户刚说的这段话，${n} 能不能感知到其内容（在场直接感知、或经通道感知都算）？说话人刻意压低声音、背对、距离过远、感知障碍、通道传不到（如语音通道传不了无声画面）等情况都算不能。确定能 = 1，确定不能 = 0。`,
+  // 客观注入不问：它的受众是现场记录（用户显式声明），不经过感知判定。
+  if (input.objective !== true) {
+    for (const n of input.allNames) {
+      questions[`knows_${n}`] = {
+        type: 'noul',
+        instructions: `结合剧情、场景记录与 ${n} 的状态判断：用户刚说的这段话，${n} 能不能感知到其内容（在场直接感知、或经通道感知都算）？说话人刻意压低声音、背对、距离过远、感知障碍、通道传不到（如语音通道传不了无声画面）等情况都算不能。确定能 = 1，确定不能 = 0。`,
+      }
     }
   }
   // 额外记忆一段触发（全角色）：这条发言是否在向谁**转告**他原本不知道的事（懒人转述——
   // "把……告诉了……""打电话通知了……"这类一句话带过的告知）。命中者由二段判定逐轮打分后再移植，
   // 这里只决定要不要多查一次，门槛从低（漏了只是维持现状，错触发只是多一次廉价判定）。
-  for (const n of input.allNames) {
-    questions[`told_${n}`] = {
-      type: 'noul',
-      instructions: `判断：用户刚说的这段话，是不是在把某段 ${n} 本来不知道的对话或事情**转告**给他（一句话带过的告知、转述、打电话通知都算）？事情就当着他的面发生、或他本来就知道、或这段话没有向他转告任何事，都不算。确定是转告 = 1，确定不是 = 0。`,
+  // 客观注入不问：叙事者层面的世界事实不是对某个具体角色的转告。
+  if (input.objective !== true) {
+    for (const n of input.allNames) {
+      questions[`told_${n}`] = {
+        type: 'noul',
+        instructions: `判断：用户刚说的这段话，是不是在把某段 ${n} 本来不知道的对话或事情**转告**给他（一句话带过的告知、转述、打电话通知都算）？事情就当着他的面发生、或他本来就知道、或这段话没有向他转告任何事，都不算。确定是转告 = 1，确定不是 = 0。`,
+      }
     }
   }
   // 状态账本总门（一道题）：有没有可能对某些角色产生**持久影响**（用户的"影响"口径——
@@ -611,6 +619,7 @@ export async function jevRoute(input: JevRouteInput): Promise<JevRouteResult | u
         confidence: route?.type === 'choice' ? route.confidence : undefined,
         ...(linksUnchanged ? { links: '未变' } : { links: { remote: remote.map(l => `${l.character}(${l.perceive})`), overhear: overhear.map(l => `${l.character}(${l.perceive})`) } }),
         ...(sceneChange !== undefined ? { sceneChange } : {}),
+        ...(input.objective === true ? { objective: true } : {}),
         knows: [...knows],
         told: [...told],
         stateDirty,
@@ -633,6 +642,7 @@ export async function jevRoute(input: JevRouteInput): Promise<JevRouteResult | u
       confidence: route.confidence,
       ...(linksUnchanged ? { links: '未变' } : { links: { remote: remote.map(l => `${l.character}(${l.perceive})`), overhear: overhear.map(l => `${l.character}(${l.perceive})`) } }),
       ...(sceneChange !== undefined ? { sceneChange } : {}),
+      ...(input.objective === true ? { objective: true } : {}),
       knows: [...knows],
       told: [...told],
       stateDirty,
@@ -1154,8 +1164,10 @@ export const OFFSTORY_TOOL: ToolSpec = {
  * 不得重复或矛盾；没有可补全的就返回空数组。失败抛错由调用方降级（不注入 = 维持现状）。
  */
 export async function askOffStoryDiscovery(input: {
-  /** 每个回归者：名字 + 离场窗口对话（截尾）。 */
+  /** 每个回归者：名字 + 离场窗口对话（截尾；客观注入行带【客观】前缀）。 */
   windows: Array<{ character: string; dialogue: string }>
+  /** 窗口对话中出现客观注入行时为 true：提示词开头追加客观对照要求。 */
+  objectiveAnnotated?: boolean
   /** 已有的离场经历条目（防重复/防矛盾锚）。 */
   known: string[]
   rosterNames: string[]
@@ -1165,6 +1177,9 @@ export async function askOffStoryDiscovery(input: {
 }): Promise<Array<{ summary: string; participants: string[] }> | undefined> {
   const prompt = [
     '有角色要回到场景。他离场期间，剧情仍在多线推进——对话中对他下的指令、与他的约定、别人提到关于他的打算，都可能在离场期间发生或履行。请提取并合理补全这些事件，供注入回归者与参与者的记忆。',
+    ...(input.objectiveAnnotated === true
+      ? ['对话窗口中带【客观】标注的行，是以叙事者身份写下、已对世界生效的客观事实。重点关注：逐一对照该角色需要补全的事件，检查客观事实是否要求调整事件的骨架、参与者或经过——需要调整的必须调整，与客观事实相矛盾的补全一律不合格。']
+      : []),
     ...input.windows.map(w => `[${w.character} 离场期间的对话]\n${w.dialogue}`),
     input.known.length > 0 ? '[已有的事件补全（不得重复、不得矛盾）]\n' + input.known.map(k => `- ${k}`).join('\n') : '',
     `[全部角色]\n${input.rosterNames.join('、')}`,

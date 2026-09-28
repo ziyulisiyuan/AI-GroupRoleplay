@@ -455,13 +455,17 @@ export class GroupSession {
    */
   private async runOffStory(targets: Set<string>): Promise<void> {
     try {
-      const windows = [...targets].flatMap(name => {
+      const windows: Array<{ character: string; dialogue: string }> = []
+      let hasObjective = false
+      for (const name of targets) {
         const start = this.store.absenceStartId(name)
-        if (start === undefined) return [] // 首次进场：无离场窗口，人生前史不由系统虚构
-        const dialogue = this.store.effectiveMessages().filter(m => m.id > start)
-          .slice(-40).map(m => `${m.name}：${m.text}`).join('\n')
-        return dialogue.trim() === '' ? [] : [{ character: name, dialogue }]
-      })
+        if (start === undefined) continue // 首次进场：无离场窗口，人生前史不由系统虚构
+        const window = this.store.effectiveMessages().filter(m => m.id > start).slice(-40)
+        if (window.some(m => m.objective === true)) hasObjective = true
+        const dialogue = window.map(m => `${m.objective === true ? '【客观】' : ''}${m.name}：${m.text}`).join('\n')
+        if (dialogue.trim() === '') continue
+        windows.push({ character: name, dialogue })
+      }
       if (windows.length === 0) return
       const known: string[] = []
       for (const c of this.characters) {
@@ -470,6 +474,7 @@ export class GroupSession {
       }
       const events = await askOffStoryDiscovery({
         windows,
+        ...(hasObjective ? { objectiveAnnotated: true } : {}),
         known,
         rosterNames: this.characterNames(),
         tone: this.settings.tone,
@@ -611,8 +616,9 @@ export class GroupSession {
     yield { type: 'reply', name: last.name, text: full }
   }
 
-  /** 用户公开发言：路由 → 角色回复 → 记账。manualScene = ⊘ 手选的目标场景（跳过换场景判定）。 */
-  async *speak(text: string, manualScene?: string): AsyncGenerator<SessionEvent> {
+  /** 用户公开发言：路由 → 角色回复 → 记账。manualScene = ⊘ 手选的目标场景（跳过换场景判定）。
+   *  objective = 客观注入（用户显式声明的叙事者级事实）：受众 = 现场记录，不经感知判定。 */
+  async *speak(text: string, manualScene?: string, objective = false): AsyncGenerator<SessionEvent> {
     await this.drainBg() // 上一轮的后台记账先完成，避免与新一轮写入交错
     this.reloadBooks()
     if (this.characters.length === 0) {
@@ -652,6 +658,7 @@ export class GroupSession {
         userText: text,
         tone: this.settings.tone,
         timeoutMs: config.jevTimeoutMs,
+        ...(objective ? { objective: true } : {}),
         ...(isMap ? { scenes: listScenes(this.groupDir), activeScene: before.scene ?? '', locations: before.locations ?? {}, manualScene } : {}),
         log: e => this.judgeLog({ phase: '主判定', ...e }),
       })
@@ -721,7 +728,10 @@ export class GroupSession {
     // 无地图群：Jev knows 名单（缺答案=现场者保底）；Jev 不可用时回退"现场 ∩ 感知完整"。
     // 通道/单向感知者受各自 since 约束。
     let audience: string[]
-    if (isMap && quick !== undefined) {
+    if (objective) {
+      // 客观注入：受众 = 现场记录（该场景下的所有人），不经感知判定；接入/单向感知层不收
+      audience = this.presentNames()
+    } else if (isMap && quick !== undefined) {
       const knowsNoul = quick.knowsNoul ?? {}
       const inRoom = new Set(this.presentNames())
       const base = this.characters
@@ -732,8 +742,9 @@ export class GroupSession {
       const knows = quick?.knows ?? new Set(this.witnesses())
       audience = this.audienceOf(knows, this.store.nextMsgId)
     }
-    const userMsg = this.store.append('user', this.userPersona.name, text, audience)
+    const userMsg = this.store.append('user', this.userPersona.name, text, audience, objective ? { objective: true } : {})
     this.backfillAll()
+    if (objective) yield { type: 'info', text: '（客观注入：已写入在场者记忆）' }
 
     // 额外记忆（§5.7）：这条发言在向谁转告他原本不知道的事——二段判定后逐字移植。
     // 放在路由与发言之前：接力判到被转告者时，他的记忆必须已就位。

@@ -83,7 +83,8 @@ app.post('/api/group/:name/message', async c => {
   const text = String(body.text ?? '').trim()
   if (text === '') return c.json({ error: 'text 不能为空' }, 400)
   const scene = typeof body.scene === 'string' && body.scene.trim() !== '' ? body.scene.trim() : undefined
-  return runEvents(c, getSession(c.req.param('name')).speak(text, scene))
+  const objective = body.objective === true
+  return runEvents(c, getSession(c.req.param('name')).speak(text, scene, objective))
 })
 
 app.post('/api/group/:name/roll', c => runEvents(c, getSession(c.req.param('name')).roll()))

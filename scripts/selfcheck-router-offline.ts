@@ -916,6 +916,70 @@ try {
     ds.server.close(); jev.server.close()
   }
 
+  // ── 4i) 客观注入（平面群）：knows_/told_ 不问（感知判定范畴不适用）；受众=现场记录
+  //         （通道接入/单向感知不收）；msg 行带 objective 标记；移植来源=客观（逐字+mid，
+  //         活账本跟随改写）；其余管线照旧（路由/回复/接力照常）
+  {
+    const ds = await mockDeepseek({ streamText: '（甲点头）嗯。' })
+    const jev = await mockJev({ answers: [
+      { // 主判定：仍问 next_speaker / perceive_ / state_dirty；knows_/told_ 缺席
+        next_speaker: { type: 'choice', choice: '角色甲', confidence: 0.9, probabilities: {} },
+        perceive_角色丙: { type: 'noul', noul: 0.9 },
+        interact_角色丙: { type: 'noul', noul: 0.9 },
+        mode_角色丙: { type: 'choice', choice: '语音', confidence: 0.9, probabilities: {} },
+        perceive_角色丁: { type: 'noul', noul: 0.9 },
+        interact_角色丁: { type: 'noul', noul: 0.1 },
+        mode_角色丁: { type: 'choice', choice: '语音', confidence: 0.9, probabilities: {} },
+        state_dirty: { type: 'noul', noul: 0.9 },
+      },
+      { // 甲回复的合并判定：回复是普通消息，知情/转告/接力照常
+        knows_角色乙: { type: 'noul', noul: 0.9 },
+        knows_角色丙: { type: 'noul', noul: 0.9 },
+        knows_角色丁: { type: 'noul', noul: 0.9 },
+        told_角色乙: { type: 'noul', noul: 0.05 },
+        told_角色丙: { type: 'noul', noul: 0.05 },
+        told_角色丁: { type: 'noul', noul: 0.05 },
+        state_dirty: { type: 'noul', noul: 0.1 },
+        next_speaker: { type: 'choice', choice: '你', confidence: 0.9, probabilities: {} },
+      },
+    ] })
+    rmSync(accDir, { recursive: true, force: true })
+    buildGroupFixture(accDir, { chars: [...TEST_CAST, { dir: '角色丁', name: '角色丁', personality: '（测试设定：配合）', appearance: '（测试外观）', relationships: '（测试关系）' }] })
+    writeTestSettings(ds.port, jev.port)
+    const { GroupSession } = await import('../src/group/engine.ts')
+    const session = GroupSession.open(accName)
+    session.setScene({ present: ['角色甲', '角色乙'], remote: [{ character: '角色丙', perceive: '语音', note: '（测试通道）' }], overhear: [{ character: '角色丁', perceive: '语音', note: '（测试途径）' }] }, '测试初始')
+    const events: Array<{ type: string }> = []
+    for await (const ev of session.speak('（一晃，半年过去了。）', undefined, true)) {
+      events.push({ type: ev.type })
+    }
+    const asked = Object.keys((jev.hits[0]?.body as { questions: Record<string, unknown> }).questions)
+    assert.ok(asked.includes('next_speaker') && asked.includes('state_dirty'), '客观注入仍问路由与状态门')
+    assert.ok(!asked.some(k => k.startsWith('knows_') || k.startsWith('told_')), '客观注入不问知情/转告（感知判定范畴不适用）')
+    const askedAfterReply = Object.keys((jev.hits[1]?.body as { questions: Record<string, unknown> }).questions)
+    assert.ok(askedAfterReply.some(k => k.startsWith('knows_')), '角色回复仍走知情判定')
+    const objMsg = session.snapshot().messages.find(m => m.objective === true)
+    assert.ok(objMsg !== undefined, '客观注入的消息行必须带 objective 标记')
+    const vis = objMsg.visible_to === 'all' ? [] : objMsg.visible_to
+    assert.deepEqual([...vis].sort(), ['角色甲', '角色乙'].sort(), '受众=现场记录（接入/单向感知层不收）')
+    const memLines3 = (n: string): Array<{ source: string; mid?: number; text: string }> => {
+      const raw = fsReadFileSync(join(accDir, '角色', n, '记忆.jsonl'), 'utf8').trim()
+      return raw === '' ? [] : (JSON.parse('[' + raw.split(String.fromCharCode(10)).filter(l => l !== '').join(',') + ']') as Array<{ source: string; mid?: number; text: string }>)
+    }
+    const jiaObj = memLines3('角色甲').filter(e => e.source === '客观')
+    assert.equal(jiaObj.length, 1, '现场者获得客观条目')
+    assert.equal(jiaObj[0]?.mid, objMsg.id, '客观条目带 mid')
+    assert.ok(jiaObj[0]?.text.includes('半年过去了'), '客观条目=逐字原文+说话人标识')
+    assert.equal(memLines3('角色丙').filter(e => e.source === '客观').length, 0, '通道接入者不收客观注入')
+    assert.equal(memLines3('角色丁').filter(e => e.source === '客观').length, 0, '单向感知者不收客观注入')
+    session.editMessage(objMsg.id, '（一晃，半年过去了——镇口的老桥也塌了。）')
+    const jiaAfter = memLines3('角色甲').find(e => e.source === '客观' && e.mid === objMsg.id)
+    assert.ok(jiaAfter !== undefined && jiaAfter.text.includes('老桥'), '改写消息后客观条目同步改写（活账本）')
+    assert.equal(events.filter(e => e.type === 'route').length, 1, '客观注入后照常路由')
+    assert.equal(events.filter(e => e.type === 'reply').length, 1, '角色照常接话')
+    ds.server.close(); jev.server.close()
+  }
+
   // ── 5) 端到端：Jev 故障 → 整轮回退 deepseek 完整总管（行为与旧版一致）
   {
     const ds = await mockDeepseek({
@@ -991,7 +1055,7 @@ try {
     ds.server.close()
   }
 
-  console.log('快/慢双路径自检通过：Jev命中/位置判定(场景choice)/链接推导/知情名单(原文移植，含偷听者)/低置信与名单外→路由回退但位置知情不连坐(留痕) · 合并判定(知情+总门+转告+接力一次调用) · 额外记忆(一段触发/二段逐轮/逐字移植/带mid幂等/堆在末尾) · 记账门控(无变化零调用/回复脏恰一次) · 记账员无名册权(越权丢弃) · 规则注入边界(仅角色生成上下文；主判定/合并判定/记账/回退总管不含) · 现场所见(进场检测/发言前等待) · 事件补全(离场锚点纯代码/发现一次合并/事件×参与者限知视角分别注入/首次进场不触发) · 接力判定（判给用户即结束/刚发言压0不可能连续发言/无硬上限） · 接力累计衰减（每判定乘0.8重新发言不重置/衰减最终判回用户/翻转与阻断留痕） · 回退=完整总管 · 未配置=完全兼容')
+  console.log('快/慢双路径自检通过：Jev命中/位置判定(场景choice)/链接推导/知情名单(原文移植，含偷听者)/低置信与名单外→路由回退但位置知情不连坐(留痕) · 合并判定(知情+总门+转告+接力一次调用) · 额外记忆(一段触发/二段逐轮/逐字移植/带mid幂等/堆在末尾) · 记账门控(无变化零调用/回复脏恰一次) · 记账员无名册权(越权丢弃) · 规则注入边界(仅角色生成上下文；主判定/合并判定/记账/回退总管不含) · 客观注入(不问知情/转告/受众=现场记录/接入与单向感知不收/客观条目带mid活账本/管线照旧) · 现场所见(进场检测/发言前等待) · 事件补全(离场锚点纯代码/发现一次合并/事件×参与者限知视角分别注入/首次进场不触发) · 接力判定（判给用户即结束/刚发言压0不可能连续发言/无硬上限） · 接力累计衰减（每判定乘0.8重新发言不重置/衰减最终判回用户/翻转与阻断留痕） · 回退=完整总管 · 未配置=完全兼容')
 } finally {
   rmSync(accDir, { recursive: true, force: true })
   if (hadSettings) writeFileSync(settingsFile, backup ?? '', 'utf8')

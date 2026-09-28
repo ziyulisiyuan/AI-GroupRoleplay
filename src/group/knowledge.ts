@@ -28,6 +28,8 @@ export function witnessSummary(m: MsgLine, viewerName: string): string {
 
 /**
  * 登记"该角色可见但尚未入账"的消息为亲历条目（原文移植），返回新增部分。
+ * 客观注入的消息（objective 标记）移植来源为「客观」——它不是被感知的事件，
+ * 是用户显式声明、已对世界生效的客观事实，同样逐字移植、带 mid。
  * suppressed：被用户手动撤回过的 mid（撤回后不得因回填而复现）。
  */
 export function backfillKnowledge(
@@ -42,7 +44,7 @@ export function backfillKnowledge(
   for (const m of store.effectiveMessages()) {
     if (!visibleTo(m, name)) continue
     if (known.has(m.id) || suppressed.has(m.id)) continue
-    const entry: KnowledgeEntry = { source: '亲历', mid: m.id, round: m.round, text: witnessSummary(m, name) }
+    const entry: KnowledgeEntry = { source: m.objective === true ? '客观' : '亲历', mid: m.id, round: m.round, text: witnessSummary(m, name) }
     memory.push(entry)
     added.push(entry)
   }

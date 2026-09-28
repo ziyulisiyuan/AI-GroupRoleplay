@@ -10,7 +10,7 @@ import React, { useCallback, useEffect, useRef, useState } from 'react'
 import { avatarUrl, getJson, postJson, postStream, readNdjson, type Ev, type Msg, type Snapshot } from './api.ts'
 import { applyRules } from './regex.ts'
 import { Avatar, Confirm, Modal, NavBar, useLongPress, useToast } from './ui.tsx'
-import { Check, CheckSquare, Ellipsis, MapPin, Pencil, RefreshCw, Trash2, X } from './icons.tsx'
+import { ArrowDownToLine, Check, CheckSquare, Ellipsis, MapPin, Pencil, RefreshCw, Trash2, X } from './icons.tsx'
 
 interface Props { group: string; onBack: () => void; onOpenInfo: () => void }
 
@@ -39,6 +39,10 @@ export function ChatView({ group, onBack, onOpenInfo }: Props): React.ReactEleme
   /** ⊘ 场景手选：弹窗挑选后，本轮发送直接按"已移动到该场景"处理（跳过换场景判定）。 */
   const [scenePick, setScenePick] = useState(false)
   const [pendingScene, setPendingScene] = useState<string | null>(null)
+  /** 客观注入武装态：本轮发送不经感知判定，直接以「客观」来源写入在场者记忆。 */
+  const [objectiveMode, setObjectiveMode] = useState(false)
+  /** 输入条左侧 ⋯ 菜单（前往地点 / 客观注入）。 */
+  const [composerMenu, setComposerMenu] = useState(false)
   const scroller = useRef<HTMLDivElement>(null)
   const pinned = useRef(true)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
@@ -90,7 +94,7 @@ export function ChatView({ group, onBack, onOpenInfo }: Props): React.ReactEleme
     pinned.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80
   }, [])
 
-  const run = useCallback(async (path: string, body: Record<string, string>): Promise<void> => {
+  const run = useCallback(async (path: string, body: Record<string, string | boolean>): Promise<void> => {
     setBusy(true)
     setTurnMsgs([]) // 新一轮：清空上轮暂存
     try {
@@ -127,14 +131,17 @@ export function ChatView({ group, onBack, onOpenInfo }: Props): React.ReactEleme
     setInput('')
     if (textareaRef.current !== null) textareaRef.current.style.height = 'auto'
     pinned.current = true
+    const objective = objectiveMode
     setPending({
       type: 'msg', id: -1, role: 'user', name: snap.userName || '你', text,
       round: 0, visible_to: 'all', ts: new Date().toISOString(),
+      ...(objective ? { objective: true } : {}),
     })
     const scene = pendingScene
     setPendingScene(null)
-    void run('/message', { text, ...(scene !== null ? { scene } : {}) })
-  }, [input, busy, snap, run, pendingScene])
+    setObjectiveMode(false)
+    void run('/message', { text, ...(scene !== null ? { scene } : {}), ...(objective ? { objective: true } : {}) })
+  }, [input, busy, snap, run, pendingScene, objectiveMode])
 
   const autoGrow = useCallback((): void => {
     const el = textareaRef.current
@@ -279,32 +286,63 @@ export function ChatView({ group, onBack, onOpenInfo }: Props): React.ReactEleme
             {status === '' && pendingScene !== null && <div className="composer-status">本轮将前往：{pendingScene}</div>}
             <div className="composer-bar">
               <button
-                className={'composer-btn' + (pendingScene !== null ? ' armed' : '')}
-                aria-label="选择场景" disabled={busy}
-                onClick={() => setScenePick(true)}
+                className={'composer-btn' + (pendingScene !== null || objectiveMode ? ' armed' : '')}
+                aria-label="插入" disabled={busy}
+                onClick={() => setComposerMenu(true)}
               >
-                <MapPin size={20} />
+                <Ellipsis size={20} />
               </button>
-              <textarea
-                ref={textareaRef}
-                className="composer-input"
-                rows={1}
-                value={input}
-                disabled={busy}
-                placeholder={busy ? '生成中……' : '对大家说……'}
-                onChange={e => { setInput(e.target.value); autoGrow() }}
-                onKeyDown={onKeyDown}
-              />
+              {objectiveMode ? (
+                <div className="composer-input obj-armed">
+                  <span className="obj-chip">[客观注入]</span>
+                  <textarea
+                    ref={textareaRef}
+                    className="obj-textarea"
+                    rows={1}
+                    value={input}
+                    disabled={busy}
+                    placeholder="输入要注入的客观内容……"
+                    onChange={e => { setInput(e.target.value); autoGrow() }}
+                    onKeyDown={onKeyDown}
+                  />
+                </div>
+              ) : (
+                <textarea
+                  ref={textareaRef}
+                  className="composer-input"
+                  rows={1}
+                  value={input}
+                  disabled={busy}
+                  placeholder={busy ? '生成中……' : '对大家说……'}
+                  onChange={e => { setInput(e.target.value); autoGrow() }}
+                  onKeyDown={onKeyDown}
+                />
+              )}
               <button className="composer-send" disabled={busy || input.trim() === ''} onClick={send}>发送</button>
             </div>
           </>
         )}
       </div>
 
+      {/* ⋯ 插入菜单：前往地点（⊘ 手选）/ 客观注入 */}
+      <Modal open={composerMenu} onClose={() => setComposerMenu(false)}>
+        <button className="menu-item" onClick={() => { setComposerMenu(false); setScenePick(true) }}>
+          <MapPin size={18} /> 前往地点
+        </button>
+        <button className="menu-item" onClick={() => { setComposerMenu(false); setPendingScene(null); setObjectiveMode(true) }}>
+          <ArrowDownToLine size={18} /> 客观注入
+        </button>
+        {objectiveMode && (
+          <button className="menu-item" style={{ color: 'var(--danger)' }} onClick={() => { setComposerMenu(false); setObjectiveMode(false) }}>
+            <X size={18} /> 取消客观注入
+          </button>
+        )}
+      </Modal>
+
       {/* ⊘ 场景手选（悬浮）：选中的场景随本轮发送生效——不再走换场景判定，直接按"是"处理 */}
       <Modal open={scenePick} onClose={() => setScenePick(false)} title="前往哪个场景？">
         {(snap?.scenes ?? []).map(s => (
-          <button key={s.name} className="menu-item" onClick={() => { setPendingScene(s.name); setScenePick(false) }}>
+          <button key={s.name} className="menu-item" onClick={() => { setPendingScene(s.name); setObjectiveMode(false); setScenePick(false) }}>
             <MapPin size={18} /> {s.name}{snap?.scene === s.name ? '（当前）' : ''}
           </button>
         ))}
@@ -387,7 +425,7 @@ function MessageRow({ msg, mine, avatar, onMenu, selectMode, picked, onToggle }:
       <div className="msg-main">
         {!mine && <div className="msg-name">{msg.name}</div>}
         {/* 显示层替换：只改你看到的文字，模型上下文/记忆/判定始终是原文 */}
-        <div className="bubble">{applyRules(msg.text)}</div>
+        <div className="bubble">{msg.objective === true && <span className="obj-tag">[客观注入]</span>}{applyRules(msg.text)}</div>
       </div>
     </div>
   )

@@ -218,6 +218,42 @@ try {
   assert.deepEqual(backVis, ['角色乙'], '乙（在场景一）听见回来这句；甲丙（场景二）听不到')
   assert.deepEqual(session.snapshot().locations, { 角色甲: S2, 角色乙: S1, 角色丙: S2 }, '离开者去向必须有后台记录（presence 行的位置表）')
 
+  // ── 3b) 客观注入（地图群，非时间型世界事实）：不问 knows_/told_，location/scene_change 照问；
+  //         受众=当前场景现场者（他场景者不收）
+  {
+    const dsB = await mockDeepseek({ streamText: '（乙点头）嗯。' })
+    const jevB = await mockJev({ answers: [
+      { // 主判定：无人移动
+        next_speaker: { type: 'choice', choice: '角色乙', confidence: 0.9, probabilities: {} },
+        scene_change: { type: 'choice', choice: '未移动', confidence: 0.9, probabilities: {} },
+        location_角色甲: { type: 'choice', choice: S2, confidence: 0.9, probabilities: {} },
+        location_角色乙: { type: 'choice', choice: S1, confidence: 0.9, probabilities: {} },
+        location_角色丙: { type: 'choice', choice: S2, confidence: 0.9, probabilities: {} },
+        state_dirty: { type: 'noul', noul: 0.9 },
+      },
+      { // 乙回复的合并判定 → 用户
+        knows_角色甲: { type: 'noul', noul: 0.05 },
+        knows_角色丙: { type: 'noul', noul: 0.05 },
+        told_角色甲: { type: 'noul', noul: 0.05 },
+        told_角色丙: { type: 'noul', noul: 0.05 },
+        state_dirty: { type: 'noul', noul: 0.1 },
+        next_speaker: { type: 'choice', choice: '你', confidence: 0.9, probabilities: {} },
+      },
+    ] })
+    writeTestSettings(dsB.port, jevB.port)
+    for await (const ev of session.speak('（镇口的老槐树，一夜之间开满了白花。）', undefined, true)) void ev
+    const askedObj = Object.keys((jevB.hits[0]?.body as { questions: Record<string, unknown> }).questions)
+    assert.ok(askedObj.includes('location_角色甲') && askedObj.includes('scene_change'), '地图群客观注入仍问位置/换场景')
+    assert.ok(!askedObj.some(k => k.startsWith('knows_') || k.startsWith('told_')), '客观注入不问知情/转告')
+    const objMsgB = session.snapshot().messages.find(m => m.objective === true)
+    assert.ok(objMsgB !== undefined, '客观消息行带 objective 标记')
+    const visB = objMsgB?.visible_to === 'all' ? [] : objMsgB?.visible_to ?? []
+    assert.deepEqual(visB, ['角色乙'], '受众=当前场景现场者（甲丙在场景二，不收）')
+    assert.ok(memOf('角色乙').includes('客观') && memOf('角色乙').includes('老槐树'), '现场者获得客观条目（逐字原文）')
+    assert.ok(!memOf('角色甲').includes('客观') && !memOf('角色丙').includes('客观'), '他场景者不收客观注入')
+    dsB.server.close(); jevB.server.close()
+  }
+
   // ── 4) 严苛不移动：scene_change=未移动 → 提到图外地点也不动
   jev2.hits.length = 0
   const ds3 = await mockDeepseek({ streamText: '（测试回复）' })
@@ -357,7 +393,7 @@ try {
     ds6.server.close(); jev6.server.close()
   }
 
-  console.log('地图机制自检通过：场景文件层(创建/重名/描述可改/名称不可改) · 建群即建图 · 初始场景落位 · ⊘手选跳过判定生效(不问scene_change/present_*) · 目的地者直接在场听见进门句 · 同行者/离开者按location落位 · 判定移动与极严苛不动 · 对话进场晚于快照且入场包照常 · 一直在场者不入入场包 · 场景全文+当前场景注入角色 · 离开去向=其他清位 · 跨场景通话(双向接入建立/接入者可被路由/位置不动/呼叫句可听)')
+  console.log('地图机制自检通过：场景文件层(创建/重名/描述可改/名称不可改) · 建群即建图 · 初始场景落位 · ⊘手选跳过判定生效(不问scene_change/present_*) · 目的地者直接在场听见进门句 · 同行者/离开者按location落位 · 判定移动与极严苛不动 · 客观注入(不问知情转告/location照问/受众=当前场景现场者/他场景者不收) · 对话进场晚于快照且入场包照常 · 一直在场者不入入场包 · 场景全文+当前场景注入角色 · 离开去向=其他清位 · 跨场景通话(双向接入建立/接入者可被路由/位置不动/呼叫句可听)')
 } finally {
   rmSync(accDir, { recursive: true, force: true })
   if (hadSettings) writeFileSync(settingsFile, backup ?? '', 'utf8')

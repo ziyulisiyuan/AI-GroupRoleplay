@@ -29,7 +29,9 @@
 4. **[INV] A character knows only what its knowledge ledger contains.** The ledger is fed
    exclusively by (a) verbatim transplant of messages the fast path judged the character can
    perceive, (b) retelling grants (§5.7), (c) the entry kit (§5.8 scene snapshot + §5.9 off-story
-   experiences), (d) explicit user operations. Directors never write memory text.
+   experiences), (d) explicit user operations, (e) objective injection (§4.6: user-declared
+   narrator-level facts, transplanted verbatim to the scene's present by record). Directors never
+   write memory text.
 5. **[INV] Group isolation** at three layers: session, routing roster, storage paths.
 6. **[INV] `角色.md` is a user asset with zero runtime write paths.** Only the editor
    (`src/group/scaffold.ts`) writes it.
@@ -87,7 +89,8 @@ a fallback full director (deepseek, §6.1c), and a correction window (§6.3).
 4. Append the user `msg` line. `visible_to` = knowledge audience (§4.3/§4.4): the Jev `knows` set
    filtered by per-link `since` anchors; when the fast path is unavailable, fallback =
    present ∩ full perception (keyword rule). The snapshot is written at birth — context window and
-   memory agree from the first moment.
+   memory agree from the first moment. An objective-injection send (§4.6) skips the judgment
+   entirely: `visible_to` = the scene's present by record, and the line carries `objective: true`.
 5. `backfillAll()`: transplant new visible messages verbatim into each character's ledger (§5.2)
    and heal stale entries (§5.3). Then, if the retelling trigger set is non-empty, stage-2 extra
    memory runs synchronously (before routing — a relayed-to character must already hold what was
@@ -208,7 +211,7 @@ Then one JSON object per line:
 
 | type | fields | notes |
 |---|---|---|
-| `msg` | `id, role(user\|character\|system), name, text, round, visible_to("all"\|[名]), ts` | `id` is monotonic: `nextMsgId = max(header.lastMsgId, existing ids) + 1`. **User edits/deletes/rerolls physically rewrite/remove msg lines** — the log is the current context. `visible_to` = knowledge-audience snapshot taken at append time (§4.4). |
+| `msg` | `id, role(user\|character\|system), name, text, round, visible_to("all"\|[名]), ts, objective?(true)` | `id` is monotonic: `nextMsgId = max(header.lastMsgId, existing ids) + 1`. **User edits/deletes/rerolls physically rewrite/remove msg lines** — the log is the current context. `visible_to` = knowledge-audience snapshot taken at append time (§4.4). `objective: true` marks an objective-injection line (§4.6): backfill transplants it as `source=客观`; omitted for ordinary messages. |
 | `route` | `round, picked, reason, fallback` | one per director decision (including each relay hop; relay rows carry reason `接力`) |
 | `presence` | `scene?, locations?{角色: 场景}, present[], remote?[{character, perceive(语音\|视听), note?, since?}], overhear?[{same}], reason, ts` | scene change (§4); map rows carry the active scene and every character's location (missing key = 其他); omitted layers = unchanged |
 | `ledger` | `character, section(status\|knowledge\|personality\|relationship), op(set\|append\|unset\|retract), content` | payloads in §3.3; `personality`/`relationship` sections are retired (replay ignores them) |
@@ -242,7 +245,7 @@ logged with their reason. Served to the frontend via `GET /api/group/{name}/judg
 | section + op | content | effect |
 |---|---|---|
 | status + set | JSON object, subset of the seven ledger fields (§3.4a) | per-field overwrite into the character's ledger (fields absent from the JSON keep their value) |
-| knowledge + append | `JSON({source, mid?, round, text})` | verbatim ledger entry; `source` is `亲历` (transplant), `额外得知` (retelling grant, §5.7), `现场所见` (scene snapshot, §5.8), `离场经历` (off-story experience, §5.9), or `用户指定`/`推断`/`他人告知` (correction window) |
+| knowledge + append | `JSON({source, mid?, round, text})` | verbatim ledger entry; `source` is `亲历` (transplant), `客观` (objective injection, §4.6), `额外得知` (retelling grant, §5.7), `现场所见` (scene snapshot, §5.8), `离场经历` (off-story experience, §5.9), or `用户指定`/`推断`/`他人告知` (correction window) |
 | knowledge + retract | `JSON({mid? \| text?})` | removes matching entries; a `mid` retract also adds the mid to the suppression set so backfill can never re-register it |
 
 ### 3.4 Character files
@@ -446,6 +449,27 @@ theirs. New links anchor just before the last user message, so the utterance tha
 is heard. The system prompt declares each link's limits and the overhear variant adds that
 the scene cannot interact back.
 
+### 4.6 Objective injection (客观注入)
+
+A user-declared narrator-level fact, armed from the composer's ⋯ menu (POST body
+`objective: true`). The user declares the category; nothing classifies or guesses it. Semantics:
+
+- **Audience = the scene's present by record**: every character whose location equals the active
+  scene (flat groups: the present list) — no exceptions and no perception filtering (perception
+  impairments, links and in-scene awareness are all irrelevant; the line is not a perceivable
+  event). Remote and overhear links are excluded: a channel cannot transmit a narrator fact.
+- **`knows_*` / `told_*` are not asked** — the perception judgment's category does not apply.
+  Everything else runs as for any other message: routing, relay, `state_dirty`, and the
+  scene/location/link judgments.
+- The line is appended with `objective: true` and `visible_to` = that audience; backfill
+  transplants it verbatim with `source = 客观` and its `mid`, so the living-ledger semantics
+  (edit/reroll/delete propagation, retract, replay) are identical to any other entry. No
+  consumer special-cases the label — beyond the two differences above it is an ordinary ledger
+  entry everywhere.
+- Works with the fast path unavailable (declaration, not judgment — no Jev dependency).
+  Off-scene characters receive nothing here; §5.9's discovery prompt checks 【客观】-annotated
+  window lines against the events it completes.
+
 ---
 
 ## 5. Knowledge ledger
@@ -459,8 +483,9 @@ messages: `你自己说过：<原文>`). No truncation, summarizing, or rewritin
 ### 5.2 Backfill (`backfillKnowledge`)
 
 Runs after every append. Iterates the **effective view**; for each character, any visible message
-without a ledger entry for its `mid` is transplanted as `source=亲历` with the `mid` (restart
-idempotent). Every new entry is also appended as a ledger row [INV 2]. Entries whose `mid` is in
+without a ledger entry for its `mid` is transplanted with the `mid` (`source=亲历`;
+`source=客观` for objective-injection lines, §4.6) and the speaker prefix — verbatim either way
+(restart idempotent). Every new entry is also appended as a ledger row [INV 2]. Entries whose `mid` is in
 the suppression set are never re-registered (§5.3). Suppression source: user retracts.
 
 ### 5.3 Manual memory operations (user; via ledger)
@@ -558,7 +583,9 @@ window and are skipped) — additionally get their off-screen life simulated and
 
 1. **Discovery** (`askOffStoryDiscovery`, `record_offstory` tool; one call per entry covering all
    re-entrant entrants collectively): input = each entrant's absence-window dialogue (effective
-   messages after their departure id, capped at the last 40) + **all existing `离场经历` entries**
+   messages after their departure id, capped at the last 40; objective-injection lines carry a
+   【客观】 prefix, and the prompt requires checking them against the events completed) +
+   **all existing `离场经历` entries**
    (anti-repeat / anti-contradiction anchor) + the roster. Output = up to 4 events, each a
    one-sentence objective skeleton (`summary`) + full `participants` list (≤4). Hard constraints:
    only extend what the dialogue gives grounds for (orders to him, promises, invitations,
@@ -755,7 +782,7 @@ perceived what; the overhear layer is director-and-player only.
 | `GET /api/group/{name}` | snapshot: `{name, era, world, tone, scene, scenes[{name,description}], locations{角色:场景}, userName, present[], remote[], overhear[], absent[], characters[{name,dirName}], messages(effective view), routes}` |
 | `GET /api/group/{name}/status` | per-character status-ledger lines + memory counts |
 | `GET /api/group/{name}/judgments` | tail (last 200, newest first) of 判定.jsonl (§3.2a); for the sidebar run-log panel |
-| `POST /api/group/{name}/message` | body `{text, scene?}` (scene = ⊘-picked target) → event stream (§1.1) |
+| `POST /api/group/{name}/message` | body `{text, scene?, objective?}` (scene = ⊘-picked target; objective = 客观注入, §4.6) → event stream (§1.1) |
 | `POST /api/group/{name}/roll` | reroll last character message → event stream |
 | client disconnect | the generator keeps running; bookkeeping still completes |
 
@@ -819,7 +846,7 @@ rename without the frontend twin breaks the UI silently):
 - `Snapshot` interface ↔ `engine.snapshot()` return shape.
 - The `LEDGER_KEYS` constant duplicated at the bottom of App.tsx ↔ `LEDGER_KEYS` in
   `src/group/status.ts` (seven Chinese field names, exact order).
-- Source labels (`亲历`, `额外得知`, `现场所见`, `用户指定`, `推断`, `他人告知`), presence layer
+- Source labels (`亲历`, `客观`, `额外得知`, `现场所见`, `用户指定`, `推断`, `他人告知`), presence layer
   names (`现场`/`接入`/`单向感知`), and perceive values (`语音`/`视听`) are displayed verbatim —
   never translate or alias them.
 
@@ -891,10 +918,13 @@ theme only — deliberate). Desktop widths letterbox the app into a centered 520
   before saving (invalid patterns rejected), support `$1` back-references, and an empty
   replacement deletes the match.
 - **Chat** (`chat.tsx`): chat column shows messages + streaming text only (§7.5 decision); no
-  timestamps are displayed. The composer's left button (⊘, circle-with-slash) opens a floating
-  scene picker listing the group's scenes (current one marked); picking one arms the next send —
-  the message POSTs with `scene`, the turn skips the scene-change judgment and lands the user in
-  that scene; a cancel row disarms. User = green bubbles right with own avatar; characters = white
+  timestamps are displayed. The composer's left button (⋯) opens a floating insert menu with two
+  entries — **前往地点** (the floating scene picker listing the group's scenes, current one marked;
+  picking one arms the next send — the message POSTs with `scene`, the turn skips the scene-change
+  judgment and lands the user in that scene; a cancel row disarms) and **客观注入** (§4.6: arms
+  the composer with an in-input `[客观注入]` prefix chip and its own placeholder; the chip is
+  display-only — the menu's cancel row disarms; the two arms are mutually exclusive). Objective lines render a
+  `[客观注入]` prefix in the bubble (display only). User = green bubbles right with own avatar; characters = white
   bubbles left with avatar and name label. Long-press (450 ms; desktop right-click) opens an
   action sheet: 修改 / 删除 / 批量删除 (+ 重掷这条回复 on the last character message). 批量删除
   enters a select mode: checkboxes beside rows, tapping toggles, the composer is replaced by a
@@ -967,8 +997,8 @@ Convention [INV 11]: fixtures are temporary and always deleted. Offline checks n
 | `selfcheck:settings` | offline | rules zero-built-in round-trip · provider parsing/fallback · router provider resolution |
 | `selfcheck:presence` | offline | three-layer yaml round-trip (with `since`) · parse semantics (omitted=keep/empty=clear/unknown=语音) · perception keywords · visible_to snapshots |
 | `selfcheck:engine` | offline | bad-line tolerance + id continuity · text-retract no-resurrection (restart/replay) · edit living-ledger (physical ledger-row rewrite, respects retracts) · deleted-message physical removal (no text left in log) + memory cleanup + id monotonicity · rename chains |
-| `selfcheck:router` | offline | Jev hit / three-layer derivation / knowledge audience (incl. overhearers) / `told` stage-1 + `state_dirty` parsing (missing = safe side) · low-confidence, out-of-roster → route-only fallback with raw answers logged · scene/knowledge salvage when route unusable · `jevExtraRounds` stage-2 thresholds / failure grants nothing · `missingRounds`/`transplantRounds` units (verbatim, mid, own-speech prefix) · end-to-end merged judgment (1 call/reply) · extra-memory grant (end-append order, ledger rows, idempotence on re-telling) · gate (zero deepseek calls when clean, exactly one when dirty) · bookkeeper has no roster authority (overreach discarded) · scene-perception snapshot (entrant detection, injection before entrant speaks via relay, manual-fix entries snapshotted too) · off-story experiences (absence anchor pure-code, discovery merged per entry, event×participant limited-POV renders injected to all participants, first-time entrants skipped) · judgment log (判定.jsonl rows with phases + raw answers + elapsed) · relay (user turn / cumulative decay: ×0 right after a speech — no consecutive output, that judgment does not advance the multiplier; `RELAY_DECAY` applied at every other judgment, cumulative across re-speeches; no hard cap, the undecaying user weight ends the chain; hard block hands the floor back to the user on just-spoke re-picks and all-zero distributions) · fallback = single full director · unconfigured = fast path off |
-| `selfcheck:scene` | offline | scene file layer (create / duplicate reject / description editable / name immutable / invalid name) · group creation builds the map + initial scene · character 初始场景 placement · ⊘ manual move skips scene_change (questions assert) and still moves · destination occupants present by record and hear the arrival line · followers placed, leavers fall to their location answer (其他 clears) · judged move (confidence-guarded) · strict no-move · dialogue entrant lands post-snapshot (not in visible_to) with the entry kit injected · colocated-by-record characters are not entry-kit targets · map full text + active scene injected into characters |
+| `selfcheck:router` | offline | Jev hit / three-layer derivation / knowledge audience (incl. overhearers) / `told` stage-1 + `state_dirty` parsing (missing = safe side) · low-confidence, out-of-roster → route-only fallback with raw answers logged · scene/knowledge salvage when route unusable · `jevExtraRounds` stage-2 thresholds / failure grants nothing · `missingRounds`/`transplantRounds` units (verbatim, mid, own-speech prefix) · end-to-end merged judgment (1 call/reply) · extra-memory grant (end-append order, ledger rows, idempotence on re-telling) · gate (zero deepseek calls when clean, exactly one when dirty) · bookkeeper has no roster authority (overreach discarded) · objective injection (knows/told not asked · audience = present by record · remote/overhear excluded · 客观 entry carries mid, living-ledger rewrite · pipeline unchanged) · scene-perception snapshot (entrant detection, injection before entrant speaks via relay, manual-fix entries snapshotted too) · off-story experiences (absence anchor pure-code, discovery merged per entry, event×participant limited-POV renders injected to all participants, first-time entrants skipped) · judgment log (判定.jsonl rows with phases + raw answers + elapsed) · relay (user turn / cumulative decay: ×0 right after a speech — no consecutive output, that judgment does not advance the multiplier; `RELAY_DECAY` applied at every other judgment, cumulative across re-speeches; no hard cap, the undecaying user weight ends the chain; hard block hands the floor back to the user on just-spoke re-picks and all-zero distributions) · fallback = single full director · unconfigured = fast path off |
+| `selfcheck:scene` | offline | scene file layer (create / duplicate reject / description editable / name immutable / invalid name) · group creation builds the map + initial scene · character 初始场景 placement · ⊘ manual move skips scene_change (questions assert) and still moves · destination occupants present by record and hear the arrival line · followers placed, leavers fall to their location answer (其他 clears) · judged move (confidence-guarded) · strict no-move · objective injection (location/scene_change still asked, knows/told not · audience = active scene's present · other scenes excluded) · dialogue entrant lands post-snapshot (not in visible_to) with the entry kit injected · colocated-by-record characters are not entry-kit targets · map full text + active scene injected into characters |
 | `acceptance-*` (m1–m5, isolation, models, context-edit, presence, director) | online | end-to-end behaviors per milestone; re-run after any fast-path or memory change |
 
 `DSH_DEBUG=1` prints director/judge failure causes.

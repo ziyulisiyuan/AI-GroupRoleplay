@@ -25,6 +25,8 @@ export interface MsgLine {
   /** 'all' 或 可见角色名数组（知情名单快照，消息出生即写定）。 */
   visible_to: 'all' | string[]
   ts: string
+  /** 客观注入（用户显式声明的叙事者级事实）：回填移植来源用「客观」，受众由引擎按现场记录取。 */
+  objective?: true
 }
 
 export interface RouteLine {
@@ -175,6 +177,7 @@ export class StoryStore {
     name: string,
     text: string,
     visibleTo: 'all' | string[] = 'all',
+    opts: { objective?: boolean } = {},
   ): MsgLine {
     const msg: MsgLine = {
       type: 'msg',
@@ -185,6 +188,7 @@ export class StoryStore {
       round: this.round + (role === 'user' ? 1 : 0),
       visible_to: visibleTo,
       ts: new Date().toISOString(),
+      ...(opts.objective === true ? { objective: true } : {}),
     }
     this.maxIdEver = msg.id
     this.lines.push(msg)
