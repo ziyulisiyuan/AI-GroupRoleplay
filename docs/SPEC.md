@@ -179,7 +179,7 @@ a fallback full director (deepseek, §6.1c), and a correction window (§6.3).
 
 ```
 <workspace>/
-  规则.md                     # global rules written by the user; injected into director + all characters
+  规则.md                     # global rules written by the user; injected into all characters
   settings.yaml               # provider list + activeId + routerId (gitignored; holds credentials)
   .env                        # optional keys (see §2); gitignored
   groups/                     # user data, gitignored
@@ -313,8 +313,9 @@ free prose. Injected into every character and the director.
 
 ### 3.7 规则.md
 
-Workspace-root file; user-written rules injected into the director and every character (as the
-`【规则（用户设定）】` section, before the closing instruction). A missing/empty file injects
+Workspace-root file; user-written rules injected into every character (as the
+`【规则（用户设定）】` section, before the closing instruction). Judgment, bookkeeping, and
+correction-window prompts do not consume this file. A missing/empty file injects
 nothing (no built-in content). Re-read every turn. No size budget: injected verbatim `[WHY]` the
 user accepts the per-turn cost rather than losing rules; it is the only injected section without
 a size limit (§5.5 bounds memory only).

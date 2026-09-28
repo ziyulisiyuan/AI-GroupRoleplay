@@ -258,8 +258,6 @@ export interface RouteInput {
   /** 本轮用户发言原文（快路径预检时消息尚未落盘——回退路径的 prompt 与提及检测靠它补全）。 */
   pendingUserText?: string
   tone: string
-  /** §3.1.2：全局规则（用户自写约束词；空 = 不注入） */
-  rules?: string
   /** §3.11：明确在场者（不在场的角色不知道本场景发生的事） */
   presentNames?: string[]
   /** §3.11：在场者及其感知情况（如"角色乙（失聪）"），供总管判断谁能知道 */
@@ -297,7 +295,6 @@ export async function routeNextSpeaker(input: RouteInput): Promise<RouteResult> 
         + '用户这段剧情移动到了某个场景（场景名给出时），用 scene 字段给出该场景名，present 为移动后在场的人。'
       : '',
     input.tone !== '' ? `[群聊基调]\n${input.tone}` : '',
-    input.rules !== undefined && input.rules.trim() !== '' ? `[规则（用户设定）]\n${input.rules.trim()}` : '',
     '[最近对话]',
     recent,
     '若是用户直接点名/对某人说话，优先派该角色（在场者优先）；私下发生的事不要在公开场合续接。',
@@ -384,7 +381,6 @@ export interface JevRouteInput {
   /** 本轮用户发言原文（门控与路由的判断对象；此刻尚未落盘）。 */
   userText?: string
   tone: string
-  rules?: string
   timeoutMs?: number
   /** 地图：全部场景（名+描述全文）。非空 = 地图群，追加换场景与位置判定。 */
   scenes?: Array<{ name: string; description: string }>
@@ -700,7 +696,6 @@ export async function jevAfterReply(input: {
   /** 最近对话（不含本段回复——回复原文单独给）。 */
   recent: string
   tone: string
-  rules?: string
   timeoutMs?: number
   /** 判定日志回调（判定.jsonl 用，只给人看）：成功带全部原始答案与耗时，失败带原因。 */
   log?: (entry: Record<string, unknown>) => void
@@ -739,7 +734,6 @@ export async function jevAfterReply(input: {
         input.statusNotes.length > 0 ? `[角色状态原文]\n${input.statusNotes.join('\n')}` : '',
         `[${input.speaker} 刚说的这段话]\n${input.replyText}`,
         input.tone !== '' ? `[群聊基调]\n${input.tone}` : '',
-        input.rules !== undefined && input.rules.trim() !== '' ? `[规则（用户设定）]\n${input.rules.trim()}` : '',
         '[最近对话]',
         input.recent,
       ].filter(s => s !== '').join('\n'),
@@ -882,7 +876,6 @@ export interface BookkeeperInput {
   replyText: string
   recent: string
   tone: string
-  rules?: string
   timeoutMs?: number
 }
 
@@ -898,7 +891,6 @@ export async function askBookkeeper(input: BookkeeperInput): Promise<Pick<RouteR
       : '',
     input.ledgers.length > 0 ? `[各角色当前状态账本（更新时整体快照：没变化的字段原样带回，变化的字段写新值）]\n${input.ledgers.join('\n')}` : '',
     input.tone !== '' ? `[群聊基调]\n${input.tone}` : '',
-    input.rules !== undefined && input.rules.trim() !== '' ? `[规则（用户设定）]\n${input.rules.trim()}` : '',
     `[本轮用户发言]\n${input.userText}`,
     ...(input.replyText.trim() === '' ? [] : [`[${input.speaker} 的回复]\n${input.replyText}`]),
     '[最近对话]',
@@ -983,7 +975,6 @@ export interface CorrectionInput {
   ledgers: string[]
   settings: GroupSettings
   recent: string
-  rules?: string
   text: string
   timeoutMs?: number
 }
@@ -1000,7 +991,6 @@ export async function askDirector(input: CorrectionInput): Promise<CorrectionRes
       : '',
     input.ledgers.length > 0 ? `[各角色当前状态账本（修正时整体快照：没变化的字段原样带回，用户要求改的字段写新值）]\n${input.ledgers.join('\n')}` : '',
     input.settings.tone !== '' ? `[群聊基调]\n${input.settings.tone}` : '',
-    input.rules !== undefined && input.rules.trim() !== '' ? `[规则（用户设定）]\n${input.rules.trim()}` : '',
     '[最近的剧情]',
     input.recent,
     '[用户对你说的话]',

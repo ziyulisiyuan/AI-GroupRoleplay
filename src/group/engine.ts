@@ -35,7 +35,7 @@ export class GroupSession {
   settings: ReturnType<typeof loadGroupSettings>
   /** 用户自己的设定（称呼 + 自由文本），每个角色与总管都能看到。 */
   userPersona: UserPersona
-  /** 全局规则（工作区根 规则.md，用户自写的约束词；每个角色与总管都读）。 */
+  /** 全局规则（工作区根 规则.md，用户自写的约束词；仅注入角色）。 */
   rules: string
   /** 场景人员（现场 + 远程实时接入）；未配置 = 全员现场。 */
   private scene: SceneAccess
@@ -362,7 +362,6 @@ export class GroupSession {
             replyText: w.replyText,
             recent: this.store.effectiveMessages().slice(-8).map(m => `${m.name}：${m.text}`).join('\n'),
             tone: this.settings.tone,
-            rules: this.rules,
             timeoutMs: Math.max(config.directorTimeoutMs, 60000),
           })
           // 记账员只有状态账本写入权（§6.1b）：场景名册唯一写者 = Jev 每轮判定 / 总管代管 / 用户手动修正
@@ -652,7 +651,6 @@ export class GroupSession {
         recent,
         userText: text,
         tone: this.settings.tone,
-        rules: this.rules,
         timeoutMs: config.jevTimeoutMs,
         ...(isMap ? { scenes: listScenes(this.groupDir), activeScene: before.scene ?? '', locations: before.locations ?? {}, manualScene } : {}),
         log: e => this.judgeLog({ phase: '主判定', ...e }),
@@ -672,7 +670,6 @@ export class GroupSession {
         effectiveHistory: this.store.effectiveMessages(), // 启发式降级看删改后的视图
         pendingUserText: text, // 快路径预检时消息尚未落盘——回退路径靠它补全 prompt 与提及检测
         tone: this.settings.tone,
-        rules: this.rules,
         presentNames: before.present,
         presentNotes: this.presentNotes(),
         directorTimeoutMs: config.directorTimeoutMs,
@@ -1002,7 +999,6 @@ export class GroupSession {
             present: this.presentNames(),
             recent: this.store.effectiveMessages().slice(-config.contextWindow).map(m => `${m.name}：${m.text}`).join('\n'),
             tone: this.settings.tone,
-            rules: this.rules,
             timeoutMs: config.jevTimeoutMs,
             log: e => this.judgeLog({ phase: '回复判定', ...e }),
           })
@@ -1210,7 +1206,6 @@ export class GroupSession {
       ledgers: this.ledgerLines(),
       settings: this.settings,
       recent,
-      rules: this.rules,
       text: text.trim(),
       timeoutMs: Math.max(config.directorTimeoutMs, 60000),
     })

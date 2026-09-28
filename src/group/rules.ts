@@ -1,7 +1,7 @@
 /**
  * 全局规则（SPEC §3.1.2）：用户自己写的约束词/写作规则，**不内置任何内容**。
  * 位置：工作区根目录 规则.md（跨所有群生效）；文件缺失或为空 = 不注入任何规则。
- * 注入对象：总管 + 每一个角色（在末尾指令之前）。
+ * 注入对象：每一个角色（在末尾指令之前）；判定/记账/纠正等后台 AI 不消费此文件。
  */
 import { existsSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'

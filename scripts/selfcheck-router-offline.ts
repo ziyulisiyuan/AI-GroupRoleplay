@@ -27,6 +27,12 @@ const hadSettings = existsSync(settingsFile)
 const backup = hadSettings ? fsReadFileSync(settingsFile, 'utf8') : undefined
 // 备份落盘：进程被硬崩溃打死时 finally 不会执行，磁盘上的孤儿备份供 server/cli 启动时自愈
 writeFileSync(settingsFile + '.selfcheck-bak', backup ?? '', 'utf8')
+// 规则夹具（临时写、finally 恢复）：带标记的规则文本用于钉"规则只进角色生成上下文"的注入边界
+const rulesFile = join(config.root, '规则.md')
+const hadRules = existsSync(rulesFile)
+const rulesBackup = hadRules ? fsReadFileSync(rulesFile, 'utf8') : undefined
+const RULES_MARKER = '（测试规则·仅角色可见标记）'
+writeFileSync(rulesFile, RULES_MARKER + '\n', 'utf8')
 
 /** mock Jev：answers（固定）或 answersSeq（按第 N 次请求取，超出重复最后一个）；可注入故障（500 / 慢响应）。 */
 async function mockJev(script: { answers?: Record<string, unknown> | Array<Record<string, unknown>>; fail?: boolean; slowMs?: number }): Promise<{ server: Server; port: number; hits: Array<Record<string, unknown>> }> {
@@ -378,6 +384,14 @@ try {
     // 记账员无名册权：bookkeeper 越权输出的 presence_updates 必须被忽略
     assert.ok(session.snapshot().present.includes('角色甲') && session.snapshot().present.includes('角色乙'), '记账员不得改动场景名册（权力已摘除）')
 
+    // 规则注入边界：规则文本只出现在角色生成上下文——Jev 主判定/合并判定与记账请求体一律不含
+    assert.ok(jev.hits.length > 0 && jev.hits.every(h => !JSON.stringify(h.body).includes(RULES_MARKER)),
+      'Jev 判定（主判定/合并判定）的 state 不得包含用户规则')
+    assert.ok(ds.hits.filter(h => h.kind === 'bookkeep').every(h => !JSON.stringify(h.body).includes(RULES_MARKER)),
+      '记账员提示词不得包含用户规则')
+    const streamHits = ds.hits.filter(h => h.kind === 'stream')
+    assert.ok(streamHits.length > 0 && streamHits.every(h => JSON.stringify(h.body).includes(RULES_MARKER)),
+      '角色生成上下文必须包含用户规则（注入对象仅角色）')
     // 判定日志（判定.jsonl，只给人看）：判定/记账必须有完整记录，带原始答案与耗时
     const judgeRaw = fsReadFileSync(join(accDir, '判定.jsonl'), 'utf8')
     assert.ok(judgeRaw.includes('"phase":"主判定"') && judgeRaw.includes('"phase":"回复判定"'), '主判定与回复判定必须落判定日志')
@@ -921,6 +935,8 @@ try {
     assert.equal(route?.fallback, false)
     assert.ok(events.some(e => e.type === 'ledger' && (e.text ?? '').includes('心理状态')), '回退路径的记账随总管结果应用')
     assert.equal(ds.hits.filter(h => h.kind === 'route').length, 1, '回退时应恰好一次 deepseek 路由调用')
+    assert.ok(!JSON.stringify(ds.hits.find(h => h.kind === 'route')?.body ?? {}).includes(RULES_MARKER),
+      '回退总管的提示词不得包含用户规则')
     assert.equal(ds.hits.filter(h => h.kind === 'bookkeep').length, 0, '回退路径不再单独记账')
     assert.equal(jev.hits.length, 2, 'Jev 仍被尝试（主判定 + 合并判定，均失败走保底）')
     ds.server.close(); jev.server.close()
@@ -975,10 +991,12 @@ try {
     ds.server.close()
   }
 
-  console.log('快/慢双路径自检通过：Jev命中/位置判定(场景choice)/链接推导/知情名单(原文移植，含偷听者)/低置信与名单外→路由回退但位置知情不连坐(留痕) · 合并判定(知情+总门+转告+接力一次调用) · 额外记忆(一段触发/二段逐轮/逐字移植/带mid幂等/堆在末尾) · 记账门控(无变化零调用/回复脏恰一次) · 记账员无名册权(越权丢弃) · 现场所见(进场检测/发言前等待) · 事件补全(离场锚点纯代码/发现一次合并/事件×参与者限知视角分别注入/首次进场不触发) · 接力判定（判给用户即结束/刚发言压0不可能连续发言/无硬上限） · 接力累计衰减（每判定乘0.8重新发言不重置/衰减最终判回用户/翻转与阻断留痕） · 回退=完整总管 · 未配置=完全兼容')
+  console.log('快/慢双路径自检通过：Jev命中/位置判定(场景choice)/链接推导/知情名单(原文移植，含偷听者)/低置信与名单外→路由回退但位置知情不连坐(留痕) · 合并判定(知情+总门+转告+接力一次调用) · 额外记忆(一段触发/二段逐轮/逐字移植/带mid幂等/堆在末尾) · 记账门控(无变化零调用/回复脏恰一次) · 记账员无名册权(越权丢弃) · 规则注入边界(仅角色生成上下文；主判定/合并判定/记账/回退总管不含) · 现场所见(进场检测/发言前等待) · 事件补全(离场锚点纯代码/发现一次合并/事件×参与者限知视角分别注入/首次进场不触发) · 接力判定（判给用户即结束/刚发言压0不可能连续发言/无硬上限） · 接力累计衰减（每判定乘0.8重新发言不重置/衰减最终判回用户/翻转与阻断留痕） · 回退=完整总管 · 未配置=完全兼容')
 } finally {
   rmSync(accDir, { recursive: true, force: true })
   if (hadSettings) writeFileSync(settingsFile, backup ?? '', 'utf8')
   else if (existsSync(settingsFile)) rmSync(settingsFile, { force: true })
   rmSync(settingsFile + '.selfcheck-bak', { force: true })
+  if (hadRules) writeFileSync(rulesFile, rulesBackup ?? '', 'utf8')
+  else if (existsSync(rulesFile)) rmSync(rulesFile, { force: true })
 }
