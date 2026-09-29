@@ -921,9 +921,10 @@ theme only — deliberate). Desktop widths letterbox the app into a centered 520
   timestamps are displayed. The composer's left button (⋯) opens a floating insert menu with two
   entries — **前往地点** (the floating scene picker listing the group's scenes, current one marked;
   picking one arms the next send — the message POSTs with `scene`, the turn skips the scene-change
-  judgment and lands the user in that scene; a cancel row disarms) and **客观注入** (§4.6: arms
-  the composer with an in-input `[客观注入]` prefix chip and its own placeholder; the chip is
-  display-only — the menu's cancel row disarms; the two arms are mutually exclusive). Objective lines render a
+  judgment and lands the user in that scene) and **客观注入** (§4.6, arms the next send with
+  `objective: true`). An armed send turns the button brand-green and swaps its icon (map-pin for
+  前往地点, down-onto-line for 客观注入); tapping the green button again — or the menu's cancel
+  row — disarms and restores ⋯. The two arms are mutually exclusive. Objective lines render a
   `[客观注入]` prefix in the bubble (display only). User = green bubbles right with own avatar; characters = white
   bubbles left with avatar and name label. Long-press (450 ms; desktop right-click) opens an
   action sheet: 修改 / 删除 / 批量删除 (+ 重掷这条回复 on the last character message). 批量删除

@@ -287,37 +287,26 @@ export function ChatView({ group, onBack, onOpenInfo }: Props): React.ReactEleme
             <div className="composer-bar">
               <button
                 className={'composer-btn' + (pendingScene !== null || objectiveMode ? ' armed' : '')}
-                aria-label="插入" disabled={busy}
-                onClick={() => setComposerMenu(true)}
+                aria-label={objectiveMode ? '取消客观注入' : pendingScene !== null ? '取消前往地点' : '插入'}
+                disabled={busy}
+                onClick={() => {
+                  if (objectiveMode) { setObjectiveMode(false); return }
+                  if (pendingScene !== null) { setPendingScene(null); return }
+                  setComposerMenu(true)
+                }}
               >
-                <Ellipsis size={20} />
+                {objectiveMode ? <ArrowDownToLine size={20} /> : pendingScene !== null ? <MapPin size={20} /> : <Ellipsis size={20} />}
               </button>
-              {objectiveMode ? (
-                <div className="composer-input obj-armed">
-                  <span className="obj-chip">[客观注入]</span>
-                  <textarea
-                    ref={textareaRef}
-                    className="obj-textarea"
-                    rows={1}
-                    value={input}
-                    disabled={busy}
-                    placeholder="输入要注入的客观内容……"
-                    onChange={e => { setInput(e.target.value); autoGrow() }}
-                    onKeyDown={onKeyDown}
-                  />
-                </div>
-              ) : (
-                <textarea
-                  ref={textareaRef}
-                  className="composer-input"
-                  rows={1}
-                  value={input}
-                  disabled={busy}
-                  placeholder={busy ? '生成中……' : '对大家说……'}
-                  onChange={e => { setInput(e.target.value); autoGrow() }}
-                  onKeyDown={onKeyDown}
-                />
-              )}
+              <textarea
+                ref={textareaRef}
+                className="composer-input"
+                rows={1}
+                value={input}
+                disabled={busy}
+                placeholder={busy ? '生成中……' : objectiveMode ? '输入要注入的客观内容……' : '对大家说……'}
+                onChange={e => { setInput(e.target.value); autoGrow() }}
+                onKeyDown={onKeyDown}
+              />
               <button className="composer-send" disabled={busy || input.trim() === ''} onClick={send}>发送</button>
             </div>
           </>

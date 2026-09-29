@@ -331,10 +331,7 @@ button.cell:active, .cell.tap:active { background: var(--bg-press); }
 .composer-btn.armed { background: var(--brand); color: #fff; }
 .composer-btn:disabled { opacity: 0.5; }
 
-/* 客观注入武装态：前缀标签只作展示（解除只走 ⋯ 菜单的取消行） */
-.composer-input.obj-armed { display: flex; align-items: flex-end; padding: 0 6px 0 0; }
-.obj-chip { flex: none; padding: 7px 2px 7px 10px; font-size: var(--fs-body); font-weight: 600; color: var(--text-1); white-space: nowrap; }
-.obj-textarea { flex: 1; min-width: 0; min-height: 36px; max-height: 96px; border: none; outline: none; background: transparent; padding: 7px 0; font-size: var(--fs-body); line-height: 1.4; resize: none; }
+/* 武装态（前往地点/客观注入）：按钮变绿并切换图标（地图钉/落下箭头），再点即取消 */
 .obj-tag { font-weight: 600; margin-right: 4px; }
 
 /* 批量删除模式：输入条位置换成选择操作条 */
