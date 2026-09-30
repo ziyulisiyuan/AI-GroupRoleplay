@@ -36,6 +36,8 @@ export interface Snapshot {
   characters: Character[]
   messages: Msg[]
   routes: Route[]
+  /** 状态记录开关（每群独立；false=关，关时状态门不判定、状态账本不写入）。 */
+  statusRecord: boolean
 }
 export interface Draft { name: string; appearance: string; background: string; personality: string; relationships: string; scene?: string }
 export interface Provider { id: string; name: string; baseUrl: string; apiKey: string; model: string; reasoningEffort: string }

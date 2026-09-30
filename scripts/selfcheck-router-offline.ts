@@ -296,7 +296,7 @@ try {
   // ── 3c) missingRounds / transplantRounds：缺失轮计算与逐字移植
   {
     rmSync(accDir, { recursive: true, force: true })
-    buildGroupFixture(accDir, { chars: TEST_CAST })
+    buildGroupFixture(accDir, { chars: TEST_CAST, statusRecord: true })
     const { StoryStore } = await import('../src/store.ts')
     const { missingRounds, transplantRounds } = await import('../src/group/knowledge.ts')
     const store = StoryStore.open(accDir, accName)
@@ -352,7 +352,7 @@ try {
       },
     ] })
     rmSync(accDir, { recursive: true, force: true })
-    buildGroupFixture(accDir, { chars: TEST_CAST })
+    buildGroupFixture(accDir, { chars: TEST_CAST, statusRecord: true })
     writeTestSettings(ds.port, jev.port)
     const { GroupSession } = await import('../src/group/engine.ts')
     const session = GroupSession.open(accName)
@@ -452,7 +452,7 @@ try {
       },
     ] })
     rmSync(accDir, { recursive: true, force: true })
-    buildGroupFixture(accDir, { chars: TEST_CAST })
+    buildGroupFixture(accDir, { chars: TEST_CAST, statusRecord: true })
     writeTestSettings(ds.port, jev.port)
     const { GroupSession } = await import('../src/group/engine.ts')
     const session = GroupSession.open(accName)
@@ -500,7 +500,7 @@ try {
       { ...base, ...pick('角色甲', { 角色乙: 0.5, 角色甲: 0.23, 你: 0.12 }) },                // 乙压0；甲累计0.512×0.23≈0.118 < 你0.12 → 你
     ] })
     rmSync(accDir, { recursive: true, force: true })
-    buildGroupFixture(accDir, { chars: TEST_CAST })
+    buildGroupFixture(accDir, { chars: TEST_CAST, statusRecord: true })
     writeTestSettings(ds.port, jev.port)
     const { GroupSession } = await import('../src/group/engine.ts')
     const session = GroupSession.open(accName)
@@ -593,7 +593,7 @@ try {
       },
     ] })
     rmSync(accDir, { recursive: true, force: true })
-    buildGroupFixture(accDir, { chars: TEST_CAST })
+    buildGroupFixture(accDir, { chars: TEST_CAST, statusRecord: true })
     writeTestSettings(ds.port, jev.port)
     const { GroupSession } = await import('../src/group/engine.ts')
     const session = GroupSession.open(accName)
@@ -675,7 +675,7 @@ try {
       },
     ] })
     rmSync(accDir, { recursive: true, force: true })
-    buildGroupFixture(accDir, { chars: TEST_CAST })
+    buildGroupFixture(accDir, { chars: TEST_CAST, statusRecord: true })
     createScene(accDir, '场景一', '（测试描述一）')
     createScene(accDir, '场景二', '（测试描述二）')
     writeFileSync(join(accDir, '群设定.yaml'), "era: （测试时代）\nworld: （测试世界）\ntone: ''\nscene: 场景一\n", 'utf8')
@@ -722,7 +722,7 @@ try {
     })
     const jev = await mockJev({ fail: true }) // 事件补全不依赖 Jev：让 Jev 挂掉以证独立
     rmSync(accDir, { recursive: true, force: true })
-    buildGroupFixture(accDir, { chars: [...TEST_CAST, { dir: '角色丁', name: '角色丁', personality: '（测试设定：配合）', appearance: '（测试外观）', relationships: '（测试关系）' }] })
+    buildGroupFixture(accDir, { chars: [...TEST_CAST, { dir: '角色丁', name: '角色丁', personality: '（测试设定：配合）', appearance: '（测试外观）', relationships: '（测试关系）' }], statusRecord: true })
     writeTestSettings(ds.port, jev.port)
     const { GroupSession } = await import('../src/group/engine.ts')
     const session = GroupSession.open(accName)
@@ -796,7 +796,7 @@ try {
       },
     ] })
     rmSync(accDir, { recursive: true, force: true })
-    buildGroupFixture(accDir, { chars: TEST_CAST })
+    buildGroupFixture(accDir, { chars: TEST_CAST, statusRecord: true })
     writeTestSettings(ds.port, jev.port)
     const { GroupSession } = await import('../src/group/engine.ts')
     const session = GroupSession.open(accName)
@@ -844,7 +844,7 @@ try {
       },
     ] })
     rmSync(accDir, { recursive: true, force: true })
-    buildGroupFixture(accDir, { chars: TEST_CAST })
+    buildGroupFixture(accDir, { chars: TEST_CAST, statusRecord: true })
     writeTestSettings(ds.port, jev.port)
     const { GroupSession } = await import('../src/group/engine.ts')
     const session = GroupSession.open(accName)
@@ -898,7 +898,7 @@ try {
       },
     ] })
     rmSync(accDir, { recursive: true, force: true })
-    buildGroupFixture(accDir, { chars: TEST_CAST })
+    buildGroupFixture(accDir, { chars: TEST_CAST, statusRecord: true })
     writeTestSettings(ds.port, jev.port)
     const { GroupSession } = await import('../src/group/engine.ts')
     const session = GroupSession.open(accName)
@@ -944,7 +944,7 @@ try {
       },
     ] })
     rmSync(accDir, { recursive: true, force: true })
-    buildGroupFixture(accDir, { chars: [...TEST_CAST, { dir: '角色丁', name: '角色丁', personality: '（测试设定：配合）', appearance: '（测试外观）', relationships: '（测试关系）' }] })
+    buildGroupFixture(accDir, { chars: [...TEST_CAST, { dir: '角色丁', name: '角色丁', personality: '（测试设定：配合）', appearance: '（测试外观）', relationships: '（测试关系）' }], statusRecord: true })
     writeTestSettings(ds.port, jev.port)
     const { GroupSession } = await import('../src/group/engine.ts')
     const session = GroupSession.open(accName)
@@ -977,6 +977,88 @@ try {
     assert.ok(jiaAfter !== undefined && jiaAfter.text.includes('老桥'), '改写消息后客观条目同步改写（活账本）')
     assert.equal(events.filter(e => e.type === 'route').length, 1, '客观注入后照常路由')
     assert.equal(events.filter(e => e.type === 'reply').length, 1, '角色照常接话')
+    ds.server.close(); jev.server.close()
+  }
+
+  // ── 4j) 状态记录开关（群设定，默认关）：state_dirty 不问、脏回复不记账；群设定改为 true 后
+  //         （引擎每轮重读，开关即时生效）状态门恢复判定、记账照旧
+  {
+    const ds = await mockDeepseek({
+      bookkeep: { 状态账本: [{ character: '角色甲', 心理状态: '紧张' }] },
+      streamText: '（测试回复）',
+    })
+    const jev = await mockJev({ answers: [
+      { // 主判定（关）：state_dirty 不问（mock 里的答案被忽略）
+        next_speaker: { type: 'choice', choice: '角色甲', confidence: 0.9, probabilities: {} },
+        state_dirty: { type: 'noul', noul: 0.9 },
+      },
+      { // 甲回复的合并判定（关）：state_dirty 不问
+        knows_角色乙: { type: 'noul', noul: 0.9 },
+        knows_角色丙: { type: 'noul', noul: 0.9 },
+        told_角色乙: { type: 'noul', noul: 0.05 },
+        told_角色丙: { type: 'noul', noul: 0.05 },
+        state_dirty: { type: 'noul', noul: 0.9 },
+        next_speaker: { type: 'choice', choice: '你', confidence: 0.9, probabilities: {} },
+      },
+      { // 开关打开后的主判定：用户发言本身不脏
+        next_speaker: { type: 'choice', choice: '角色甲', confidence: 0.9, probabilities: {} },
+        state_dirty: { type: 'noul', noul: 0.1 },
+      },
+      { // 开关打开后的合并判定：回复脏 → 恰一次记账
+        knows_角色乙: { type: 'noul', noul: 0.9 },
+        knows_角色丙: { type: 'noul', noul: 0.9 },
+        told_角色乙: { type: 'noul', noul: 0.05 },
+        told_角色丙: { type: 'noul', noul: 0.05 },
+        state_dirty: { type: 'noul', noul: 0.95 },
+        next_speaker: { type: 'choice', choice: '你', confidence: 0.9, probabilities: {} },
+      },
+    ] })
+    rmSync(accDir, { recursive: true, force: true })
+    buildGroupFixture(accDir, { chars: TEST_CAST }) // 不传 statusRecord = 默认关
+    writeTestSettings(ds.port, jev.port)
+    const { GroupSession } = await import('../src/group/engine.ts')
+    const session = GroupSession.open(accName)
+    assert.equal(session.snapshot().statusRecord, false, '缺省（群设定无论/false）= 关')
+    for await (const ev of session.speak('（吓人的事发生了）')) void ev
+    const askedOff = Object.keys((jev.hits[0]?.body as { questions: Record<string, unknown> }).questions)
+    assert.ok(!askedOff.includes('state_dirty'), '状态记录关：主判定不问状态门')
+    assert.equal(ds.hits.filter(h => h.kind === 'bookkeep').length, 0, '状态记录关：脏回复也不记账')
+    writeFileSync(join(accDir, '群设定.yaml'), "era: （测试用时代背景）\nworld: |\n  （测试用世界观）\ntone: \nstatusRecord: true\n", 'utf8')
+    for await (const ev of session.speak('（又发生了可怕的事）')) void ev
+    const askedOn = Object.keys((jev.hits[2]?.body as { questions: Record<string, unknown> }).questions)
+    assert.ok(askedOn.includes('state_dirty'), '状态记录开：状态门恢复判定')
+    for (let i = 0; i < 40; i++) {
+      if (fsReadFileSync(join(accDir, '角色', '角色甲', '状态.yaml'), 'utf8').includes('紧张')) break
+      await new Promise(r => setTimeout(r, 250))
+    }
+    assert.equal(ds.hits.filter(h => h.kind === 'bookkeep').length, 1, '状态记录开：回复脏 → 恰一次记账')
+    assert.ok(fsReadFileSync(join(accDir, '角色', '角色甲', '状态.yaml'), 'utf8').includes('紧张'), '状态记录开：记账落盘')
+    ds.server.close(); jev.server.close()
+  }
+
+  // ── 4k) 状态记录关 + 回退路径：总管的状态账本被丢弃（无 ledger 事件、状态.yaml 不变），路由照常；
+  //        开关打开后同一形状的账本更新照常即时应用（回退路径是同步落盘，无需轮询）
+  {
+    const ds = await mockDeepseek({
+      route: { next_speaker: '角色甲', reason: '测试', 状态账本: [{ character: '角色甲', 心理状态: '愉快' }] },
+      streamText: '（测试回复）',
+    })
+    const jev = await mockJev({ fail: true })
+    rmSync(accDir, { recursive: true, force: true })
+    buildGroupFixture(accDir, { chars: TEST_CAST }) // 默认关
+    writeTestSettings(ds.port, jev.port)
+    const { GroupSession } = await import('../src/group/engine.ts')
+    const session = GroupSession.open(accName)
+    const events: Array<{ type: string }> = []
+    for await (const ev of session.speak('（测试发言）')) {
+      events.push({ type: ev.type })
+    }
+    assert.ok(!events.some(e => e.type === 'ledger'), '状态记录关：回退总管的账本更新不产生 ledger 事件')
+    assert.ok(!fsReadFileSync(join(accDir, '角色', '角色甲', '状态.yaml'), 'utf8').includes('愉快'), '状态记录关：状态.yaml 不被写入')
+    assert.equal(ds.hits.filter(h => h.kind === 'route').length, 1, '状态记录关：路由照常')
+    writeFileSync(join(accDir, '群设定.yaml'), "era: （测试用时代背景）\nworld: |\n  （测试用世界观）\ntone: \nstatusRecord: true\n", 'utf8')
+    for await (const ev of session.speak('（再一句）')) void ev
+    assert.ok(fsReadFileSync(join(accDir, '角色', '角色甲', '状态.yaml'), 'utf8').includes('愉快'), '状态记录开：回退总管的账本更新照常即时应用')
     ds.server.close(); jev.server.close()
   }
 
@@ -1055,7 +1137,7 @@ try {
     ds.server.close()
   }
 
-  console.log('快/慢双路径自检通过：Jev命中/位置判定(场景choice)/链接推导/知情名单(原文移植，含偷听者)/低置信与名单外→路由回退但位置知情不连坐(留痕) · 合并判定(知情+总门+转告+接力一次调用) · 额外记忆(一段触发/二段逐轮/逐字移植/带mid幂等/堆在末尾) · 记账门控(无变化零调用/回复脏恰一次) · 记账员无名册权(越权丢弃) · 规则注入边界(仅角色生成上下文；主判定/合并判定/记账/回退总管不含) · 客观注入(不问知情/转告/受众=现场记录/接入与单向感知不收/客观条目带mid活账本/管线照旧) · 现场所见(进场检测/发言前等待) · 事件补全(离场锚点纯代码/发现一次合并/事件×参与者限知视角分别注入/首次进场不触发) · 接力判定（判给用户即结束/刚发言压0不可能连续发言/无硬上限） · 接力累计衰减（每判定乘0.8重新发言不重置/衰减最终判回用户/翻转与阻断留痕） · 回退=完整总管 · 未配置=完全兼容')
+  console.log('快/慢双路径自检通过：Jev命中/位置判定(场景choice)/链接推导/知情名单(原文移植，含偷听者)/低置信与名单外→路由回退但位置知情不连坐(留痕) · 合并判定(知情+总门+转告+接力一次调用) · 额外记忆(一段触发/二段逐轮/逐字移植/带mid幂等/堆在末尾) · 记账门控(无变化零调用/回复脏恰一次) · 记账员无名册权(越权丢弃) · 规则注入边界(仅角色生成上下文；主判定/合并判定/记账/回退总管不含) · 客观注入(不问知情/转告/受众=现场记录/接入与单向感知不收/客观条目带mid活账本/管线照旧) · 状态记录开关(默认关：不问state_dirty/脏回复不记账/回退总管账本丢弃；群设定改true即时生效：判定与记账恢复) · 现场所见(进场检测/发言前等待) · 事件补全(离场锚点纯代码/发现一次合并/事件×参与者限知视角分别注入/首次进场不触发) · 接力判定（判给用户即结束/刚发言压0不可能连续发言/无硬上限） · 接力累计衰减（每判定乘0.8重新发言不重置/衰减最终判回用户/翻转与阻断留痕） · 回退=完整总管 · 未配置=完全兼容')
 } finally {
   rmSync(accDir, { recursive: true, force: true })
   if (hadSettings) writeFileSync(settingsFile, backup ?? '', 'utf8')

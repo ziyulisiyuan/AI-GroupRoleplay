@@ -229,7 +229,7 @@ export class GroupSession {
   }
 
   /** 前端初始渲染快照：消息 + 路由行 + 场景（当前场景、地图、各角色位置）。 */
-  snapshot(): { name: string; era: string; world: string; tone: string; scene: string; scenes: Scene[]; locations: Record<string, string>; userName: string; present: string[]; remote: RemoteLink[]; overhear: RemoteLink[]; absent: string[]; characters: Array<{ name: string; dirName: string }>; messages: MsgLine[]; routes: RouteLine[] } {
+  snapshot(): { name: string; era: string; world: string; tone: string; scene: string; scenes: Scene[]; locations: Record<string, string>; userName: string; present: string[]; remote: RemoteLink[]; overhear: RemoteLink[]; absent: string[]; characters: Array<{ name: string; dirName: string }>; messages: MsgLine[]; routes: RouteLine[]; statusRecord: boolean } {
     const routes = this.store.allLines.filter((l): l is RouteLine => l.type === 'route')
     const present = this.presentNames()
     const remote = this.remoteLinks()
@@ -250,6 +250,7 @@ export class GroupSession {
       characters: this.characters.map(c => ({ name: c.name, dirName: c.dirName })),
       messages: this.store.effectiveMessages(),
       routes,
+      statusRecord: this.settings.statusRecord === true,
     }
   }
 
@@ -634,6 +635,9 @@ export class GroupSession {
     const speakable = new Set(this.speakableNames())
     const speakers = this.roster.filter(c => speakable.has(c.name))
     const routeRoster = speakers.length > 0 ? speakers : this.roster
+    // 状态记录开关（群设定，缺省 = 关）：关 = 状态门不判定、记账不运行、状态账本不写入。
+    // 纠正窗口与用户手动改账本不受它影响（那是用户的显式操作）。
+    const recordStatus = this.settings.statusRecord === true
     // 思考模式下总管判断需数秒~十几秒：先给等待反馈，避免干等黑箱
     yield { type: 'info', text: '总管判断谁接话…' }
     // ── 快路径（SPEC §6.1a）：Jev 一次调用回答"谁接话 + 三层场景名单 + 知情名单 + 转告 + 状态门"。
@@ -658,6 +662,7 @@ export class GroupSession {
         userText: text,
         tone: this.settings.tone,
         timeoutMs: config.jevTimeoutMs,
+        statusRecord: recordStatus,
         ...(objective ? { objective: true } : {}),
         ...(isMap ? { scenes: listScenes(this.groupDir), activeScene: before.scene ?? '', locations: before.locations ?? {}, manualScene } : {}),
         log: e => this.judgeLog({ phase: '主判定', ...e }),
@@ -837,7 +842,7 @@ export class GroupSession {
     if (!this.speakableNames().includes(picked)) {
       yield { type: 'info', text: `（${picked} 现在无法在此场景发言——用「手动修正」或「对总管说」把他请进场景或建立双向接入，这一轮先没有回应）` }
       // 无回复不代表无变化（如"他倒下了"这类用户发言）：门控通过就照记账（用户消息单独一条）
-      if (quick !== undefined && quick.stateDirty) {
+      if (recordStatus && quick !== undefined && quick.stateDirty) {
         this.enqueueBookkeeper(text, [{ speaker: '', replyText: '' }])
         yield { type: 'info', text: '（本轮记账在后台进行，稍后可在状态账本查看）' }
       }
@@ -868,7 +873,7 @@ export class GroupSession {
       if (r.judge !== undefined && r.judge.told.size > 0 && routerLlm !== undefined) {
         yield* this.grantExtraMemory(r.judge.told, r.text, routerLlm)
       }
-      if (r.judge === undefined || r.judge.stateDirty) dirtyWork.push({ speaker: current, replyText: r.text })
+      if (recordStatus && (r.judge === undefined || r.judge.stateDirty)) dirtyWork.push({ speaker: current, replyText: r.text })
       if (routerLlm === undefined || route !== undefined) break // 无快路径/回退路径：一次回复（旧行为）
       if (r.judge?.next === undefined || r.judge.next.userTurn) break
       // 接力累计衰减：本次判定先让所有已发言者（除刚发言者）的累计权重乘 relayDecay，再加权取最大者
@@ -904,10 +909,17 @@ export class GroupSession {
 
     // ── 记账：回退路径随总管结果即时应用；快路径按记账门控入队后台执行（不拖慢接力、不锁定输入）。
     // 记忆不由总管生成（知情 = Jev 名单 + 原文移植 + 转告移植），后台只记状态账本/场景。
+    // 状态记录关闭（群设定）时：两条路径的状态账本更新都不应用、记账员一次都不调。
     if (route !== undefined) {
-      for (const note of this.recordRouteChanges(route.ledgerUpdates)) {
-        yield { type: 'ledger', text: note }
+      if (recordStatus) {
+        for (const note of this.recordRouteChanges(route.ledgerUpdates)) {
+          yield { type: 'ledger', text: note }
+        }
+      } else {
+        this.judgeLog({ phase: '记账', note: '状态记录已关闭——总管的状态账本更新未应用' })
       }
+    } else if (!recordStatus) {
+      this.judgeLog({ phase: '记账', note: '状态记录已关闭——本轮不记账' })
     } else {
       const work = [...(userDirty ? [{ speaker: '', replyText: '' }] : []), ...dirtyWork]
       if (work.length > 0) {
@@ -1011,6 +1023,7 @@ export class GroupSession {
             recent: this.store.effectiveMessages().slice(-config.contextWindow).map(m => `${m.name}：${m.text}`).join('\n'),
             tone: this.settings.tone,
             timeoutMs: config.jevTimeoutMs,
+            statusRecord: this.settings.statusRecord === true,
             log: e => this.judgeLog({ phase: '回复判定', ...e }),
           })
         : undefined

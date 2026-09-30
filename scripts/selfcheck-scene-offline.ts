@@ -120,7 +120,7 @@ try {
   rmSync(accDir, { recursive: true, force: true })
 
   // ── 2) 建群即建图 + 初始状态
-  createGroup(accDir, { era: '（测试时代）', world: '（测试世界）', tone: '', scene: S1 }, [
+  createGroup(accDir, { era: '（测试时代）', world: '（测试世界）', tone: '', scene: S1, statusRecord: false }, [
     { name: S1, description: '（测试描述一）' },
     { name: S2, description: '（测试描述二）' },
   ])

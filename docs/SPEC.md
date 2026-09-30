@@ -297,7 +297,15 @@ world: |
 tone: |
   <director tone; optional; director-only, never sent to characters>
 scene: <初始当前场景名>   # 建群时指定；此后只随 presence 行演进
+statusRecord: <bool>      # 状态记录开关（每群独立；缺省 false=关）
 ```
+
+`statusRecord`（状态记录，per-group）gates the automatic status-ledger pipeline: when **off**
+(default), the `state_dirty` question is not asked, the bookkeeper never runs, and status-ledger
+updates from the fallback director are discarded (routing/presence/relay unaffected); when **on**,
+judgment and recording run as described in §6.1a/§6.1b/§6.1c. The correction window and the
+user's manual ledger edits are explicit user operations and are **not** gated by it. The engine
+re-reads 群设定.yaml every turn, so flipping the switch takes effect on the next turn.
 
 ### 3.5a Scenes (场景, the map)
 
@@ -656,7 +664,9 @@ text; transport failures throw and are caught). Questions:
 - `state_dirty` (one noul, "could this message have any **persistent influence** on the
   characters — injuries, emotional shifts, moved positions, changed relationships, learning
   something important; pure small talk does not count"): ≥0.5, or a missing answer, opens the
-  status gate (§6.1b). This is an "influence" judgment, not a physical-environment one — nothing
+  status gate (§6.1b). Asked **only when the group's 状态记录 is on** (§3.5) — when off, the
+  question is skipped and nothing records. This is an "influence" judgment, not a
+  physical-environment one — nothing
   is ever skipped for "the environment did not change": presence, knowledge, retelling, routing
   and the gate are all re-judged every turn and after every reply.
 
@@ -709,8 +719,11 @@ Position status still tracks movement inside the ledger, and the prompt carries 
 holds the user message and each reply whose judgment opened the status gate (missing answer =
 open); one deepseek call per list entry — the user message can be its own entry with no reply
 section, which also covers no-reply turns (e.g. the picked speaker has no speech rights). An
-empty list means no bookkeeping call at all. The fallback path is unchanged: the full director's
-ledger updates apply inline and no background bookkeeping runs. Failures are logged (`DSH_DEBUG`
+empty list means no bookkeeping call at all. **When the group's 状态记录 is off** (§3.5), the
+whole pipeline is skipped: no `state_dirty` question, no work-list entries, no deepseek call —
+the run log carries one 记账 row noting the switch. The fallback path is unchanged: the full director's
+ledger updates apply inline and no background bookkeeping runs (those updates are **discarded**
+when 状态记录 is off; routing itself is unaffected). Failures are logged (`DSH_DEBUG`
 and 判定.jsonl) and never fatal.
 
 ### 6.1c Fallback full director (`routeNextSpeaker`)
@@ -779,10 +792,11 @@ perceived what; the overhear layer is director-and-player only.
 | endpoint | note |
 |---|---|
 | `GET /api/groups` | group list |
-| `GET /api/group/{name}` | snapshot: `{name, era, world, tone, scene, scenes[{name,description}], locations{角色:场景}, userName, present[], remote[], overhear[], absent[], characters[{name,dirName}], messages(effective view), routes}` |
+| `GET /api/group/{name}` | snapshot: `{name, era, world, tone, scene, scenes[{name,description}], locations{角色:场景}, userName, present[], remote[], overhear[], absent[], characters[{name,dirName}], messages(effective view), routes, statusRecord}` |
 | `GET /api/group/{name}/status` | per-character status-ledger lines + memory counts |
 | `GET /api/group/{name}/judgments` | tail (last 200, newest first) of 判定.jsonl (§3.2a); for the sidebar run-log panel |
 | `POST /api/group/{name}/message` | body `{text, scene?, objective?}` (scene = ⊘-picked target; objective = 客观注入, §4.6) → event stream (§1.1) |
+| `PUT /api/group/{name}/status-record` | body `{on}` — the per-group 状态记录 switch (§3.5, default off); session dropped so the next snapshot reflects it |
 | `POST /api/group/{name}/roll` | reroll last character message → event stream |
 | client disconnect | the generator keeps running; bookkeeping still completes |
 
@@ -955,6 +969,9 @@ theme only — deliberate). Desktop widths letterbox the app into a centered 520
   the form shows 目前所在场景 read-only — the engine-maintained location from the presence
   row; scene membership is fully derived from the location table, so there is no separate
   presence-checkbox page) ·
+  **状态记录** (a full-width row between 场景 and 运行日志 — same row style, but a pill toggle on
+  the right instead of a chevron; gray=off / brand-green=on; tapping the row toggles, PUT
+  `/status-record` then snapshot refresh) ·
   运行日志 (判定.jsonl tail, rows expandable to raw JSON).
   The **character form** carries 初始所在场景: a radio list over the group's scenes when creating
   (chosen once, immutable afterwards — the edit page shows it read-only), absent when the group
@@ -998,7 +1015,7 @@ Convention [INV 11]: fixtures are temporary and always deleted. Offline checks n
 | `selfcheck:settings` | offline | rules zero-built-in round-trip · provider parsing/fallback · router provider resolution |
 | `selfcheck:presence` | offline | three-layer yaml round-trip (with `since`) · parse semantics (omitted=keep/empty=clear/unknown=语音) · perception keywords · visible_to snapshots |
 | `selfcheck:engine` | offline | bad-line tolerance + id continuity · text-retract no-resurrection (restart/replay) · edit living-ledger (physical ledger-row rewrite, respects retracts) · deleted-message physical removal (no text left in log) + memory cleanup + id monotonicity · rename chains |
-| `selfcheck:router` | offline | Jev hit / three-layer derivation / knowledge audience (incl. overhearers) / `told` stage-1 + `state_dirty` parsing (missing = safe side) · low-confidence, out-of-roster → route-only fallback with raw answers logged · scene/knowledge salvage when route unusable · `jevExtraRounds` stage-2 thresholds / failure grants nothing · `missingRounds`/`transplantRounds` units (verbatim, mid, own-speech prefix) · end-to-end merged judgment (1 call/reply) · extra-memory grant (end-append order, ledger rows, idempotence on re-telling) · gate (zero deepseek calls when clean, exactly one when dirty) · bookkeeper has no roster authority (overreach discarded) · objective injection (knows/told not asked · audience = present by record · remote/overhear excluded · 客观 entry carries mid, living-ledger rewrite · pipeline unchanged) · scene-perception snapshot (entrant detection, injection before entrant speaks via relay, manual-fix entries snapshotted too) · off-story experiences (absence anchor pure-code, discovery merged per entry, event×participant limited-POV renders injected to all participants, first-time entrants skipped) · judgment log (判定.jsonl rows with phases + raw answers + elapsed) · relay (user turn / cumulative decay: ×0 right after a speech — no consecutive output, that judgment does not advance the multiplier; `RELAY_DECAY` applied at every other judgment, cumulative across re-speeches; no hard cap, the undecaying user weight ends the chain; hard block hands the floor back to the user on just-spoke re-picks and all-zero distributions) · fallback = single full director · unconfigured = fast path off |
+| `selfcheck:router` | offline | Jev hit / three-layer derivation / knowledge audience (incl. overhearers) / `told` stage-1 + `state_dirty` parsing (missing = safe side) · low-confidence, out-of-roster → route-only fallback with raw answers logged · scene/knowledge salvage when route unusable · `jevExtraRounds` stage-2 thresholds / failure grants nothing · `missingRounds`/`transplantRounds` units (verbatim, mid, own-speech prefix) · end-to-end merged judgment (1 call/reply) · extra-memory grant (end-append order, ledger rows, idempotence on re-telling) · gate (zero deepseek calls when clean, exactly one when dirty) · bookkeeper has no roster authority (overreach discarded) · objective injection (knows/told not asked · audience = present by record · remote/overhear excluded · 客观 entry carries mid, living-ledger rewrite · pipeline unchanged) · status-record switch (off = state_dirty not asked, dirty reply records nothing, fallback director's ledger discarded · 群设定 flipped to true mid-session: judgment and recording resume immediately) · scene-perception snapshot (entrant detection, injection before entrant speaks via relay, manual-fix entries snapshotted too) · off-story experiences (absence anchor pure-code, discovery merged per entry, event×participant limited-POV renders injected to all participants, first-time entrants skipped) · judgment log (判定.jsonl rows with phases + raw answers + elapsed) · relay (user turn / cumulative decay: ×0 right after a speech — no consecutive output, that judgment does not advance the multiplier; `RELAY_DECAY` applied at every other judgment, cumulative across re-speeches; no hard cap, the undecaying user weight ends the chain; hard block hands the floor back to the user on just-spoke re-picks and all-zero distributions) · fallback = single full director · unconfigured = fast path off |
 | `selfcheck:scene` | offline | scene file layer (create / duplicate reject / description editable / name immutable / invalid name) · group creation builds the map + initial scene · character 初始场景 placement · ⊘ manual move skips scene_change (questions assert) and still moves · destination occupants present by record and hear the arrival line · followers placed, leavers fall to their location answer (其他 clears) · judged move (confidence-guarded) · strict no-move · objective injection (location/scene_change still asked, knows/told not · audience = active scene's present · other scenes excluded) · dialogue entrant lands post-snapshot (not in visible_to) with the entry kit injected · colocated-by-record characters are not entry-kit targets · map full text + active scene injected into characters |
 | `acceptance-*` (m1–m5, isolation, models, context-edit, presence, director) | online | end-to-end behaviors per milestone; re-run after any fast-path or memory change |
 

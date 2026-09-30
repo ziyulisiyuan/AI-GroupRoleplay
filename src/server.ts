@@ -108,7 +108,7 @@ app.post('/api/groups', async c => {
     return sn === '' ? [] : [{ name: sn, description: sd }]
   })
   const scene = String(body.scene ?? '').trim()
-  createGroup(dir, { era: String(body.era ?? ''), world: String(body.world ?? ''), tone: String(body.tone ?? ''), scene }, scenes)
+  createGroup(dir, { era: String(body.era ?? ''), world: String(body.world ?? ''), tone: String(body.tone ?? ''), scene, statusRecord: false }, scenes)
   return c.json({ ok: true, name })
 })
 
@@ -116,10 +116,21 @@ app.put('/api/group/:name/settings', async c => {
   const body = await c.req.json<Record<string, unknown>>().catch(() => ({}) as Record<string, unknown>)
   const dir = groupDir(c.req.param('name'))
   if (!existsSync(dir)) return c.json({ error: '群聊不存在' }, 400)
-  // scene（初始当前场景）是建群时定下的出发点，这里原样保留
+  // scene（初始当前场景）是建群时定下的出发点，这里原样保留；状态记录开关同样原样保留
   const saved = loadGroupSettings(dir)
-  saveGroupSettings(dir, { era: String(body.era ?? ''), world: String(body.world ?? ''), tone: String(body.tone ?? ''), scene: saved.scene })
+  saveGroupSettings(dir, { era: String(body.era ?? ''), world: String(body.world ?? ''), tone: String(body.tone ?? ''), scene: saved.scene, statusRecord: saved.statusRecord })
   sessions.delete(c.req.param('name')) // 设定变了，丢弃缓存的会话
+  return c.json({ ok: true })
+})
+
+/** 状态记录开关（每群独立；群设定.yaml 持久化）：true=开（状态门判定+记账照旧），false=关（默认）。 */
+app.put('/api/group/:name/status-record', async c => {
+  const body = await c.req.json<Record<string, unknown>>().catch(() => ({}) as Record<string, unknown>)
+  const dir = groupDir(c.req.param('name'))
+  if (!existsSync(dir)) return c.json({ error: '群聊不存在' }, 400)
+  const saved = loadGroupSettings(dir)
+  saveGroupSettings(dir, { ...saved, statusRecord: body.on === true })
+  sessions.delete(c.req.param('name')) // 引擎每轮重读群设定；这里丢弃会话让快照立即反映新状态
   return c.json({ ok: true })
 })
 

@@ -334,6 +334,30 @@ button.cell:active, .cell.tap:active { background: var(--bg-press); }
 /* 武装态（前往地点/客观注入）：按钮变绿并切换图标（地图钉/落下箭头），再点即取消 */
 .obj-tag { font-weight: 600; margin-right: 4px; }
 
+/* 拨片开关（状态记录）：关=灰轨白钮，开=品牌绿轨白钮 */
+.switch {
+  flex: none;
+  width: 44px;
+  height: 26px;
+  border-radius: 13px;
+  background: #d8d8d8;
+  position: relative;
+  transition: background 0.18s ease;
+}
+.switch.on { background: var(--brand); }
+.switch .knob {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  background: #fff;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.15);
+  transition: transform 0.18s ease;
+}
+.switch.on .knob { transform: translateX(18px); }
+
 /* 批量删除模式：输入条位置换成选择操作条 */
 .batch-bar { display: flex; align-items: center; gap: var(--s-2); padding: var(--s-2) var(--s-3) calc(var(--s-2) + env(safe-area-inset-bottom)); min-height: calc(var(--composer-bar) + env(safe-area-inset-bottom)); background: var(--bg-page); }
 .batch-bar .spacer { flex: 1; }

@@ -14,3 +14,6 @@ docs/宣传视频/
 
 # ZCode 工具本地配置（AI 编码工具的上下文忽略规则，随 .gitignore 自动同步生成）
 .zcodeignore
+
+# ZCode 沙箱权限诊断/修复的本地产物
+.acl-recovery/

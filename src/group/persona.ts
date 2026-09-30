@@ -56,13 +56,16 @@ export function loadCharacters(groupDir: string): CharacterPersona[] {
     .map(loadCharacter)
 }
 
-/** 群设定（SPEC §3.5）：era / world / tone（tone 只给总管，永不下发角色）；scene = 建群时指定的初始当前场景。 */
+/** 群设定（SPEC §3.5）：era / world / tone（tone 只给总管，永不下发角色）；scene = 建群时指定的初始当前场景；
+ *  statusRecord = 状态记录开关（false=关：状态门不判定、记账不运行、状态账本不写入；缺省 = 关）。 */
 export interface GroupSettings {
   era: string
   world: string
   tone: string
   /** 初始当前场景名（地图群的出发点；空 = 无地图）。此后它只随 presence 行演进。 */
   scene: string
+  /** 状态记录开关（每群独立；缺省 = 关）。纠正窗口与用户手动改账本不受它影响。 */
+  statusRecord: boolean
 }
 
 /**
@@ -98,10 +101,10 @@ export function hasGroupSettings(groupDir: string): boolean {
   return existsSync(groupSettingsPath(groupDir))
 }
 
-/** 读取群设定（era / world / tone / scene）。 */
+/** 读取群设定（era / world / tone / scene / statusRecord）。 */
 export function loadGroupSettings(groupDir: string): GroupSettings {
   const file = groupSettingsPath(groupDir)
-  if (!existsSync(file)) return { era: '', world: '', tone: '', scene: '' }
+  if (!existsSync(file)) return { era: '', world: '', tone: '', scene: '', statusRecord: false }
   const fm = (loadYaml(stripBom(readFileSync(file, 'utf8'))) ?? {}) as Record<string, unknown>
-  return { era: str(fm.era), world: str(fm.world), tone: str(fm.tone), scene: str(fm.scene) }
+  return { era: str(fm.era), world: str(fm.world), tone: str(fm.tone), scene: str(fm.scene), statusRecord: fm.statusRecord === true }
 }

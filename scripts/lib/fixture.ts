@@ -18,14 +18,15 @@ export interface FixtureChar {
 
 export function buildGroupFixture(
   dir: string,
-  opts: { era?: string; world?: string; tone?: string; chars: FixtureChar[] },
+  opts: { era?: string; world?: string; tone?: string; statusRecord?: boolean; chars: FixtureChar[] },
 ): void {
   const w = (rel: string, content: string): void => {
     const f = join(dir, rel)
     mkdirSync(join(f, '..'), { recursive: true })
     writeFileSync(f, content, 'utf8')
   }
-  w('群设定.yaml', `era: ${opts.era ?? '（测试用时代背景）'}\nworld: |\n  ${opts.world ?? '（测试用世界观）'}\ntone: ${opts.tone ?? ''}\n`)
+  // 群设定：statusRecord 缺省 = 关（引擎默认关）；需要记账行为的测试显式传 true
+  w('群设定.yaml', `era: ${opts.era ?? '（测试用时代背景）'}\nworld: |\n  ${opts.world ?? '（测试用世界观）'}\ntone: ${opts.tone ?? ''}\nstatusRecord: ${opts.statusRecord === true ? 'true' : 'false'}\n`)
   for (const c of opts.chars) {
     w(
       `角色/${c.dir}/角色.md`,

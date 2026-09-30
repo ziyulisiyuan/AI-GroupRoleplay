@@ -382,6 +382,8 @@ export interface JevRouteInput {
   userText?: string
   tone: string
   timeoutMs?: number
+  /** 状态记录开关（群设定）：false = state_dirty 不问（本轮不会有任何记账）。缺省 = 开。 */
+  statusRecord?: boolean
   /** 客观注入（用户显式声明）：受众由调用方按现场记录取，知情/转告两题不问（感知判定范畴不适用）。 */
   objective?: boolean
   /** 地图：全部场景（名+描述全文）。非空 = 地图群，追加换场景与位置判定。 */
@@ -521,9 +523,12 @@ export async function jevRoute(input: JevRouteInput): Promise<JevRouteResult | u
   // 状态账本总门（一道题）：有没有可能对某些角色产生**持久影响**（用户的"影响"口径——
   // 不限于物理环境：挨打、情绪剧变、被看到、关系变化都算）。这是后台 DeepSeek 记账的触发闸——
   // 缺答案按"需要"（安全侧）：宁可白跑一次记账，不可让状态悄悄变陈旧。
-  questions['state_dirty'] = {
-    type: 'noul',
-    instructions: '判断：这段话及其语境，是否可能对某些角色产生持久影响（受伤/死亡/情绪剧变/移动位置/换装/关系变化/知晓了重要的事都算；纯闲聊不算）。可能 = 1，确定不会 = 0。',
+  // 状态记录关闭（群设定）时不问：本轮不会有任何记账，门没有存在的意义。
+  if (input.statusRecord !== false) {
+    questions['state_dirty'] = {
+      type: 'noul',
+      instructions: '判断：这段话及其语境，是否可能对某些角色产生持久影响（受伤/死亡/情绪剧变/移动位置/换装/关系变化/知晓了重要的事都算；纯闲聊不算）。可能 = 1，确定不会 = 0。',
+    }
   }
 
   try {
@@ -610,7 +615,7 @@ export async function jevRoute(input: JevRouteInput): Promise<JevRouteResult | u
       if (t?.type === 'noul' && t.noul >= JEV_THRESHOLDS.toldMin) told.add(n)
     }
     const dirtyAns = answers['state_dirty']
-    const stateDirty = dirtyAns?.type === 'noul' ? dirtyAns.noul >= JEV_THRESHOLDS.gateKeep : true
+    const stateDirty = input.statusRecord === false ? false : dirtyAns?.type === 'noul' ? dirtyAns.noul >= JEV_THRESHOLDS.gateKeep : true
 
     if (!routeUsable) {
       input.log?.({
@@ -707,6 +712,8 @@ export async function jevAfterReply(input: {
   recent: string
   tone: string
   timeoutMs?: number
+  /** 状态记录开关（群设定）：false = state_dirty 不问（本轮不会有任何记账）。缺省 = 开。 */
+  statusRecord?: boolean
   /** 判定日志回调（判定.jsonl 用，只给人看）：成功带全部原始答案与耗时，失败带原因。 */
   log?: (entry: Record<string, unknown>) => void
 }): Promise<JevAfterReplyResult | undefined> {
@@ -721,9 +728,12 @@ export async function jevAfterReply(input: {
       instructions: `判断：${input.speaker} 刚说的这段话，是不是在把某段 ${n} 本来不知道的对话或事情**转告**给他（一句话带过的告知、转述、打电话通知都算）？事情就当着他的面发生、或他本来就知道、或这段话没有向他转告任何事，都不算。确定是转告 = 1，确定不是 = 0。`,
     }
   }
-  questions['state_dirty'] = {
-    type: 'noul',
-    instructions: '判断：这段话及其语境，是否可能对某些角色产生持久影响（受伤/死亡/情绪剧变/移动位置/换装/关系变化/知晓了重要的事都算；纯闲聊不算）。可能 = 1，确定不会 = 0。',
+  // 状态门：状态记录关闭（群设定）时不问——本轮不会有任何记账。
+  if (input.statusRecord !== false) {
+    questions['state_dirty'] = {
+      type: 'noul',
+      instructions: '判断：这段话及其语境，是否可能对某些角色产生持久影响（受伤/死亡/情绪剧变/移动位置/换装/关系变化/知晓了重要的事都算；纯闲聊不算）。可能 = 1，确定不会 = 0。',
+    }
   }
   const overviews = new Map(input.rosterLines.map(l => [l.split('｜')[0]?.trim() ?? '', l.split('｜').slice(1).join('｜').trim()]))
   const criteria: Record<string, string> = {}
@@ -762,7 +772,7 @@ export async function jevAfterReply(input: {
       if (t?.type === 'noul' && t.noul >= JEV_THRESHOLDS.toldMin) told.add(n)
     }
     const dirtyAns = answers['state_dirty']
-    const stateDirty = dirtyAns?.type === 'noul' ? dirtyAns.noul >= JEV_THRESHOLDS.gateKeep : true
+    const stateDirty = input.statusRecord === false ? false : dirtyAns?.type === 'noul' ? dirtyAns.noul >= JEV_THRESHOLDS.gateKeep : true
     const route = answers['next_speaker']
     let next: JevAfterReplyResult['next'] = undefined
     let relayConfidence = 0

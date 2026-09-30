@@ -56,7 +56,7 @@ export function InfoRoot({ group, onExit }: { group: string; onExit: () => void 
     <div className="page page-enter">
       <NavBar title={title} onBack={pop} />
       <div className="scroll">
-        {top === 'hub' && <HubView group={group} snap={snap} avatarV={avatarV} bump={bump} go={push} />}
+        {top === 'hub' && <HubView group={group} snap={snap} avatarV={avatarV} bump={bump} go={push} refresh={refresh} />}
         {top === 'settings' && <SettingsView group={group} snap={snap} onSaved={refresh} />}
         {top === 'me' && <MeView group={group} snap={snap} avatarV={avatarV} bump={bump} onSaved={refresh} />}
         {top === 'director' && <DirectorView group={group} onChanged={refresh} />}
@@ -87,13 +87,29 @@ export function InfoRoot({ group, onExit }: { group: string; onExit: () => void 
 
 /* ---------- 聊天信息（首页） ---------- */
 
-function HubView({ group, snap, avatarV, bump, go }: {
+function HubView({ group, snap, avatarV, bump, go, refresh }: {
   group: string
   snap: Snapshot | null
   avatarV: number
   bump: () => void
   go: (v: InfoView) => void
+  refresh: () => Promise<void>
 }): React.ReactElement {
+  const toast = useToast()
+  const [busy, setBusy] = useState(false)
+  const statusRecord = snap?.statusRecord === true
+  const toggleStatusRecord = async (): Promise<void> => {
+    if (busy || snap === null) return
+    setBusy(true)
+    try {
+      await putJson(`/api/group/${enc(group)}/status-record`, { on: !statusRecord })
+      await refresh()
+    } catch (e) {
+      toast(e instanceof Error ? e.message : String(e))
+    } finally {
+      setBusy(false)
+    }
+  }
   return (
     <>
       <div className="info-top">
@@ -134,6 +150,12 @@ function HubView({ group, snap, avatarV, bump, go }: {
       </Cells>
       <Cells>
         <Cell title="场景" sub={snap !== null && snap.scene !== '' ? `当前：${snap.scene} · 共 ${snap.scenes.length} 个` : `共 ${snap?.scenes.length ?? 0} 个`} arrow onTap={() => go('scenes')} />
+      </Cells>
+      <Cells>
+        <button className="cell" disabled={busy} onClick={() => void toggleStatusRecord()}>
+          <div className="cell-title"><div className="main">状态记录</div></div>
+          <span className={'switch' + (statusRecord ? ' on' : '')}><span className="knob" /></span>
+        </button>
       </Cells>
       <Cells>
         <Cell title="运行日志" arrow onTap={() => go('log')} />
