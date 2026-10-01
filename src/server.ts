@@ -20,7 +20,7 @@ import {
 import { loadGroupSettings, loadUserPersona } from './group/persona.ts'
 import { createScene, listScenes, saveSceneDescription } from './group/scene.ts'
 import { getThinking } from './group/thinking.ts'
-import { loadRules, saveRules } from './group/rules.ts'
+import { ensureRuleMigration, loadRuleList, saveRuleList } from './group/rules.ts'
 import { loadSettings, saveSettings, resolveLlm, healOrphanSettingsBackup, type Provider } from './settings.ts'
 import { registerStatic } from './server-static.ts'
 
@@ -349,13 +349,16 @@ app.put('/api/group/:name/character/:dir/ledger', async c => {
   return c.json({ ok: true })
 })
 
-// ---------- 全局规则（用户自写约束词；零内置） ----------
+// ---------- 全局规则（多条，每条独立启停；name/enabled 是前端标签，只有 text 注入角色） ----------
 
-app.get('/api/rules', c => c.json({ text: loadRules() }))
+app.get('/api/rules', c => {
+  ensureRuleMigration() // 旧 规则.md → 规则.jsonl：仅在用户打开规则页时落盘（引擎读取路径永不写盘）
+  return c.json({ rules: loadRuleList() })
+})
 
 app.put('/api/rules', async c => {
   const body = await c.req.json<Record<string, unknown>>().catch(() => ({}) as Record<string, unknown>)
-  saveRules(String(body.text ?? ''))
+  saveRuleList(Array.isArray(body.rules) ? body.rules : [])
   sessions.clear() // 规则对所有群生效：丢弃全部缓存会话
   return c.json({ ok: true })
 })

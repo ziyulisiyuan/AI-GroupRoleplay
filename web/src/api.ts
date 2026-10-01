@@ -52,6 +52,8 @@ export type Ev =
   | { type: 'info'; text: string }
 export interface MemoryEntry { index: number; source: string; round: number; text: string }
 export type JudgeRow = { ts?: string; phase?: string } & Record<string, unknown>
+/** 全局规则条目（name/enabled 是前端标签，只有 text 注入角色）。 */
+export interface RuleItem { id: string; name: string; enabled: boolean; text: string }
 
 export const enc = encodeURIComponent
 

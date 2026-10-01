@@ -1,27 +1,45 @@
 /**
  * 全局规则 + 模型设置的离线自检（无需 API key，全临时目录）：
- * 1) 规则：写入/读回/空白不注入、frontmatter 剥离。
+ * 1) 规则：整表往返（确定性）、只拼已开启规则（禁用/空文本排除）、旧 规则.md 一次性迁移。
  * 2) 设置：提供方列表往返、启用项解析、缺字段忽略、无提供方回退 .env。
  */
 import assert from 'node:assert/strict'
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { loadRules, saveRules, RULES_FILENAME } from '../src/group/rules.ts'
+import { ensureRuleMigration, loadRuleList, loadRules, RULES_FILENAME, RULES_LIST_FILENAME, saveRuleList } from '../src/group/rules.ts'
 import { loadSettings, resolveLlm, resolveRouter, saveSettings, SETTINGS_FILENAME, type Provider } from '../src/settings.ts'
 import { config } from '../src/config.ts'
 
 const root = mkdtempSync(join(tmpdir(), 'settings-selfcheck-'))
 try {
-  // 1) 全局规则
-  assert.equal(loadRules(root), '', '规则文件不存在时必须返回空（零内置规则）')
-  saveRules('（测试规则一）\n（测试规则二）', root)
-  assert.ok(readFileSync(join(root, RULES_FILENAME), 'utf8').includes('（测试规则一）'))
-  assert.equal(loadRules(root), '（测试规则一）\n（测试规则二）')
-  saveRules('---\nnote: x\n---\n\n（带 frontmatter 的规则）', root)
-  assert.equal(loadRules(root), '（带 frontmatter 的规则）', 'frontmatter 必须剥离')
-  saveRules('   ', root)
-  assert.equal(loadRules(root), '', '空白规则视为无规则')
+  // 1) 全局规则（多条 + 每条启停）
+  assert.equal(loadRules(root), '', '无规则文件时必须返回空（零内置规则）')
+  saveRuleList([
+    { id: 'r1', name: '（规则一）', enabled: true, text: '（测试规则一）' },
+    { id: 'r2', name: '（规则二）', enabled: true, text: '（测试规则二）\n（第二行）' },
+    { id: 'r3', name: '（规则三）', enabled: false, text: '（关闭的规则不得注入）' },
+    { id: 'r4', name: '（规则四）', enabled: true, text: '   ' },
+  ], root)
+  assert.equal(loadRuleList(root).length, 4, '整表往返：条数一致')
+  assert.equal(loadRuleList(root)[0]?.enabled, true, '启停状态随往返保持')
+  assert.ok(readFileSync(join(root, RULES_LIST_FILENAME), 'utf8').includes('（测试规则一）'))
+  assert.equal(loadRules(root), '（测试规则一）\n\n（测试规则二）\n（第二行）', '只拼接已开启且非空规则（禁用与空白排除）')
+  // 旧 规则.md 一次性迁移：jsonl 缺失且旧文件有内容 → ensureRuleMigration 落盘为一条开启规则（frontmatter 剥离；
+  // 引擎读取路径本身永不写盘，迁移只由规则页的 GET 端点触发）
+  const legacy = mkdtempSync(join(tmpdir(), 'rules-migrate-'))
+  writeFileSync(join(legacy, RULES_FILENAME), '---\nnote: x\n---\n\n（带 frontmatter 的旧规则）', 'utf8')
+  assert.equal(loadRules(legacy), '（带 frontmatter 的旧规则）', '引擎纯读：旧 规则.md 虚拟迁移即可用')
+  assert.equal(existsSync(join(legacy, RULES_LIST_FILENAME)), false, '引擎读取不落盘（迁移只在规则页端点发生）')
+  ensureRuleMigration(legacy)
+  assert.equal(loadRules(legacy), '（带 frontmatter 的旧规则）', '迁移后 loadRules 不变')
+  const migrated = loadRuleList(legacy)
+  assert.equal(migrated.length, 1)
+  assert.equal(migrated[0]?.enabled, true, '迁移条目默认开启')
+  assert.ok(existsSync(join(legacy, RULES_LIST_FILENAME)), '迁移已落盘 jsonl')
+  ensureRuleMigration(legacy)
+  assert.equal(loadRuleList(legacy).length, 1, '迁移只发生一次（jsonl 已存在则跳过）')
+  rmSync(legacy, { recursive: true, force: true })
 
   // 2) 模型设置
   assert.deepEqual(loadSettings(root), { providers: [], activeId: '', routerId: '' }, '未配置时为空')

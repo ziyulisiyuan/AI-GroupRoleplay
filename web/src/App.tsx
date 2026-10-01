@@ -3,7 +3,7 @@
  * 主页对齐微信首屏：顶部"主页面"+搜索/添加，群聊一行一条（头像/预览/时间）。
  */
 import React, { useCallback, useEffect, useState } from 'react'
-import { enc, getJson, loadGroupRows, postJson, putJson, type GroupRow, type ModelsInfo } from './api.ts'
+import { enc, getJson, loadGroupRows, postJson, putJson, type GroupRow, type ModelsInfo, type RuleItem } from './api.ts'
 import { applyRules, isValidPattern, loadRules, newRuleId, saveRules, type RegexRule } from './regex.ts'
 import { Avatar, Cell, Cells, Field, Modal, NavBar, TabBarBar, ToastProvider, useToast } from './ui.tsx'
 import { ChatView } from './chat.tsx'
@@ -123,46 +123,123 @@ function HomeView({ onOpen, onNew }: { onOpen: (g: string) => void; onNew: () =>
 /* ---------- Tab 2：全局（二级页：全局规则 / 正则替换） ---------- */
 
 function RulesTab(): React.ReactElement {
-  const [view, setView] = useState<'hub' | 'rules' | 'regex'>('hub')
-  if (view === 'rules') return <RulesView onBack={() => setView('hub')} />
-  if (view === 'regex') return <RegexView onBack={() => setView('hub')} />
+  const [view, setView] = useState<{ k: 'hub' } | { k: 'ruleList' } | { k: 'regex' } | { k: 'ruleEdit'; id: string | null }>({ k: 'hub' })
+  if (view.k === 'ruleList') return <RuleListView onBack={() => setView({ k: 'hub' })} onEdit={id => setView({ k: 'ruleEdit', id })} />
+  if (view.k === 'ruleEdit') return <RuleEditView id={view.id} onBack={() => setView({ k: 'ruleList' })} />
+  if (view.k === 'regex') return <RegexView onBack={() => setView({ k: 'hub' })} />
   return (
     <>
       <NavBar title="全局" />
       <div className="scroll">
         <Cells>
-          <Cell title="全局规则" arrow onTap={() => setView('rules')} />
-          <Cell title="正则替换" arrow onTap={() => setView('regex')} />
+          <Cell title="全局规则" arrow onTap={() => setView({ k: 'ruleList' })} />
+          <Cell title="正则替换" arrow onTap={() => setView({ k: 'regex' })} />
         </Cells>
       </div>
     </>
   )
 }
 
-function RulesView({ onBack }: { onBack: () => void }): React.ReactElement {
+/* ---------- 全局规则列表：多条并存，每条独立启停（拨片；name/enabled 是纯前端标签） ---------- */
+
+function RuleListView({ onBack, onEdit }: { onBack: () => void; onEdit: (id: string | null) => void }): React.ReactElement {
   const toast = useToast()
-  const [text, setText] = useState<string | null>(null)
+  const [rules, setRules] = useState<RuleItem[] | null>(null)
+  const load = useCallback(async (): Promise<void> => {
+    try {
+      setRules((await getJson<{ rules: RuleItem[] }>('/api/rules')).rules)
+    } catch (e) {
+      toast(e instanceof Error ? e.message : String(e))
+    }
+  }, [toast])
+  useEffect(() => { void load() }, [load])
+  const persist = async (next: RuleItem[]): Promise<void> => {
+    setRules(next)
+    try {
+      await putJson('/api/rules', { rules: next })
+    } catch (e) {
+      toast(e instanceof Error ? e.message : String(e))
+    }
+  }
+  return (
+    <>
+      <NavBar title="全局规则" onBack={onBack} />
+      <div className="scroll">
+        <Cells>
+          <button className="cell" onClick={() => onEdit(null)}>
+            <div className="cell-title"><div className="main" style={{ color: 'var(--brand)' }}>＋ 添加全局规则</div></div>
+          </button>
+          {rules?.map(r => (
+            <button key={r.id} className="cell" onClick={() => onEdit(r.id)}>
+              <div className="cell-title">
+                <div className="main">{r.name}</div>
+                <div className="sub">{r.text.trim() !== '' ? r.text.trim().split('\n')[0] : '（空）'}</div>
+              </div>
+              <span
+                className={'switch' + (r.enabled ? ' on' : '')}
+                onClick={e => { e.stopPropagation(); void persist(rules.map(x => (x.id === r.id ? { ...x, enabled: !x.enabled } : x))) }}
+              >
+                <span className="knob" />
+              </span>
+            </button>
+          ))}
+          {rules !== null && rules.length === 0 && <div className="hint">（还没有全局规则——点上方「＋ 添加全局规则」创建）</div>}
+        </Cells>
+      </div>
+    </>
+  )
+}
+
+/* ---------- 全局规则编辑（页面跳转而非弹窗）：名称 + 正文 + 删除 ---------- */
+
+function RuleEditView({ id, onBack }: { id: string | null; onBack: () => void }): React.ReactElement {
+  const toast = useToast()
+  const [rules, setRules] = useState<RuleItem[] | null>(null)
+  const [name, setName] = useState('')
+  const [text, setText] = useState('')
   /** 载入时的原文：只有改动过才显示保存键（真机反馈：常驻保存键是噪音） */
-  const [saved, setSaved] = useState<string | null>(null)
+  const [initial, setInitial] = useState<{ name: string; text: string } | null>(null)
   const [busy, setBusy] = useState(false)
   useEffect(() => {
     void (async () => {
       try {
-        const cur = (await getJson<{ text: string }>('/api/rules')).text
-        setText(cur)
-        setSaved(cur)
+        const list = (await getJson<{ rules: RuleItem[] }>('/api/rules')).rules
+        setRules(list)
+        if (id === null) { setInitial({ name: '', text: '' }); return }
+        const r = list.find(x => x.id === id)
+        if (r === undefined) { toast('规则不存在'); onBack(); return }
+        setName(r.name)
+        setText(r.text)
+        setInitial({ name: r.name, text: r.text })
       } catch (e) {
         toast(e instanceof Error ? e.message : String(e))
+        onBack()
       }
     })()
-  }, [toast])
-  const dirty = text !== null && saved !== null && text !== saved
+  }, [id, toast, onBack])
+  const dirty = initial !== null && (name !== initial.name || text !== initial.text)
   const save = async (): Promise<void> => {
+    if (rules === null || busy) return
+    if (name.trim() === '') { toast('名称不能为空'); return }
     setBusy(true)
     try {
-      await putJson('/api/rules', { text })
-      setSaved(text)
-      toast('全局规则已保存（对所有群生效）')
+      const next = id === null
+        ? [...rules, { id: `r${Date.now().toString(36)}`, name: name.trim(), enabled: true, text }]
+        : rules.map(r => (r.id === id ? { ...r, name: name.trim(), text } : r))
+      await putJson('/api/rules', { rules: next })
+      onBack()
+    } catch (e) {
+      toast(e instanceof Error ? e.message : String(e))
+    } finally {
+      setBusy(false)
+    }
+  }
+  const remove = async (): Promise<void> => {
+    if (rules === null || id === null || busy) return
+    setBusy(true)
+    try {
+      await putJson('/api/rules', { rules: rules.filter(r => r.id !== id) })
+      onBack()
     } catch (e) {
       toast(e instanceof Error ? e.message : String(e))
     } finally {
@@ -172,7 +249,7 @@ function RulesView({ onBack }: { onBack: () => void }): React.ReactElement {
   return (
     <>
       <NavBar
-        title="全局规则"
+        title={id === null ? '添加全局规则' : '编辑全局规则'}
         onBack={onBack}
         right={dirty
           ? <button className="navbar-text-btn" disabled={busy} onClick={() => void save()}>保存</button>
@@ -180,8 +257,14 @@ function RulesView({ onBack }: { onBack: () => void }): React.ReactElement {
       />
       <div className="scroll" style={{ display: 'flex', flexDirection: 'column' }}>
         <Cells>
-          <Field label="规则正文" value={text ?? ''} onChange={setText} multiline rows={16} placeholder="（空 = 不注入任何规则）" />
+          <Field label="名称" value={name} onChange={setName} placeholder="规则的显示名（只影响列表，不进入角色提示词）" />
+          <Field label="规则正文" value={text} onChange={setText} multiline rows={16} placeholder="（只写这条规则的内容；只有开启的规则才会注入角色）" />
         </Cells>
+        {id !== null && (
+          <div style={{ padding: '0 var(--s-4) var(--s-3)' }}>
+            <button style={{ color: 'var(--danger)', fontSize: 'var(--fs-sub)' }} disabled={busy} onClick={() => void remove()}>删除这条规则</button>
+          </div>
+        )}
       </div>
     </>
   )
