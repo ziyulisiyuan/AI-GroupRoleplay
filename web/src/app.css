@@ -346,6 +346,10 @@ button.cell:active, .cell.tap:active { background: var(--bg-press); }
   color: var(--text-1);
 }
 
+/* 可点头像（聊天页）：设了图片才可点，点了放大查看 */
+.avatar-btn { flex: none; padding: 0; border: none; background: none; cursor: zoom-in; }
+.avatar-view { display: block; width: 100%; border-radius: var(--r-btn); }
+
 /* 拨片开关（状态记录）：关=灰轨白钮，开=品牌绿轨白钮 */
 .switch {
   flex: none;

@@ -39,6 +39,9 @@ export function ChatView({ group, onBack, onOpenInfo }: Props): React.ReactEleme
   /** 思维链只读弹窗：该条角色消息生成时的思考内容（'' = 无记录，null = 加载中）。 */
   const [thinkingMsg, setThinkingMsg] = useState<Msg | null>(null)
   const [thinkingText, setThinkingText] = useState<string | null>(null)
+  /** 头像查看弹窗：点消息头像放大看图（未设置头像的消息没有此入口）。 */
+  const [viewAvatar, setViewAvatar] = useState<{ name: string; url: string } | null>(null)
+  const openAvatar = useCallback((name: string, url: string): void => { setViewAvatar({ name, url }) }, [])
   /** ⊘ 场景手选：弹窗挑选后，本轮发送直接按"已移动到该场景"处理（跳过换场景判定）。 */
   const [scenePick, setScenePick] = useState(false)
   const [pendingScene, setPendingScene] = useState<string | null>(null)
@@ -280,6 +283,7 @@ export function ChatView({ group, onBack, onOpenInfo }: Props): React.ReactEleme
             key={m.id}
             msg={m} mine={mine} avatar={avatarFor(m.name, mine)}
             onMenu={setMenuMsg}
+            onAvatar={selectMode ? undefined : url => openAvatar(m.name, url)}
             selectMode={selectMode}
             picked={selected.has(m.id)}
             onToggle={togglePicked}
@@ -290,12 +294,13 @@ export function ChatView({ group, onBack, onOpenInfo }: Props): React.ReactEleme
           <MessageRow
             msg={pending} mine avatar={avatarFor(pending.name, true)}
             onMenu={m => { if (m.id >= 0) setMenuMsg(m) }}
+            onAvatar={url => openAvatar(pending.name, url)}
             selectMode={false} picked={false} onToggle={() => undefined}
           />
         )}
         {turnMsgs.map(tm => (
           <div className="msg-row in" key={tm.key}>
-            <Avatar name={tm.name} size={40} url={avatarFor(tm.name, false)} />
+            <TapAvatar name={tm.name} url={avatarFor(tm.name, false)} size={40} onTap={url => openAvatar(tm.name, url)} />
             <div className="msg-main">
               <div className="msg-name">{tm.name}</div>
               <div className="bubble">{applyRules(tm.text)}{!tm.done && <span className="cursor" />}</div>
@@ -425,6 +430,11 @@ export function ChatView({ group, onBack, onOpenInfo }: Props): React.ReactEleme
         )}
       </Modal>
 
+      {/* 头像查看（只读悬浮）：点消息头像放大看图；未设置头像的消息没有此入口 */}
+      <Modal open={viewAvatar !== null} onClose={() => setViewAvatar(null)} title={viewAvatar === null ? '' : `${viewAvatar.name} 的头像`}>
+        {viewAvatar !== null && <img className="avatar-view" src={viewAvatar.url} alt={viewAvatar.name} />}
+      </Modal>
+
       {/* 删除确认：文案按 SPEC 必须说明是物理删除 */}
       <Confirm
         open={delMsg !== null}
@@ -443,12 +453,23 @@ export function ChatView({ group, onBack, onOpenInfo }: Props): React.ReactEleme
   )
 }
 
+/** 可点按的头像：设了图片时点击放大查看（未设置 = 首字色块，无图可看，不可点）。 */
+function TapAvatar({ name, url, size, onTap }: { name: string; url: string | undefined; size: number; onTap?: (url: string) => void }): React.ReactElement {
+  if (url === undefined || onTap === undefined) return <Avatar name={name} size={size} />
+  return (
+    <button className="avatar-btn" aria-label={`查看 ${name} 的头像`} onClick={e => { e.stopPropagation(); onTap(url) }}>
+      <Avatar name={name} size={size} url={url} />
+    </button>
+  )
+}
+
 /** 单条消息行（hooks 必须在组件里调用，不能在 map 循环里）。 */
-function MessageRow({ msg, mine, avatar, onMenu, selectMode, picked, onToggle }: {
+function MessageRow({ msg, mine, avatar, onMenu, onAvatar, selectMode, picked, onToggle }: {
   msg: Msg
   mine: boolean
   avatar: string | undefined
   onMenu: (m: Msg) => void
+  onAvatar?: (url: string) => void
   selectMode: boolean
   picked: boolean
   onToggle: (id: number) => void
@@ -461,7 +482,7 @@ function MessageRow({ msg, mine, avatar, onMenu, selectMode, picked, onToggle }:
       onClick={() => { if (selectMode) onToggle(msg.id) }}
     >
       {selectMode && <div className={'check-box sel-box' + (picked ? ' on' : '')}><Check size={16} /></div>}
-      <Avatar name={msg.name} size={40} url={avatar} />
+      <TapAvatar name={msg.name} url={avatar} size={40} onTap={onAvatar} />
       <div className="msg-main">
         {!mine && <div className="msg-name">{msg.name}</div>}
         {/* 显示层替换：只改你看到的文字，模型上下文/记忆/判定始终是原文 */}
