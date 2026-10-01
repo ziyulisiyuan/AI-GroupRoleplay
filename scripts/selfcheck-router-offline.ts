@@ -33,6 +33,11 @@ const hadRules = existsSync(rulesFile)
 const rulesBackup = hadRules ? fsReadFileSync(rulesFile, 'utf8') : undefined
 const RULES_MARKER = '（测试规则·仅角色可见标记）'
 writeFileSync(rulesFile, RULES_MARKER + '\n', 'utf8')
+// 规则.jsonl 同样纳入夹具保护：杂散的空/旧列表文件会遮蔽 规则.md 的虚拟迁移，必须先移走再测
+const rulesListFile = join(config.root, '规则.jsonl')
+const hadRulesList = existsSync(rulesListFile)
+const rulesListBackup = hadRulesList ? fsReadFileSync(rulesListFile, 'utf8') : undefined
+if (hadRulesList) rmSync(rulesListFile, { force: true })
 
 /** mock Jev：answers（固定）或 answersSeq（按第 N 次请求取，超出重复最后一个）；可注入故障（500 / 慢响应）。 */
 async function mockJev(script: { answers?: Record<string, unknown> | Array<Record<string, unknown>>; fail?: boolean; slowMs?: number }): Promise<{ server: Server; port: number; hits: Array<Record<string, unknown>> }> {
@@ -1205,4 +1210,6 @@ try {
   rmSync(settingsFile + '.selfcheck-bak', { force: true })
   if (hadRules) writeFileSync(rulesFile, rulesBackup ?? '', 'utf8')
   else if (existsSync(rulesFile)) rmSync(rulesFile, { force: true })
+  if (hadRulesList) writeFileSync(rulesListFile, rulesListBackup ?? '', 'utf8')
+  else if (existsSync(rulesListFile)) rmSync(rulesListFile, { force: true })
 }
