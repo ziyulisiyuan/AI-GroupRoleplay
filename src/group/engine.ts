@@ -19,6 +19,7 @@ import { turnFromMessages } from '../host.ts'
 import { resolveRouter } from '../settings.ts'
 import { LEDGER_KEYS, loadFiles, saveMemory, savePersonality, saveRelationships, saveStatus, type CharacterFiles } from './status.ts'
 import { backfillKnowledge, buildMemory, missingRounds, transplantRounds, witnessSummary } from './knowledge.ts'
+import { recordThinking, removeThinking } from './thinking.ts'
 import { resolveCharacterName, type RoutableCharacter } from './router.ts'
 
 export type SessionEvent =
@@ -605,7 +606,8 @@ export class GroupSession {
     )
     yield { type: 'speaker', name: last.name }
     let full = ''
-    for await (const delta of turnFromMessages(system === '' ? messages : [{ role: 'system', content: system }, ...messages], { temperature: 1.0 })) {
+    let thinking = ''
+    for await (const delta of turnFromMessages(system === '' ? messages : [{ role: 'system', content: system }, ...messages], { temperature: 1.0, onReasoning: t => { thinking += t } })) {
       full += delta
       yield { type: 'delta', text: delta }
     }
@@ -613,6 +615,8 @@ export class GroupSession {
     if (full.trim() !== '') {
       this.store.rewriteMessage(last.id, full) // 当前上下文快照：日志行就地更新
       this.rewriteMemoryFor(last.id) // 活账本：生效文本变了，引用它的记忆条目同步改写
+      // 思维链：重掷按 id 覆盖（旧思维对应的发言已不存在）；新模型没输出思考 = 清除旧记录
+      try { recordThinking(this.groupDir, last.id, last.name, last.round, thinking) } catch { /* 记录失败不影响重掷 */ }
     }
     yield { type: 'reply', name: last.name, text: full }
   }
@@ -994,7 +998,8 @@ export class GroupSession {
     }
     yield { type: 'speaker', name }
     let full = ''
-    for await (const delta of turnFromMessages(system === '' ? messages : [{ role: 'system', content: system }, ...messages])) {
+    let thinking = ''
+    for await (const delta of turnFromMessages(system === '' ? messages : [{ role: 'system', content: system }, ...messages], { onReasoning: t => { thinking += t } })) {
       full += delta
       yield { type: 'delta', text: delta }
     }
@@ -1030,7 +1035,12 @@ export class GroupSession {
       const base = judge?.audience ?? new Set(this.witnesses(name))
       const msgIdForReply = this.store.nextMsgId
       const listeners = [name, ...this.audienceOf(base, msgIdForReply, name)]
-      msgId = this.store.append('character', name, full, listeners).id
+      const msg = this.store.append('character', name, full, listeners)
+      msgId = msg.id
+      // 思维链（只给人看，永不进任何模型输入）：落盘失败不影响回合（与 judgeLog 同策略）
+      if (thinking.trim() !== '') {
+        try { recordThinking(this.groupDir, msg.id, name, msg.round, thinking) } catch { /* 记录失败不影响剧情 */ }
+      }
     }
     yield { type: 'reply', name, text: full }
     return { text: full, ...(msgId === undefined ? {} : { msgId }), ...(judge === undefined ? {} : { judge }) }
@@ -1119,11 +1129,13 @@ export class GroupSession {
   }
 
   /** 手删某条消息（物理移除：消息行与其账本移植行一并从日志消失，删除 = 这条消息从没发生过）；
-   *  所有角色的记忆同步清除（文件直改），mid 因 header.lastMsgId 保证永不复用。 */
+   *  所有角色的记忆同步清除（文件直改），mid 因 header.lastMsgId 保证永不复用；
+   *  思维链记录一并清除（它只属于这条消息）。 */
   deleteMessage(id: number): void {
     if (!this.store.messages.some(m => m.id === id)) throw new Error(`消息不存在: #${id}`)
     this.store.removeMessage(id)
     this.retractMemoryFor(id)
+    try { removeThinking(this.groupDir, id) } catch { /* 记录清理失败不影响删除 */ }
   }
 
   /** 账本行 content 里的 mid（坏行/无 mid 返回 undefined）。 */

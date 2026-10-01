@@ -19,6 +19,7 @@ import {
 } from './group/scaffold.ts'
 import { loadGroupSettings, loadUserPersona } from './group/persona.ts'
 import { createScene, listScenes, saveSceneDescription } from './group/scene.ts'
+import { getThinking } from './group/thinking.ts'
 import { loadRules, saveRules } from './group/rules.ts'
 import { loadSettings, saveSettings, resolveLlm, healOrphanSettingsBackup, type Provider } from './settings.ts'
 import { registerStatic } from './server-static.ts'
@@ -280,6 +281,14 @@ app.delete('/api/group/:name/character/:dir/memory/:index', c => {
   return c.json({ ok: true })
 })
 
+// ---------- 思维链（只给人看）：某条角色消息生成时的思考内容，永不进任何模型输入 ----------
+
+app.get('/api/group/:name/message/:id/thinking', c => {
+  const id = Number(c.req.param('id'))
+  if (!Number.isInteger(id)) return c.json({ error: '非法消息号' }, 400)
+  return c.json({ thinking: getThinking(groupDir(c.req.param('name')), id) ?? '' })
+})
+
 // ---------- 头像（§7.2）：纯显示，永不进任何模型/总管输入 ----------
 
 const AVATAR_MAX_BYTES = 2 * 1024 * 1024
@@ -345,7 +354,7 @@ app.put('/api/group/:name/character/:dir/ledger', async c => {
 app.get('/api/rules', c => c.json({ text: loadRules() }))
 
 app.put('/api/rules', async c => {
-  const body = await c.req.json<Record<string, unknown>>().catch(() => ({} as Record<string, unknown>))
+  const body = await c.req.json<Record<string, unknown>>().catch(() => ({}) as Record<string, unknown>)
   saveRules(String(body.text ?? ''))
   sessions.clear() // 规则对所有群生效：丢弃全部缓存会话
   return c.json({ ok: true })

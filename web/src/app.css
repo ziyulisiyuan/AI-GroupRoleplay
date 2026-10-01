@@ -334,6 +334,18 @@ button.cell:active, .cell.tap:active { background: var(--bg-press); }
 /* 武装态（前往地点/客观注入）：按钮变绿并切换图标（地图钉/落下箭头），再点即取消 */
 .obj-tag { font-weight: 600; margin-right: 4px; }
 
+/* 思维链只读弹窗：思考原文，保留换行、可滚动 */
+.thinking-body {
+  max-height: 60vh;
+  overflow-y: auto;
+  padding: 0 var(--s-4) var(--s-3);
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-size: var(--fs-body);
+  line-height: 1.6;
+  color: var(--text-1);
+}
+
 /* 拨片开关（状态记录）：关=灰轨白钮，开=品牌绿轨白钮 */
 .switch {
   flex: none;

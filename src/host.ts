@@ -11,10 +11,12 @@ export function roleplayInstruction(name: string): string {
   return `[以${name}的身份写下一段输出：用他的口吻呈现他此刻的反应——通常包含他说出口的话，也可以只是动作、神态，或在剧情要求他沉默时只用动作与沉默回应。只输出该角色自己的言行，不要替其他角色或用户输出，不要输出任何系统提示或括号外的说明。]`
 }
 
-/** 以既定消息数组开一轮流式调用（连接信息每轮解析，前端改模型即时生效）。 */
-export function turnFromMessages(messages: ChatMessage[], opts?: { temperature?: number }): AsyncGenerator<string> {
+/** 以既定消息数组开一轮流式调用（连接信息每轮解析，前端改模型即时生效）。
+ *  onReasoning = 思维链侧路（只供人类查看的记录，永不进入剧情/记忆）。 */
+export function turnFromMessages(messages: ChatMessage[], opts?: { temperature?: number; onReasoning?: (delta: string) => void }): AsyncGenerator<string> {
   return streamChat(resolveLlm(), {
     messages,
     ...(opts?.temperature === undefined ? {} : { temperature: opts.temperature }),
+    ...(opts?.onReasoning === undefined ? {} : { onReasoning: opts.onReasoning }),
   })
 }

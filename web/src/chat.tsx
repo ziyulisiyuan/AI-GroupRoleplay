@@ -7,10 +7,10 @@
  *   确认文案按 SPEC 必须说明日志不保留原文）。
  */
 import React, { useCallback, useEffect, useRef, useState } from 'react'
-import { avatarUrl, getJson, postJson, postStream, readNdjson, type Ev, type Msg, type Snapshot } from './api.ts'
+import { avatarUrl, getJson, getThinking, postJson, postStream, readNdjson, type Ev, type Msg, type Snapshot } from './api.ts'
 import { applyRules } from './regex.ts'
 import { Avatar, Confirm, Modal, NavBar, useLongPress, useToast } from './ui.tsx'
-import { ArrowDownToLine, Check, CheckSquare, Ellipsis, MapPin, Pencil, RefreshCw, Trash2, X } from './icons.tsx'
+import { ArrowDownToLine, Check, CheckSquare, Copy, Ellipsis, Lightbulb, MapPin, Pencil, RefreshCw, Trash2, X } from './icons.tsx'
 
 interface Props { group: string; onBack: () => void; onOpenInfo: () => void }
 
@@ -36,6 +36,9 @@ export function ChatView({ group, onBack, onOpenInfo }: Props): React.ReactEleme
   const turnKey = useRef(0)
   /** 重掷进行中：被重掷的旧回复（引擎在原 id 上物理改写）在快照刷新前先从列表隐藏，避免新旧同屏。 */
   const [rerollId, setRerollId] = useState<number | null>(null)
+  /** 思维链只读弹窗：该条角色消息生成时的思考内容（'' = 无记录，null = 加载中）。 */
+  const [thinkingMsg, setThinkingMsg] = useState<Msg | null>(null)
+  const [thinkingText, setThinkingText] = useState<string | null>(null)
   /** ⊘ 场景手选：弹窗挑选后，本轮发送直接按"已移动到该场景"处理（跳过换场景判定）。 */
   const [scenePick, setScenePick] = useState(false)
   const [pendingScene, setPendingScene] = useState<string | null>(null)
@@ -227,6 +230,36 @@ export function ChatView({ group, onBack, onOpenInfo }: Props): React.ReactEleme
     }
   }, [delMsg, group, refresh, toast])
 
+  /** 复制整段消息文本（剪贴板 API 优先，WebView 里 execCommand 兜底）。 */
+  const copyMessage = useCallback((m: Msg): void => {
+    const ok = (): void => toast('已复制')
+    const fallback = (): void => {
+      const ta = document.createElement('textarea')
+      ta.value = m.text
+      ta.style.position = 'fixed'
+      ta.style.opacity = '0'
+      document.body.appendChild(ta)
+      ta.select()
+      try { document.execCommand('copy'); ok() } catch { /* 剪贴板不可用 */ } finally { document.body.removeChild(ta) }
+    }
+    if (navigator.clipboard !== undefined && window.isSecureContext) {
+      navigator.clipboard.writeText(m.text).then(ok, fallback)
+    } else fallback()
+  }, [toast])
+
+  /** 查看思维链（只读）：取本条消息生成时的思考内容；失败/无记录都有明确提示。 */
+  const openThinking = useCallback(async (m: Msg): Promise<void> => {
+    setMenuMsg(null)
+    setThinkingMsg(m)
+    setThinkingText(null)
+    try {
+      setThinkingText(await getThinking(group, m.id))
+    } catch (e) {
+      setThinkingText('')
+      toast(e instanceof Error ? e.message : String(e))
+    }
+  }, [group, toast])
+
   return (
     <div className="page chat-page page-enter">
       <NavBar
@@ -243,14 +276,14 @@ export function ChatView({ group, onBack, onOpenInfo }: Props): React.ReactEleme
           if (m.id === rerollId) return null // 重掷中：旧回复暂隐（引擎将在原 id 上改写）
           const mine = m.role === 'user'
           return (
-            <MessageRow
-              key={m.id}
-              msg={m} mine={mine} avatar={avatarFor(m.name, mine)}
-              onMenu={setMenuMsg}
-              selectMode={selectMode}
-              picked={selected.has(m.id)}
-              onToggle={togglePicked}
-            />
+          <MessageRow
+            key={m.id}
+            msg={m} mine={mine} avatar={avatarFor(m.name, mine)}
+            onMenu={setMenuMsg}
+            selectMode={selectMode}
+            picked={selected.has(m.id)}
+            onToggle={togglePicked}
+          />
           )
         })}
         {pending !== null && (
@@ -348,6 +381,14 @@ export function ChatView({ group, onBack, onOpenInfo }: Props): React.ReactEleme
         <button className="menu-item" onClick={() => { setEditText(menuMsg?.text ?? ''); setEditMsg(menuMsg); setMenuMsg(null) }}>
           <Pencil size={18} /> 修改
         </button>
+        <button className="menu-item" onClick={() => { if (menuMsg !== null) copyMessage(menuMsg); setMenuMsg(null) }}>
+          <Copy size={18} /> 复制
+        </button>
+        {menuMsg !== null && menuMsg.role === 'character' && (
+          <button className="menu-item" onClick={() => { void openThinking(menuMsg) }}>
+            <Lightbulb size={18} /> 查看思维链
+          </button>
+        )}
         <button className="menu-item" onClick={() => { setDelMsg(menuMsg); setMenuMsg(null) }}>
           <Trash2 size={18} /> 删除
         </button>
@@ -372,6 +413,16 @@ export function ChatView({ group, onBack, onOpenInfo }: Props): React.ReactEleme
         <div style={{ padding: '0 var(--s-4) var(--s-2)' }}>
           <button className="btn-primary" style={{ width: '100%', margin: 0 }} disabled={editText.trim() === ''} onClick={() => void submitEdit()}>保存</button>
         </div>
+      </Modal>
+
+      {/* 思维链（只读悬浮）：该条角色消息生成时的思考内容——只给人看，不进记忆、任何角色不可见 */}
+      <Modal open={thinkingMsg !== null} onClose={() => setThinkingMsg(null)} title={thinkingMsg === null ? '' : `${thinkingMsg.name} 的思维链`}>
+        {thinkingText === null && <div className="hint">加载中……</div>}
+        {thinkingText !== null && (
+          thinkingText.trim() === ''
+            ? <div className="hint">（这条发言没有记录到思维链——模型未输出思考内容）</div>
+            : <div className="thinking-body">{thinkingText}</div>
+        )}
       </Modal>
 
       {/* 删除确认：文案按 SPEC 必须说明是物理删除 */}

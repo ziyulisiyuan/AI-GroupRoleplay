@@ -137,3 +137,9 @@ export async function loadGroupRows(): Promise<GroupRow[]> {
   }))
   return rows.sort((a, b) => b.ts - a.ts)
 }
+
+/** 思维链（只给人看）：某条角色消息生成时的思考内容；空串 = 无记录。 */
+export async function getThinking(group: string, id: number): Promise<string> {
+  const j = await getJson<{ thinking: string }>(`/api/group/${enc(group)}/message/${id}/thinking`)
+  return j.thinking ?? ''
+}

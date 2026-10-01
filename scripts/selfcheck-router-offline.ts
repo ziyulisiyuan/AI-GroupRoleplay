@@ -61,7 +61,7 @@ async function mockJev(script: { answers?: Record<string, unknown> | Array<Recor
 
 interface DeepseekHit { kind: 'route' | 'bookkeep' | 'scene' | 'offstory' | 'pov' | 'stream'; body: Record<string, unknown> }
 
-/** mock deepseek：route/record_round/record_scene/record_offstory/render_memory tool-call 与角色 SSE 流。 */
+/** mock deepseek：route/record_round/record_scene/record_offstory/render_memory tool-call 与角色 SSE 流（可带 reasoning_content 增量）。 */
 async function mockDeepseek(script: {
   route?: Record<string, unknown>
   bookkeep?: Record<string, unknown>
@@ -70,6 +70,7 @@ async function mockDeepseek(script: {
   povMap?: Record<string, string>
   pov?: string
   streamText?: string
+  reasoning?: string
 }): Promise<{ server: Server; port: number; hits: DeepseekHit[] }> {
   const hits: DeepseekHit[] = []
   const server = createServer((req, res) => {
@@ -117,6 +118,9 @@ async function mockDeepseek(script: {
       }
       hits.push({ kind: 'stream', body })
       res.setHeader('content-type', 'text/event-stream')
+      if (script.reasoning !== undefined) {
+        res.write('data: ' + JSON.stringify({ choices: [{ delta: { reasoning_content: script.reasoning } }] }) + '\n\n')
+      }
       res.write('data: ' + JSON.stringify({ choices: [{ delta: { content: script.streamText ?? '（测试回复）' } }] }) + '\n\n')
       res.write('data: [DONE]\n\n')
       res.end()
@@ -1062,6 +1066,58 @@ try {
     ds.server.close(); jev.server.close()
   }
 
+  // ── 4l) 思维链记录：reasoning_content 逐字落盘（按消息 id 键控，只给人看）；不进记忆、
+  //         不进该轮任何模型提示词；删除消息时记录一并清除
+  {
+    const ds = await mockDeepseek({ reasoning: '（思维链标记：先亮明身份，再劝阻对方。）', streamText: '（甲亮明身份劝阻）不要去。' })
+    const jev = await mockJev({ answers: [
+      { // 主判定 → 甲
+        next_speaker: { type: 'choice', choice: '角色甲', confidence: 0.9, probabilities: {} },
+        present_角色甲: { type: 'noul', noul: 0.98 },
+        present_角色乙: { type: 'noul', noul: 0.9 },
+        present_角色丙: { type: 'noul', noul: 0.9 },
+        knows_角色甲: { type: 'noul', noul: 0.9 },
+        knows_角色乙: { type: 'noul', noul: 0.9 },
+        knows_角色丙: { type: 'noul', noul: 0.9 },
+        told_角色甲: { type: 'noul', noul: 0.05 },
+        told_角色乙: { type: 'noul', noul: 0.05 },
+        told_角色丙: { type: 'noul', noul: 0.05 },
+        state_dirty: { type: 'noul', noul: 0.1 },
+      },
+      { // 甲回复的合并判定 → 用户
+        knows_角色乙: { type: 'noul', noul: 0.9 },
+        knows_角色丙: { type: 'noul', noul: 0.9 },
+        told_角色乙: { type: 'noul', noul: 0.05 },
+        told_角色丙: { type: 'noul', noul: 0.05 },
+        state_dirty: { type: 'noul', noul: 0.1 },
+        next_speaker: { type: 'choice', choice: '你', confidence: 0.9, probabilities: {} },
+      },
+    ] })
+    rmSync(accDir, { recursive: true, force: true })
+    buildGroupFixture(accDir, { chars: TEST_CAST, statusRecord: true })
+    writeTestSettings(ds.port, jev.port)
+    const { GroupSession } = await import('../src/group/engine.ts')
+    const session = GroupSession.open(accName)
+    for await (const ev of session.speak('别去那里')) void ev
+    const reply = session.snapshot().messages.find(m => m.role === 'character')
+    assert.ok(reply !== undefined, '角色回复已落盘')
+    const raw = fsReadFileSync(join(accDir, '思维链.jsonl'), 'utf8')
+    const line = JSON.parse(raw.trim().split(String.fromCharCode(10)).find(l => l !== '')!) as { id: number; name: string; thinking: string }
+    assert.equal(line.id, reply.id, '思维链按消息 id 键控')
+    assert.equal(line.name, '角色甲', '思维链记录发言者')
+    assert.ok(line.thinking.includes('思维链标记'), 'reasoning_content 逐字落盘')
+    const memOf4l = (n: string): string => {
+      try { return fsReadFileSync(join(accDir, '角色', n, '记忆.jsonl'), 'utf8') } catch { return '' }
+    }
+    assert.ok(!memOf4l('角色甲').includes('思维链标记') && !memOf4l('角色乙').includes('思维链标记'), '思维链不进任何记忆')
+    assert.ok(ds.hits.every(h => !JSON.stringify(h.body).includes('思维链标记')), '思维链不进该轮任何模型提示词')
+    const { getThinking } = await import('../src/group/thinking.ts')
+    assert.ok(getThinking(accDir, reply.id)?.includes('思维链标记'), '按消息 id 可取回思维链')
+    session.deleteMessage(reply.id)
+    assert.ok(!fsReadFileSync(join(accDir, '思维链.jsonl'), 'utf8').includes('思维链标记'), '删除消息后思维链记录一并清除')
+    ds.server.close(); jev.server.close()
+  }
+
   // ── 5) 端到端：Jev 故障 → 整轮回退 deepseek 完整总管（行为与旧版一致）
   {
     const ds = await mockDeepseek({
@@ -1137,7 +1193,7 @@ try {
     ds.server.close()
   }
 
-  console.log('快/慢双路径自检通过：Jev命中/位置判定(场景choice)/链接推导/知情名单(原文移植，含偷听者)/低置信与名单外→路由回退但位置知情不连坐(留痕) · 合并判定(知情+总门+转告+接力一次调用) · 额外记忆(一段触发/二段逐轮/逐字移植/带mid幂等/堆在末尾) · 记账门控(无变化零调用/回复脏恰一次) · 记账员无名册权(越权丢弃) · 规则注入边界(仅角色生成上下文；主判定/合并判定/记账/回退总管不含) · 客观注入(不问知情/转告/受众=现场记录/接入与单向感知不收/客观条目带mid活账本/管线照旧) · 状态记录开关(默认关：不问state_dirty/脏回复不记账/回退总管账本丢弃；群设定改true即时生效：判定与记账恢复) · 现场所见(进场检测/发言前等待) · 事件补全(离场锚点纯代码/发现一次合并/事件×参与者限知视角分别注入/首次进场不触发) · 接力判定（判给用户即结束/刚发言压0不可能连续发言/无硬上限） · 接力累计衰减（每判定乘0.8重新发言不重置/衰减最终判回用户/翻转与阻断留痕） · 回退=完整总管 · 未配置=完全兼容')
+  console.log('快/慢双路径自检通过：Jev命中/位置判定(场景choice)/链接推导/知情名单(原文移植，含偷听者)/低置信与名单外→路由回退但位置知情不连坐(留痕) · 合并判定(知情+总门+转告+接力一次调用) · 额外记忆(一段触发/二段逐轮/逐字移植/带mid幂等/堆在末尾) · 记账门控(无变化零调用/回复脏恰一次) · 记账员无名册权(越权丢弃) · 规则注入边界(仅角色生成上下文；主判定/合并判定/记账/回退总管不含) · 客观注入(不问知情/转告/受众=现场记录/接入与单向感知不收/客观条目带mid活账本/管线照旧) · 状态记录开关(默认关：不问state_dirty/脏回复不记账/回退总管账本丢弃；群设定改true即时生效：判定与记账恢复) · 思维链(reasoning逐字落盘按mid键控/不进记忆不进任何提示词/删除消息一并清除) · 现场所见(进场检测/发言前等待) · 事件补全(离场锚点纯代码/发现一次合并/事件×参与者限知视角分别注入/首次进场不触发) · 接力判定（判给用户即结束/刚发言压0不可能连续发言/无硬上限） · 接力累计衰减（每判定乘0.8重新发言不重置/衰减最终判回用户/翻转与阻断留痕） · 回退=完整总管 · 未配置=完全兼容')
 } finally {
   rmSync(accDir, { recursive: true, force: true })
   if (hadSettings) writeFileSync(settingsFile, backup ?? '', 'utf8')

@@ -41,7 +41,7 @@ function client(t: LlmTarget): OpenAI {
 }
 
 type CreateArgs = Parameters<OpenAI['chat']['completions']['create']>[0] & Record<string, unknown>
-interface StreamChunk { choices?: Array<{ delta?: { content?: string } }> }
+interface StreamChunk { choices?: Array<{ delta?: { content?: string; reasoning_content?: string; reasoning?: string } }> }
 interface NonStreamResponse {
   choices?: Array<{
     message?: {
@@ -66,6 +66,9 @@ export async function* streamChat(target: LlmTarget, opts: {
   messages: ChatMessage[]
   temperature?: number
   signal?: AbortSignal
+  /** 思维链侧路（只供人类查看的记录）：思考模型的 reasoning 增量原样回调——
+   *  兼容 reasoning_content（DeepSeek）与 reasoning（个别中转）两种字段；缺省不采。 */
+  onReasoning?: (delta: string) => void
 }): AsyncGenerator<string> {
   const stream = (await client(target).chat.completions.create(
     {
@@ -75,8 +78,10 @@ export async function* streamChat(target: LlmTarget, opts: {
     { signal: opts.signal },
   )) as unknown as AsyncIterable<StreamChunk>
   for await (const chunk of stream) {
-    const delta = chunk.choices?.[0]?.delta?.content
-    if (typeof delta === 'string' && delta !== '') yield delta
+    const delta = chunk.choices?.[0]?.delta
+    const rdelta = delta?.reasoning_content ?? delta?.reasoning
+    if (typeof rdelta === 'string' && rdelta !== '') opts.onReasoning?.(rdelta)
+    if (typeof delta?.content === 'string' && delta.content !== '') yield delta.content
   }
 }
 
