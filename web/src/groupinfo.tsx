@@ -143,7 +143,6 @@ function HubView({ group, snap, avatarV, bump, go, refresh }: {
       </div>
       <Cells>
         <Cell title="群聊设定" arrow onTap={() => go('settings')} />
-        <Cell title="我的设定" arrow onTap={() => go('me')} />
       </Cells>
       <Cells>
         <Cell title="纠正窗口" arrow onTap={() => go('director')} />
