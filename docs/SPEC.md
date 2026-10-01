@@ -182,7 +182,7 @@ a fallback full director (deepseek, §6.1c), and a correction window (§6.3).
 
 ```
 <workspace>/
-  规则.md                     # global rules written by the user; injected into all characters
+  规则.jsonl                  # global rules (multi, per-rule toggle) written by the user; enabled ones injected into all characters
   settings.yaml               # provider list + activeId + routerId (gitignored; holds credentials)
   .env                        # optional keys (see §2); gitignored
   groups/                     # user data, gitignored
@@ -193,6 +193,7 @@ a fallback full director (deepseek, §6.1c), and a correction window (§6.3).
       在场.yaml               # scene cache derived from presence rows (§3.9)
       剧情.jsonl              # event log = single source of truth; msg lines are the current context
       判定.jsonl              # judgment/run log for humans only (§3.2a); never enters any context
+      思维链.jsonl             # per-reply thinking chains for humans only (§3.2b); never enters any context
       角色/
         <角色名>/             # directory name = character dirName
           角色.md             # user asset: frontmatter name/appearance + background body (read-only)
@@ -239,6 +240,19 @@ summary, or trigger note, or failure), `事件补全发现` / `离场经历渲�
 discovered events, per-participant render, injected memory; failures included), `纠正` (correction
 window applications). Failures are
 logged with their reason. Served to the frontend via `GET /api/group/{name}/judgments` (§7.2).
+
+### 3.2b 思维链.jsonl (thinking log; humans only)
+
+One line per character reply: `{"id","name","round","ts","thinking"}` — the model's reasoning
+output (`reasoning_content`, or `reasoning` on relays that use that field) captured verbatim via a
+side channel during streaming and keyed by the message id. Like 判定.jsonl it **never enters any
+character, director, or bookkeeper context** — it is not part of 剧情.jsonl, rebuild, ledgers, or
+memory; its only reader is the human-facing `GET /api/group/{name}/message/{id}/thinking`
+endpoint. Lifecycle: appended when the reply is recorded; **overwritten on reroll** (same id — the
+thinking a previous generation produced belongs to a message that no longer exists; an empty new
+thinking clears the record); **removed with the message** on delete; **kept on text edits** (it
+documents what the model thought at generation time). Writing failures are swallowed — they never
+affect the turn.
 
 ### 3.3 ledger payloads (applied by `applyLedgerEvent`; shared by live path and rebuild replay)
 
@@ -301,8 +315,9 @@ statusRecord: <bool>      # 状态记录开关（每群独立；缺省 false=关
 ```
 
 `statusRecord`（状态记录，per-group）gates the automatic status-ledger pipeline: when **off**
-(default), the `state_dirty` question is not asked, the bookkeeper never runs, and status-ledger
-updates from the fallback director are discarded (routing/presence/relay unaffected); when **on**,
+(default), the `state_dirty` question is not asked, the bookkeeper never runs, status-ledger
+updates from the fallback director are discarded, **and characters do not see the ledger section
+in their prompts at all** (§6.2 — routing/presence/relay unaffected); when **on**,
 judgment and recording run as described in §6.1a/§6.1b/§6.1c. The correction window and the
 user's manual ledger edits are explicit user operations and are **not** gated by it. The engine
 re-reads 群设定.yaml every turn, so flipping the switch takes effect on the next turn.
@@ -322,14 +337,20 @@ code fact instead of a guess.
 Frontmatter with optional `name` (default `你`) — how the user is addressed in the story — plus
 free prose. Injected into every character and the director.
 
-### 3.7 规则.md
+### 3.7 全局规则 (规则.jsonl)
 
-Workspace-root file; user-written rules injected into every character (as the
-`【规则（用户设定）】` section, before the closing instruction). Judgment, bookkeeping, and
-correction-window prompts do not consume this file. A missing/empty file injects
-nothing (no built-in content). Re-read every turn. No size budget: injected verbatim `[WHY]` the
-user accepts the per-turn cost rather than losing rules; it is the only injected section without
-a size limit (§5.5 bounds memory only).
+User-written constraint/craft rules, **zero built-in content**, multiple named rules with
+per-rule toggles. Storage: 工作区根 `规则.jsonl`, one line each:
+`{"id","name","enabled","text"}` (deterministic key order). `name` and `enabled` are
+frontend-only labels (list display and the enable/disable pill); `text` is the injected content.
+`loadRules()` concatenates the texts of **enabled, non-empty** rules in list order (all-off or
+none = empty string → nothing injected) and the result is injected into every character (as the
+`【规则（用户设定）】` section, before the closing instruction); judgment, bookkeeping, and
+correction-window prompts do not consume it. A legacy non-empty `规则.md` with no 规则.jsonl
+present is imported once as a single enabled rule (the old file stays in place, superseded).
+Re-read every turn. No size budget per rule: injected verbatim `[WHY]` the user accepts the
+per-turn cost rather than losing rules; it is the only injected section without a size limit
+(§5.5 bounds memory only).
 
 ### 3.8 settings.yaml
 
@@ -748,7 +769,8 @@ description and the prompt; both must stay intact.
 
 System sections in order (empty sections skipped): 你扮演「{name}」; appearance + background;
 personality (initial; current deviation comes from the ledger's 性格演变 inside `ledgerPrompt`);
-relationships (initial; dynamics likewise); status ledger (`ledgerPrompt`, §3.4a); scene section
+relationships (initial; dynamics likewise); status ledger (`ledgerPrompt`, §3.4a; injected **only when the group's 状态记录 is on**, §3.5 —
+the section is omitted entirely otherwise); scene section
 (§4.1: present list, remote links with limits, self-declaration when the character is remote or
 overhearing; **overhearers are never listed to scene members**; an appearance line exposing the
 `角色.md` appearance of the other characters in the scene — appearance only, identity/background/
@@ -768,7 +790,9 @@ last `CONTEXT_WINDOW` messages (default 36), character lines → assistant, ever
 see what their `visible_to` membership grants (§4.5).
 
 Generation: single streaming call (`turnFromMessages`), system message prepended; empty message
-list → no call (info 空回复). `stripNameEcho` removes a leading self-name echo.
+list → no call (info 空回复). `stripNameEcho` removes a leading self-name echo. The model's
+reasoning output travels a side channel (`onReasoning`) into 思维链.jsonl (§3.2b) — it never
+enters the story.
 
 ### 6.3 Correction window
 
@@ -813,13 +837,14 @@ stale-entry heal (§5.3).
 | `POST /api/groups` | create group (name validated; generates empty 用户.md) |
 | `PUT /api/group/{name}/settings` · `GET\|PUT /api/group/{name}/user` | group settings; user persona (sessions dropped on change) |
 | `POST /api/group/{name}/character` · `GET\|PUT /api/group/{name}/character/{dir}` | create / read / update character initial definition (`:dir` validated by `isValidName`; update refuses duplicate names and writes a `rename` row) |
-| `POST /api/group/{name}/message/{id}/edit` · `.../delete` | edit (physical rewrite + memory rewrite) / delete (physical removal + memory cleanup) |
+| `POST /api/group/{name}/message/{id}/edit` · `.../delete` | edit (physical rewrite + memory rewrite) / delete (physical removal + memory + thinking cleanup) |
+| `GET /api/group/{name}/message/{id}/thinking` | the reply's thinking chain (思维链.jsonl, §3.2b; humans only; empty string = no record) |
 | `GET\|POST /api/group/{name}/character/{dir}/memory` · `DELETE .../memory/{index}` | memory view / add (`用户指定`) / retract by index |
 | `GET\|PUT /api/group/{name}/avatar` · `GET\|PUT /api/group/{name}/user/avatar` · `GET\|PUT /api/group/{name}/character/{dir}/avatar` | avatars — display-only, never sent to any model or director. PUT body = raw image bytes (JPEG/PNG/WebP/GIF, magic-byte checked, ≤2 MiB; the client downscales to a square JPEG before upload). GET → 404 = unset. Storage: `头像.dat` in the group dir (group avatar) / character dir (character avatar), `用户头像.dat` in the group dir (user persona avatar) |
 | `GET\|PUT /api/group/{name}/character/{dir}/ledger` | status ledger read / whole-snapshot user update |
 | `GET\|POST /api/group/{name}/scenes` · `PUT .../scenes/{scene}` | scene map: list / create (name immutable once created, no delete) / edit description |
 | `GET\|POST /api/group/{name}/director` | correction window history / speak |
-| `GET\|PUT /api/rules` | global rules |
+| `GET\|PUT /api/rules` | global rules list (`{rules:[{id,name,enabled,text}]}`; PUT saves the whole list, name/enabled are frontend labels) |
 | `GET\|POST /api/models` · `PUT\|DELETE /api/models/{id}` · `POST /api/models/{id}/activate` · `PUT /api/models/router` | provider management; deleting the active provider falls back to the first; the router endpoint sets/clears the fast-path provider (deleting that provider clears it too) |
 
 Errors: thrown → 400 `{"error"}`. Session cache `Map<群名, GroupSession>`; invalidated on group
@@ -919,8 +944,10 @@ theme only — deliberate). Desktop widths letterbox the app into a centered 520
 
 - **Shell** (`App.tsx`): three bottom tabs — 主页面 (group list: avatar / last-message preview /
   relative time, per-group snapshots fetched for previews; pull-less reload on mount; search
-  filter; ＋ → new-group page) · **全局** (a two-entry hub: 全局规则 = 规则.md editor, save =
-  PUT /api/rules; **正则替换** = display-layer rewrite rules, see below) · 模型配置 (custom
+  filter; ＋ → new-group page) · **全局** (a two-entry hub: 全局规则 = a list of named rules with
+  per-rule enable pills; ＋ 添加全局规则 and tapping a rule page-navigate to a name + text editor
+  with delete; save/toggle = PUT /api/rules with the whole list; **正则替换** = display-layer
+  rewrite rules, see below) · 模型配置 (custom
   dialogue provider + optional Jev key, per §7.5 amendment). View stack: chat, chat-info, new group.
   The **new-group page** builds the map at creation: scene rows (名称 + 描述, added/removed
   locally) with one checked as the 初始当前场景; creation POSTs `{name, era, world, tone, scenes, scene}`.
@@ -940,8 +967,10 @@ theme only — deliberate). Desktop widths letterbox the app into a centered 520
   前往地点, down-onto-line for 客观注入); tapping the green button again — or the menu's cancel
   row — disarms and restores ⋯. The two arms are mutually exclusive. Objective lines render a
   `[客观注入]` prefix in the bubble (display only). User = green bubbles right with own avatar; characters = white
-  bubbles left with avatar and name label. Long-press (450 ms; desktop right-click) opens an
-  action sheet: 修改 / 删除 / 批量删除 (+ 重掷这条回复 on the last character message). 批量删除
+  bubbles left with avatar and name label; tapping a message avatar that has an image set opens a
+  read-only viewer modal (fallback letter avatars are not clickable). Long-press (450 ms; desktop right-click) opens an
+  action sheet: 修改 / 复制 / 查看思维链 (character messages only — read-only floating modal with
+  that reply's thinking chain, §3.2b) / 删除 / 批量删除 (+ 重掷这条回复 on the last character message). 批量删除
   enters a select mode: checkboxes beside rows, tapping toggles, the composer is replaced by a
   取消 / 删除（N） bar, one confirm (text states the text is removed from the log) then the
   selected messages are deleted sequentially. **During a turn** the messages after the last
@@ -960,7 +989,8 @@ theme only — deliberate). Desktop widths letterbox the app into a centered 520
   layout viewport unchanged (e.g. iOS Safari) would cover the composer — accepted: the fleet is
   Android + desktop.
 - **聊天信息** (`groupinfo.tsx`, the ⋯ button): avatar block (group avatar + member avatars +
-  我) and six pages — 群聊设定 · 我的设定 (user persona + user avatar) · 纠正窗口 (rendered
+  我 — tapping the 我 avatar opens 我的设定, the user persona + user avatar page) and six
+  pages — 群聊设定 · 我的设定 (user persona + user avatar; reached from the 我 avatar, no hub row) · 纠正窗口 (rendered
   as a chat: user green bubbles right, 总管 white bubbles left with name label, applied summary
   under the reply) ·
   **场景** (map page: create-scene form + list; tapping a scene edits its description in a modal —
