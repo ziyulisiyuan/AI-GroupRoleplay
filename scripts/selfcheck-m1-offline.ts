@@ -37,6 +37,7 @@ name: 角色乙
 world: |
   （测试世界观）
 tone:
+statusRecord: true
 `)
 
   const chars = loadCharacters(groupDir)

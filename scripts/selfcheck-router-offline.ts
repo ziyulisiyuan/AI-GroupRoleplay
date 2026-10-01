@@ -1027,10 +1027,14 @@ try {
     const askedOff = Object.keys((jev.hits[0]?.body as { questions: Record<string, unknown> }).questions)
     assert.ok(!askedOff.includes('state_dirty'), '状态记录关：主判定不问状态门')
     assert.equal(ds.hits.filter(h => h.kind === 'bookkeep').length, 0, '状态记录关：脏回复也不记账')
+    const streamOff = ds.hits.filter(h => h.kind === 'stream')
+    assert.ok(streamOff.length > 0 && streamOff.every(h => !JSON.stringify(h.body).includes('你当前的状态账本')), '状态记录关：角色生成请求体不含状态账本（角色连读都不读）')
     writeFileSync(join(accDir, '群设定.yaml'), "era: （测试用时代背景）\nworld: |\n  （测试用世界观）\ntone: \nstatusRecord: true\n", 'utf8')
     for await (const ev of session.speak('（又发生了可怕的事）')) void ev
     const askedOn = Object.keys((jev.hits[2]?.body as { questions: Record<string, unknown> }).questions)
     assert.ok(askedOn.includes('state_dirty'), '状态记录开：状态门恢复判定')
+    const streamOn = ds.hits.filter(h => h.kind === 'stream').slice(streamOff.length)
+    assert.ok(streamOn.length > 0 && streamOn.every(h => JSON.stringify(h.body).includes('你当前的状态账本')), '状态记录开：角色生成请求体含状态账本')
     for (let i = 0; i < 40; i++) {
       if (fsReadFileSync(join(accDir, '角色', '角色甲', '状态.yaml'), 'utf8').includes('紧张')) break
       await new Promise(r => setTimeout(r, 250))

@@ -77,6 +77,9 @@ try {
   assert.ok(!system.includes('（基调）'), '基调只给总管，不得下发角色')
   // 规则为空时不得出现空标题
   assert.ok(!assembleGroup(chars[0], gs, history, { files, rules: '   ' }).system.includes('【规则（用户设定）】'), '空规则不得注入标题')
+  // 状态账本注入随状态记录开关：关（建群默认）→ 角色提示词整段不出现；开 → 照常注入
+  assert.ok(!assembleGroup(chars[0], gs, history, { files }).system.includes('【你当前的状态账本'), '状态记录关：角色不读状态账本')
+  assert.ok(assembleGroup(chars[0], { ...gs, statusRecord: true }, history, { files }).system.includes('【你当前的状态账本'), '状态记录开：角色照常读状态账本')
 
   // 回填草稿
   const draft = readCharacterDraft(groupDir, '角色甲')

@@ -55,7 +55,9 @@ export function assembleGroup(
     personality !== '' ? personality : '',
     relationships !== '' ? `【人物关系】\n${relationships}` : '',
   ].filter(s => s !== '')
-  const status = files !== undefined ? ledgerPrompt(files.status) : ''
+  // 状态账本（§3.4a）：只在状态记录开启（群设定）时注入——关闭时角色连读都不读，
+  // 提示词里整段消失（而不是读一排"无"）。性格/人物关系是用户初始资产，不受开关影响。
+  const status = files !== undefined && settings.statusRecord === true ? ledgerPrompt(files.status) : ''
   // 用户设定：每个角色都该知道你是谁（称呼 + 你写的自述）
   const user = userPersona !== undefined && (userPersona.text !== '' || userPersona.name !== '你')
     ? `【和你对话的人】\n称呼：${userPersona.name}${userPersona.text !== '' ? `\n${userPersona.text}` : ''}`
