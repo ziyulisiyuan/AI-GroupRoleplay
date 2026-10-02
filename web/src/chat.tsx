@@ -6,7 +6,7 @@
  * - 消息操作走长按（桌面右键等效）：编辑 / 重掷（仅最后一条角色消息）/ 删除（物理删除，
  *   确认文案按 SPEC 必须说明日志不保留原文）。
  */
-import React, { useCallback, useEffect, useRef, useState } from 'react'
+import React, { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { avatarUrl, getJson, getThinking, postJson, postStream, readNdjson, type Ev, type Msg, type Snapshot } from './api.ts'
 import { applyRules } from './regex.ts'
 import { Avatar, Confirm, Modal, NavBar, useLongPress, useToast } from './ui.tsx'
@@ -87,8 +87,10 @@ export function ChatView({ group, onBack, onOpenInfo }: Props): React.ReactEleme
     }
   }, [])
 
-  // 新内容贴底：仅当用户本来就在底部（不抢上翻查看历史的滚动位置）
-  useEffect(() => {
+  // 新内容贴底：仅当用户本来就在底部（不抢上翻查看历史的滚动位置）。
+  // 必须用 useLayoutEffect（绘制前同步执行）：useEffect 在绘制后才跑，移动端首帧会
+  // 露出未滚动的列表顶部、再跳到底部（长对话 DOM 大、帧时序慢时肉眼可见）。
+  useLayoutEffect(() => {
     const el = scroller.current
     if (el === null || !pinned.current) return
     el.scrollTop = el.scrollHeight
@@ -430,9 +432,8 @@ export function ChatView({ group, onBack, onOpenInfo }: Props): React.ReactEleme
         )}
       </Modal>
 
-      {/* 头像查看（只读悬浮）：点消息头像放大看图；未设置头像的消息没有此入口。
-          关闭即卸载：大图在收起动画期间会出现白色亮带伪影（仅此弹窗），直接关掉。 */}
-      <Modal open={viewAvatar !== null} instantClose onClose={() => setViewAvatar(null)} title={viewAvatar === null ? '' : `${viewAvatar.name} 的头像`}>
+      {/* 头像查看（只读悬浮）：点消息头像放大看图；未设置头像的消息没有此入口 */}
+      <Modal open={viewAvatar !== null} onClose={() => setViewAvatar(null)} title={viewAvatar === null ? '' : `${viewAvatar.name} 的头像`}>
         {viewAvatar !== null && <img className="avatar-view" src={viewAvatar.url} alt={viewAvatar.name} />}
       </Modal>
 

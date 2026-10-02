@@ -272,29 +272,32 @@ export function CheckCell({ on, label, onToggle }: { on: boolean; label: React.R
 
 /* ---------- 悬浮弹窗（居中）/ 确认框 ---------- */
 
-export function Modal({ open, onClose, title, children, instantClose = false }: {
+export function Modal({ open, onClose, title, children }: {
   open: boolean
   onClose: () => void
   title?: string
   children?: React.ReactNode
-  /** 关闭即卸载（不播 200ms 收起动画）：内容含大图等重合成层的弹窗用它，避免收起动画期间的渲染伪影。 */
-  instantClose?: boolean
 }): React.ReactElement | null {
   const [render, setRender] = useState(open)
+  // 关闭动画期间冻结标题与内容：调用方关闭时通常会把驱动内容的状态置空，
+  // 若淡出中途按新状态渲染，弹窗会先塌缩（菜单缩水/图片消失）再消失——观感上就是闪一下。
+  // 冻结最后一次打开时的标题与内容，淡出全程画面静止，动画结束才卸载。
+  const frozen = useRef<{ title?: string; children?: React.ReactNode }>({})
+  if (open) frozen.current = { title, children }
   useEffect(() => {
     if (open) { setRender(true); return }
-    if (instantClose) { setRender(false); return }
     const t = setTimeout(() => setRender(false), 200) // 收起动画播完再卸载
     return () => clearTimeout(t)
-  }, [open, instantClose])
+  }, [open])
   if (!render) return null
   const closing = !open
+  const shown = closing ? frozen.current : { title, children }
   return (
     <div className={'dialog' + (closing ? ' closing' : '')}>
       <div className="dialog-mask" onClick={onClose} />
       <div className="modal-box">
-        {title !== undefined && <div className="modal-title">{title}</div>}
-        <div className="modal-body">{children}</div>
+        {shown.title !== undefined && <div className="modal-title">{shown.title}</div>}
+        <div className="modal-body">{shown.children}</div>
       </div>
     </div>
   )
