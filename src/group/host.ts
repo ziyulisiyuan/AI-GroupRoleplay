@@ -19,6 +19,9 @@ export interface AssembleInput {
   /** 在场其他角色的外观层（名字 → 角色.md 外观）。只开放外观；身份/背景/性格/状态账本不可见。 */
   appearances?: Record<string, string>
   files?: CharacterFiles
+  /** 该角色**撤回过的消息 id**（记忆面板/纠正窗口撤回，§5.3）：撤回 = 从记忆与上下文同时消失，
+   *  组装窗口据此跳过——否则撤回只删账本条目，消息仍会从窗口被读到。 */
+  suppressedMids?: ReadonlySet<number>
   /** §4.2 #4：由 buildMemory 产出的记忆注入片段 */
   memoryText?: string
   /** §3.1.1：用户自己的设定 */
@@ -113,10 +116,13 @@ export function assembleGroup(
     roleplayInstruction(persona.name),
   ].filter(s => s !== '').join('\n')
 
-  // 可见性过滤（§4.3）：私聊消息对其他角色不可见——物理上看不到，而非"假装没看到"。
-  // 只注入最近 12 条可见消息（§6.2 消息窗口）：更早的内容由记忆注入承担，上下文不随剧情无限膨胀。
+  // 可见性过滤（§4.3）：私聊消息对其他角色不可见——物理上看不到，而非"假装没看到"；
+  // 撤回过的消息（suppressedMids，§5.3）同样不进窗口：撤回 = 从记忆与上下文同时消失。
+  // 只注入最近 CONTEXT_WINDOW 条可见消息（§6.2 消息窗口）：更早的内容由记忆注入承担，上下文不随剧情无限膨胀。
+  const suppressed = input.suppressedMids
   const visibleHistory = history.filter(m =>
-    m.name === persona.name && m.role === 'character' ? true : (m.visible_to === 'all' || m.visible_to.includes(persona.name)),
+    (suppressed === undefined || !suppressed.has(m.id))
+    && (m.name === persona.name && m.role === 'character' ? true : (m.visible_to === 'all' || m.visible_to.includes(persona.name))),
   ).slice(-config.contextWindow)
   const mapped = visibleHistory.map(m => ({
     role: (m.name === persona.name && m.role === 'character' ? 'assistant' : 'user') as 'user' | 'assistant',

@@ -477,7 +477,9 @@ not (the snapshot precedes their entry). Character
 replies: judged after streaming completes, before append, independently of the user message's
 judgment (not hearing one whisper does not imply not hearing a later shout). `visible_to` governs
 both the message window (§6.2) and ledger transplant (§5.2) — context and memory agree from
-birth. Deleted messages are excluded from the view and their ledger entries removed (§5.3).
+birth. Deleted messages are excluded from the view and their ledger entries removed (§5.3); a
+per-character retraction (§5.3) subtracts from the view too, so retracting a memory entry removes
+the message from that character's window as well.
 
 ### 4.5 Linked and overhearing characters
 
@@ -530,7 +532,9 @@ the suppression set are never re-registered (§5.3). Suppression source: user re
 
 - Add: `source=用户指定` append (affects only that character).
 - Retract: by `mid` (preferred) or by exact text; a `mid` retract also suppresses the mid against
-  future backfill.
+  future backfill **and removes the message from that character's context window** — retraction
+  means the character no longer perceives it (memory and window agree; other characters are
+  unaffected, and the msg line itself is not rewritten).
 - Deleting a message physically removes its line and ledger rows; `backfillAll` additionally heals
   any entry whose `mid` references a message that no longer exists in the log at all.
 

@@ -601,6 +601,7 @@ export class GroupSession {
       this.store.effectiveMessages().filter(m => m.id !== last.id),
       {
         files,
+        suppressedMids: this.suppressedMids(last.name),
         memoryText: files !== undefined ? buildMemory(this.store, last.name, files.memory) : '',
         userPersona: this.userPersona,
         rules: this.rules,
@@ -989,6 +990,7 @@ export class GroupSession {
     }
     const { system, messages } = assembleGroup(persona, this.settings, history, {
       files,
+      suppressedMids: this.suppressedMids(name),
       memoryText: buildMemory(this.store, name, files.memory),
       userPersona: this.userPersona,
       rules: this.rules,

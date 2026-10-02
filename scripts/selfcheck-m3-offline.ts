@@ -67,7 +67,18 @@ try {
   assert.ok(flat.includes('第15句') && flat.includes('第50句'), `最近 ${config.contextWindow} 条必须注入`)
   assert.ok(win.system.includes('你扮演「角色甲」'), '组装必须产出 system（生产路径要作为首条消息发送）')
 
-  console.log('M3 离线自检通过：可见性过滤 / 自动登记幂等（原文移植） / 注入预算截断 / 消息窗口=CONTEXT_WINDOW')
+  // 5) 撤回即不再可见：suppressedMids 里的消息不进组装窗口——撤回 = 从记忆与上下文同时消失
+  //    （否则撤回只删账本条目，消息仍会从窗口被读到；自己发过的话同样生效）
+  const firstId = all[0]?.id
+  const ownId = all.find(m => m.name === '角色甲')?.id
+  assert.ok(firstId !== undefined && ownId !== undefined, '前置：窗口内存在他人消息与本人消息')
+  assert.ok(JSON.stringify(visible.messages).includes('（公开发言一）'), '前提：未撤回时他人消息可见')
+  const hideOther = assembleGroup(persona, settings, all, { suppressedMids: new Set([firstId]) })
+  assert.ok(!JSON.stringify(hideOther.messages).includes('（公开发言一）'), '撤回过的他人消息不得进入该角色上下文')
+  const hideOwn = assembleGroup(persona, settings, all, { suppressedMids: new Set([ownId]) })
+  assert.ok(!JSON.stringify(hideOwn.messages).includes('（本人公开发言）'), '撤回过的本人发言同样不得进入上下文')
+
+  console.log('M3 离线自检通过：可见性过滤 / 自动登记幂等（原文移植） / 注入预算截断 / 消息窗口=CONTEXT_WINDOW / 撤回消息不进窗口（记忆与上下文同心）')
 } finally {
   rmSync(dir, { recursive: true, force: true })
 }
