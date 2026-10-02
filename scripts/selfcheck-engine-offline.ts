@@ -7,7 +7,7 @@
  * 5) 改名：重名拒绝 + rename 名字链归一（ledger 重放不丢历史）。
  */
 import assert from 'node:assert/strict'
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { config } from '../src/config.ts'
@@ -16,6 +16,7 @@ import { GroupSession } from '../src/group/engine.ts'
 import { buildGroupFixture, TEST_CAST } from './lib/fixture.ts'
 import { applyLedgerEvent, emptyFiles } from '../src/group/status.ts'
 import { createCharacter, updateCharacter } from '../src/group/scaffold.ts'
+import { recordThinking } from '../src/group/thinking.ts'
 
 const accName = '_selfcheck-engine'
 const accDir = join(config.groupsDir, accName)
@@ -126,7 +127,34 @@ try {
     rmSync(join(accDir, '角色', '角色丁'), { recursive: true, force: true }) // 清理测试角色目录
   }
 
-  console.log('引擎离线自检通过：坏行忽略·id续号 · text撤回不复活(重启/重放) · edit活账本(含撤回尊重) · 删除消息=记忆一并撤回 · 改名名字链')
+  // ── 6) 清空记录：msg+ledger 行移除、记忆/状态文件清空、思维链清空、id 不复用；
+  //        route/presence/director/rename 行与 header 保留（operational 历史不清理）
+  {
+    const s5 = GroupSession.open(accName)
+    const before = s5.store.allLines.length
+    const beforeOps = s5.store.allLines.filter(l => l.type === 'route' || l.type === 'presence' || l.type === 'director' || l.type === 'rename').length
+    assert.ok(beforeOps > 0, '前置：存在 operational 行')
+    writeFileSync(join(accDir, '角色', '角色甲', '状态.yaml'), '生理状态: （清空前）\n')
+    s5.addMemory('角色甲', '（清空前的记忆）')
+    recordThinking(accDir, s5.store.nextMsgId, '角色甲', 1, '（清空前的思维链）')
+    const nextIdBefore = s5.store.nextMsgId
+    await s5.clearRecords()
+    assert.equal(s5.snapshot().messages.length, 0, '消息全部移除')
+    const kept = s5.store.allLines
+    assert.ok(kept.length < before, '日志行已减少')
+    assert.equal(kept.filter(l => l.type === 'msg' || (l.type === 'ledger' && l.section === 'knowledge')).length, 0, 'msg 与 ledger 行全部移除')
+    assert.equal(kept.filter(l => l.type === 'route' || l.type === 'presence' || l.type === 'director' || l.type === 'rename').length, beforeOps, 'operational 行保留')
+    assert.equal(s5.store.nextMsgId, nextIdBefore, 'header.lastMsgId 保留：消息 id 不复用')
+    assert.ok(!readFileSync(join(accDir, '角色', '角色甲', '状态.yaml'), 'utf8').includes('（清空前）'), '状态账本已清空')
+    assert.ok(!readFileSync(join(accDir, '角色', '角色甲', '记忆.jsonl'), 'utf8').includes('清空前的记忆'), '记忆已清空')
+    assert.ok(!existsSync(join(accDir, '思维链.jsonl')) || readFileSync(join(accDir, '思维链.jsonl'), 'utf8').trim() === '', '思维链已清空')
+    assert.ok(readFileSync(join(accDir, '角色', '角色甲', '角色.md'), 'utf8').includes('角色甲'), '角色资产不受影响')
+    const s6 = GroupSession.open(accName)
+    assert.equal(s6.snapshot().messages.length, 0, '重启后仍为空')
+    assert.equal(s6.store.append('user', '你', '（清空后的第一句）').id, nextIdBefore, '清空后 id 从续号继续')
+  }
+
+  console.log('引擎离线自检通过：坏行忽略·id续号 · text撤回不复活(重启/重放) · edit活账本(含撤回尊重) · 删除消息=记忆一并撤回 · 改名名字链 · 清空记录(消息+账本行移除/记忆状态清空/思维链清空/id不复用/operational行与判定日志保留)')
 } finally {
   rmSync(accDir, { recursive: true, force: true })
   rmSync(tmp, { recursive: true, force: true })

@@ -674,13 +674,13 @@ export async function jevRoute(input: JevRouteInput): Promise<JevRouteResult | u
 }
 
 /**
- * 回复后的合并判定（一次 Jev 调用回答整段"回复后"问题，替代旧的一次知情 + 一次接力两连调）：
+ * 回复后的合并判定（一次 Jev 调用同时回答四问——知情名单、状态总门、转告触发、接力）：
  * - knows_<候选>：这段回复的知情名单（visible_to 用，发言者本人不在候选内）；
  * - state_dirty：状态账本总门（缺答案 = true，安全侧）；
  * - told_<候选>：这段回复是否在向谁转告他原本不知道的事（额外记忆一段触发）；
  * - next_speaker：接力判定（用户也在候选）。
  * 任何整体失败返回 undefined——调用方按部分各自的保底走：知情=现场∩感知完整、记账=照跑、
- * 转告=无、接力=发言权交还用户（与旧的接力失败行为一致）。
+ * 转告=无、接力=发言权交还用户。
  */
 export interface JevAfterReplyResult {
   /** 能感知到这段回复的角色（缺答案者不算入）。 */

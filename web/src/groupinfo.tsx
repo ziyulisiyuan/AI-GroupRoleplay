@@ -10,7 +10,7 @@ import {
   avatarUrl, delJson, enc, getJson, postJson, putJson,
   type Draft, type JudgeRow, type MemoryEntry, type Snapshot,
 } from './api.ts'
-import { Avatar, AvatarPicker, Cell, Cells, CheckCell, Field, Modal, NavBar, useToast } from './ui.tsx'
+import { Avatar, AvatarPicker, Cell, Cells, CheckCell, Confirm, Field, Modal, NavBar, useToast } from './ui.tsx'
 import type { Scene } from './api.ts'
 
 export const LEDGER_KEYS = ['生理状态', '心理状态', '外观状态', '位置状态', '性格演变', '姓名变化', '人物关系变化'] as const
@@ -25,7 +25,7 @@ const VIEW_TITLES: Record<Exclude<InfoView, { char: string } | { charSub: string
   log: '运行日志', scenes: '场景',
 }
 
-export function InfoRoot({ group, onExit }: { group: string; onExit: () => void }): React.ReactElement {
+export function InfoRoot({ group, onExit, onDeleted }: { group: string; onExit: () => void; onDeleted: () => void }): React.ReactElement {
   const [stack, setStack] = useState<InfoView[]>(['hub'])
   const [snap, setSnap] = useState<Snapshot | null>(null)
   const [avatarV, setAvatarV] = useState(1)
@@ -56,7 +56,7 @@ export function InfoRoot({ group, onExit }: { group: string; onExit: () => void 
     <div className="page page-enter">
       <NavBar title={title} onBack={pop} />
       <div className="scroll">
-        {top === 'hub' && <HubView group={group} snap={snap} avatarV={avatarV} bump={bump} go={push} refresh={refresh} />}
+        {top === 'hub' && <HubView group={group} snap={snap} avatarV={avatarV} bump={bump} go={push} refresh={refresh} onDeleted={onDeleted} />}
         {top === 'settings' && <SettingsView group={group} snap={snap} onSaved={refresh} />}
         {top === 'me' && <MeView group={group} snap={snap} avatarV={avatarV} bump={bump} onSaved={refresh} />}
         {top === 'director' && <DirectorView group={group} onChanged={refresh} />}
@@ -87,16 +87,57 @@ export function InfoRoot({ group, onExit }: { group: string; onExit: () => void 
 
 /* ---------- 聊天信息（首页） ---------- */
 
-function HubView({ group, snap, avatarV, bump, go, refresh }: {
+function HubView({ group, snap, avatarV, bump, go, refresh, onDeleted }: {
   group: string
   snap: Snapshot | null
   avatarV: number
   bump: () => void
   go: (v: InfoView) => void
   refresh: () => Promise<void>
+  onDeleted: () => void
 }): React.ReactElement {
   const toast = useToast()
   const [busy, setBusy] = useState(false)
+  const [clearConfirm, setClearConfirm] = useState(false)
+  const [delGroupConfirm, setDelGroupConfirm] = useState(false)
+  const pinned = snap?.pinned === true
+  const togglePin = async (): Promise<void> => {
+    if (busy || snap === null) return
+    setBusy(true)
+    try {
+      await putJson(`/api/group/${enc(group)}/pin`, { on: !pinned })
+      await refresh()
+    } catch (e) {
+      toast(e instanceof Error ? e.message : String(e))
+    } finally {
+      setBusy(false)
+    }
+  }
+  const clearRecords = async (): Promise<void> => {
+    if (busy) return
+    setBusy(true)
+    try {
+      await postJson(`/api/group/${enc(group)}/clear-records`, {})
+      onDeleted() // 清空后回到主页：聊天页与新快照在下次进入时重建
+    } catch (e) {
+      toast(e instanceof Error ? e.message : String(e))
+    } finally {
+      setBusy(false)
+    }
+  }
+  const deleteGroup = async (): Promise<void> => {
+    if (busy) return
+    setBusy(true)
+    try {
+      await delJson(`/api/group/${enc(group)}`)
+      toast('群聊已删除')
+      onDeleted()
+    } catch (e) {
+      toast(e instanceof Error ? e.message : String(e))
+    } finally {
+      setBusy(false)
+    }
+  }
   const statusRecord = snap?.statusRecord === true
   const toggleStatusRecord = async (): Promise<void> => {
     if (busy || snap === null) return
@@ -143,6 +184,13 @@ function HubView({ group, snap, avatarV, bump, go, refresh }: {
       </div>
       <Cells>
         <Cell title="群聊设定" arrow onTap={() => go('settings')} />
+        <button className="cell" disabled={busy} onClick={() => void togglePin()}>
+          <div className="cell-title"><div className="main">置顶聊天</div></div>
+          <span className={'switch' + (pinned ? ' on' : '')}><span className="knob" /></span>
+        </button>
+        <button className="cell" disabled={busy} onClick={() => setClearConfirm(true)}>
+          <div className="cell-title"><div className="main">删除记录</div></div>
+        </button>
       </Cells>
       <Cells>
         <Cell title="纠正窗口" arrow onTap={() => go('director')} />
@@ -159,6 +207,23 @@ function HubView({ group, snap, avatarV, bump, go, refresh }: {
       <Cells>
         <Cell title="运行日志" arrow onTap={() => go('log')} />
       </Cells>
+      <Cells>
+        <button className="danger-row" disabled={busy} onClick={() => setDelGroupConfirm(true)}>删除</button>
+      </Cells>
+      <Confirm
+        open={clearConfirm}
+        text="清空所有聊天记录与状态账本？此操作无法恢复。"
+        okText="确定"
+        onOk={() => void clearRecords()}
+        onClose={() => setClearConfirm(false)}
+      />
+      <Confirm
+        open={delGroupConfirm}
+        text="是否要删除该群聊，删除后无法恢复。"
+        okText="确定"
+        onOk={() => void deleteGroup()}
+        onClose={() => setDelGroupConfirm(false)}
+      />
     </>
   )
 }

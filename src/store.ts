@@ -333,6 +333,14 @@ export class StoryStore {
     return this.messages
   }
 
+  /** 清空聊天记录（聊天信息页「删除记录」）：移除全部 msg 行与 ledger 行（聊天与账本记忆），
+   *  route/presence/director/rename 行与 header.lastMsgId 保留——operational 历史不清理，
+   *  消息 id 永不复用。 */
+  clearChatRecords(): void {
+    this.lines = this.lines.filter(l => l.type !== 'msg' && l.type !== 'ledger')
+    this.rewrite()
+  }
+
   /** 最后一条角色消息（swipe/编辑的目标定位；用可见视图）。 */
   lastCharacterMessage(): MsgLine | undefined {
     return [...this.effectiveMessages()].reverse().find(m => m.role === 'character')

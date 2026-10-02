@@ -33,7 +33,7 @@ export function isValidName(name: string): boolean {
 }
 
 export function saveGroupSettings(groupDir: string, s: GroupSettings): void {
-  writeFileSync(groupSettingsPath(groupDir), dumpYaml({ era: s.era, world: s.world, tone: s.tone, scene: s.scene, statusRecord: s.statusRecord === true }, { lineWidth: -1 }), 'utf8')
+  writeFileSync(groupSettingsPath(groupDir), dumpYaml({ era: s.era, world: s.world, tone: s.tone, scene: s.scene, statusRecord: s.statusRecord === true, pinned: s.pinned === true }, { lineWidth: -1 }), 'utf8')
 }
 
 /** 建群：目录 + 群设定.yaml（含初始当前场景）+ 场景文件 + 空的 用户.md 模板。已存在则抛错。 */

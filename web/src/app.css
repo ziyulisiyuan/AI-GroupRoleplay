@@ -528,3 +528,14 @@ button.cell:active, .cell.tap:active { background: var(--bg-press); }
 }
 .dir-input-bar button { flex: none; height: 40px; padding: 0 var(--s-4); border-radius: var(--r-btn); background: var(--brand); color: #fff; font-size: var(--fs-sub); }
 .dir-input-bar button:disabled { background: #c9e9d6; }
+
+/* 危险操作行（删除群聊）：白底红字居中，置底 */
+.danger-row {
+  display: block;
+  width: 100%;
+  padding: 14px 0;
+  background: var(--bg-cell);
+  text-align: center;
+  color: var(--danger);
+  font-size: var(--fs-cell);
+}

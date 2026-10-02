@@ -8,7 +8,7 @@
  * 5) 端到端 speak：快路径（Jev 路由）→ 合并判定（知情+总门+转告+接力一次调用）→ 记账门控
  *    （无变化零 DeepSeek 调用）→ 额外记忆移植（幂等：无缺失轮不再触发二段）→
  *    接力累计衰减（刚发言压0：不可能连续发言；权重每判定乘0.8且重新发言不重置；无硬上限，衰减最终判回用户）；
- *    Jev 故障 → 整轮回退 deepseek 完整总管（行为与旧版一致，记账随总管结果即时应用）。
+ *    Jev 故障 → 整轮回退 deepseek 完整总管（记账随总管结果即时应用）。
  * settings.yaml 若存在则备份、结束恢复（测试注入 routerId/activeId 指向本地 mock）。
  */
 import assert from 'node:assert/strict'
@@ -33,7 +33,7 @@ const hadRules = existsSync(rulesFile)
 const rulesBackup = hadRules ? fsReadFileSync(rulesFile, 'utf8') : undefined
 const RULES_MARKER = '（测试规则·仅角色可见标记）'
 writeFileSync(rulesFile, RULES_MARKER + '\n', 'utf8')
-// 规则.jsonl 同样纳入夹具保护：杂散的空/旧列表文件会遮蔽 规则.md 的虚拟迁移，必须先移走再测
+// 规则.jsonl 存在时优先于 规则.md 读取：夹具先移除它，注入边界按 规则.md 的标记断言
 const rulesListFile = join(config.root, '规则.jsonl')
 const hadRulesList = existsSync(rulesListFile)
 const rulesListBackup = hadRulesList ? fsReadFileSync(rulesListFile, 'utf8') : undefined
@@ -379,7 +379,7 @@ try {
     assert.ok(!types.includes('ledger'), '后台记账不再发实时 ledger 事件（流及时结束，不锁输入）')
     assert.equal(events.filter(e => e.type === 'route').length, 1, '接力判给用户：只有一个 route 事件')
     assert.equal(ds.hits.filter(h => h.kind === 'route').length, 0, '快路径成功时不得再调 deepseek 路由')
-    assert.equal(jev.hits.length, 2, 'Jev 调用：1 主判定 + 1 合并判定（旧版要 3 次）')
+    assert.equal(jev.hits.length, 2, 'Jev 调用：1 主判定 + 1 合并判定')
 
     // 等后台记账落盘（后台任务与流并行，需轮询等待）
     for (let i = 0; i < 40; i++) {
@@ -475,7 +475,7 @@ try {
     assert.equal(routeEvents.length, 2, '接力应产生两个 route 事件（甲、乙）')
     assert.equal(routeEvents[1]?.picked, '角色乙', '接力判给乙')
     assert.equal(replyEvents.length, 2, '甲、乙各回复一次，然后交还用户')
-    assert.equal(jev.hits.length, 3, 'Jev 调用：1 主判定 + 2 合并判定（旧版要 5 次）')
+    assert.equal(jev.hits.length, 3, 'Jev 调用：1 主判定 + 2 合并判定')
     assert.equal(ds.hits.filter(h => h.kind === 'bookkeep').length, 0, '全程无状态变化：记账门控把 DeepSeek 记账省到零')
     ds.server.close(); jev.server.close()
   }
@@ -1127,7 +1127,7 @@ try {
     ds.server.close(); jev.server.close()
   }
 
-  // ── 5) 端到端：Jev 故障 → 整轮回退 deepseek 完整总管（行为与旧版一致）
+  // ── 5) 端到端：Jev 故障 → 整轮回退 deepseek 完整总管
   {
     const ds = await mockDeepseek({
       route: { next_speaker: '角色甲', reason: '回退路由', 状态账本: [{ character: '角色甲', 心理状态: '如常' }] },
@@ -1197,7 +1197,7 @@ try {
     const { GroupSession } = await import('../src/group/engine.ts')
     const session = GroupSession.open(accName)
     for await (const ev of session.speak('最后一句')) void ev
-    assert.equal(ds.hits.filter(h => h.kind === 'route').length, 1, '未配置快路径时走完整总管（旧版行为）')
+    assert.equal(ds.hits.filter(h => h.kind === 'route').length, 1, '未配置快路径时走完整总管')
     assert.equal(ds.hits.filter(h => h.kind === 'stream').length, 1)
     ds.server.close()
   }

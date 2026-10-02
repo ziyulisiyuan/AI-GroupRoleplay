@@ -38,6 +38,8 @@ export interface Snapshot {
   routes: Route[]
   /** 状态记录开关（每群独立；false=关，关时状态门不判定、状态账本不写入）。 */
   statusRecord: boolean
+  /** 置顶聊天（true=主页列表置顶显示）。 */
+  pinned: boolean
 }
 export interface Draft { name: string; appearance: string; background: string; personality: string; relationships: string; scene?: string }
 export interface Provider { id: string; name: string; baseUrl: string; apiKey: string; model: string; reasoningEffort: string }
@@ -121,7 +123,7 @@ export function avatarUrl(group: string, kind: 'group' | 'user' | `char:${string
 }
 
 /** 群列表行：主页预览需要每群的最后一条消息。 */
-export interface GroupRow { name: string; preview: string; ts: number }
+export interface GroupRow { name: string; preview: string; ts: number; pinned: boolean }
 export async function loadGroupRows(): Promise<GroupRow[]> {
   const { groups } = await getJson<{ groups: string[] }>('/api/groups')
   const rows = await Promise.all(groups.map(async name => {
@@ -131,13 +133,14 @@ export async function loadGroupRows(): Promise<GroupRow[]> {
       return {
         name,
         preview: last === undefined ? '（还没有消息）' : `${last.name}：${last.text.replace(/\s+/g, ' ')}`,
+        pinned: s.pinned === true,
         ts: last === undefined ? 0 : Date.parse(last.ts),
       }
     } catch {
-      return { name, preview: '（打开失败）', ts: 0 }
+      return { name, preview: '（打开失败）', ts: 0, pinned: false }
     }
   }))
-  return rows.sort((a, b) => b.ts - a.ts)
+  return rows.sort((a, b) => (b.pinned ? 1 : 0) - (a.pinned ? 1 : 0) || b.ts - a.ts)
 }
 
 /** 思维链（只给人看）：某条角色消息生成时的思考内容；空串 = 无记录。 */

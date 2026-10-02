@@ -61,3 +61,8 @@ export function removeThinking(groupDir: string, id: number): void {
 export function getThinking(groupDir: string, id: number): string | undefined {
   return readAll(groupDir).find(l => l.id === id)?.thinking
 }
+
+/** 清空全部思维链记录（清空聊天记录时——每条思维链都属于某条消息）。 */
+export function clearThinking(groupDir: string): void {
+  writeAll(groupDir, [])
+}

@@ -130,6 +130,12 @@ a fallback full director (deepseek, §6.1c), and a correction window (§6.3).
 
 - **No private-chat channel exists.** To speak privately, write it in the message body ("我凑到
   某人耳边低声说……"); who perceives it is judged like any other message.
+- **清空记录 (clear records)**: removes every `msg` and `ledger` row from 剧情.jsonl, empties
+  each character's 记忆.jsonl and 状态.yaml, and clears 思维链.jsonl. route/presence/director/
+  rename rows, 判定.jsonl, 群设定.yaml, character assets and avatars are kept; `header.lastMsgId`
+  is preserved, so message ids are never reused. `POST /api/group/{name}/clear-records`.
+- **删除群聊 (delete group)**: `DELETE /api/group/{name}` destroys the group directory
+  (irrecoverable; frontend confirms first).
 - **`roll()`**: regenerate the last character message from the same visible input minus that
   message, temperature 1.0; the log's msg line is **rewritten in place** and memory entries
   referencing the message are rewritten to the new text (§5.6).
@@ -249,7 +255,7 @@ side channel during streaming and keyed by the message id. Like 判定.jsonl it 
 character, director, or bookkeeper context** — it is not part of 剧情.jsonl, rebuild, ledgers, or
 memory; its only reader is the human-facing `GET /api/group/{name}/message/{id}/thinking`
 endpoint. Lifecycle: appended when the reply is recorded; **overwritten on reroll** (same id — the
-thinking a previous generation produced belongs to a message that no longer exists; an empty new
+thinking a previous generation produced belongs to the rewritten reply; an empty new
 thinking clears the record); **removed with the message** on delete; **kept on text edits** (it
 documents what the model thought at generation time). Writing failures are swallowed — they never
 affect the turn.
@@ -312,6 +318,7 @@ tone: |
   <director tone; optional; director-only, never sent to characters>
 scene: <初始当前场景名>   # 建群时指定；此后只随 presence 行演进
 statusRecord: <bool>      # 状态记录开关（每群独立；缺省 false=关）
+pinned: <bool>            # 置顶聊天（每群独立；缺省 false=关，主页列表置顶）
 ```
 
 `statusRecord`（状态记录，per-group）gates the automatic status-ledger pipeline: when **off**
@@ -320,7 +327,9 @@ updates from the fallback director are discarded, **and characters do not see th
 in their prompts at all** (§6.2 — routing/presence/relay unaffected); when **on**,
 judgment and recording run as described in §6.1a/§6.1b/§6.1c. The correction window and the
 user's manual ledger edits are explicit user operations and are **not** gated by it. The engine
-re-reads 群设定.yaml every turn, so flipping the switch takes effect on the next turn.
+re-reads 群设定.yaml every turn, so flipping the switch takes effect on the next turn. `pinned`
+(置顶聊天) is a display-level flag of the same file: it only reorders the home list (pinned
+first), the engine never reads it.
 
 ### 3.5a Scenes (场景, the map)
 
@@ -346,8 +355,8 @@ frontend-only labels (list display and the enable/disable pill); `text` is the i
 `loadRules()` concatenates the texts of **enabled, non-empty** rules in list order (all-off or
 none = empty string → nothing injected) and the result is injected into every character (as the
 `【规则（用户设定）】` section, before the closing instruction); judgment, bookkeeping, and
-correction-window prompts do not consume it. A legacy non-empty `规则.md` with no 规则.jsonl
-present is imported once as a single enabled rule (the old file stays in place, superseded).
+correction-window prompts do not consume it. A `规则.md` (single-file format) with content and no
+规则.jsonl present is read as one enabled rule; the rules-page GET imports it into 规则.jsonl.
 Re-read every turn. No size budget per rule: injected verbatim `[WHY]` the user accepts the
 per-turn cost rather than losing rules; it is the only injected section without a size limit
 (§5.5 bounds memory only).
@@ -821,6 +830,9 @@ perceived what; the overhear layer is director-and-player only.
 | `GET /api/group/{name}/judgments` | tail (last 200, newest first) of 判定.jsonl (§3.2a); for the sidebar run-log panel |
 | `POST /api/group/{name}/message` | body `{text, scene?, objective?}` (scene = ⊘-picked target; objective = 客观注入, §4.6) → event stream (§1.1) |
 | `PUT /api/group/{name}/status-record` | body `{on}` — the per-group 状态记录 switch (§3.5, default off); session dropped so the next snapshot reflects it |
+| `PUT /api/group/{name}/pin` | body `{on}` — the per-group 置顶聊天 flag (default off; home list sorts pinned first) |
+| `POST /api/group/{name}/clear-records` | 清空聊天记录 (see §1.2); operational rows and 判定.jsonl kept |
+| `DELETE /api/group/{name}` | destroy the group directory (frontend confirms; irrecoverable) |
 | `POST /api/group/{name}/roll` | reroll last character message → event stream |
 | client disconnect | the generator keeps running; bookkeeping still completes |
 
@@ -943,7 +955,7 @@ page `#f7f7f7`, chat `#ededed`, cells white, brand `#07c160`, own bubbles `#95ec
 theme only — deliberate). Desktop widths letterbox the app into a centered 520px column.
 
 - **Shell** (`App.tsx`): three bottom tabs — 主页面 (group list: avatar / last-message preview /
-  relative time, per-group snapshots fetched for previews; pull-less reload on mount; search
+  relative time (pinned groups sort first), per-group snapshots fetched for previews; pull-less reload on mount; search
   filter; ＋ → new-group page) · **全局** (a two-entry hub: 全局规则 = a list of named rules with
   per-rule enable pills; ＋ 添加全局规则 and tapping a rule page-navigate to a name + text editor
   with delete; save/toggle = PUT /api/rules with the whole list; **正则替换** = display-layer

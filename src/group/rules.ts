@@ -4,8 +4,8 @@
  * name/enabled 是纯前端语义（列表显示名与启停拨片），text 才会注入。
  * loadRules() 返回所有**已开启**规则正文的拼接（列表序；空文本跳过；全关/无规则 = 空串）——
  * 注入对象：每一个角色（在末尾指令之前）；判定/记账/纠正等后台 AI 不消费此文件。
- * 一次性迁移：规则.jsonl 不存在且旧 规则.md 有内容时，导入为一条开启的规则（旧文件保留不删、被取代）。
- * 文件缺失/为空/全关 = 不注入任何规则。
+ * 规则.md（单文件格式）同样受支持：规则.jsonl 不存在时，其内容作为一条开启规则参与读取；
+ * 规则页 GET 端点会把该内容落盘为 规则.jsonl（幂等）。文件缺失/为空/全关 = 不注入任何规则。
  */
 import { existsSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
@@ -24,7 +24,7 @@ export interface RuleItem {
 
 export const rulesListPath = (root: string = config.root): string => join(root, RULES_LIST_FILENAME)
 
-/** 读取规则列表（**纯读**，永不写盘）：jsonl 存在用 jsonl；否则虚拟迁移——旧 规则.md 的内容作为一条开启规则返回（不落盘）。 */
+/** 读取规则列表（**纯读**，永不写盘）：jsonl 存在用 jsonl；否则 规则.md（单文件格式）的内容作为一条开启规则返回。 */
 export function loadRuleList(root: string = config.root): RuleItem[] {
   const file = rulesListPath(root)
   if (!existsSync(file)) {
@@ -49,7 +49,7 @@ export function loadRuleList(root: string = config.root): RuleItem[] {
     })
 }
 
-/** 把旧 规则.md 落盘为 规则.jsonl（一次性；仅用户打开规则页的 GET 端点调用——引擎读取路径永不写盘）。 */
+/** 把 规则.md 的内容落盘为 规则.jsonl（幂等：jsonl 已存在则跳过；仅规则页 GET 端点调用——引擎读取路径纯读）。 */
 export function ensureRuleMigration(root: string = config.root): void {
   if (existsSync(rulesListPath(root))) return
   const legacy = loadLegacyRuleText(root)
@@ -77,7 +77,7 @@ export function loadRules(root: string = config.root): string {
     .join('\n\n')
 }
 
-/** 旧 规则.md 的正文（剥离可选 frontmatter）；不存在/为空返回空串。 */
+/** 规则.md（单文件格式）的正文（剥离可选 frontmatter）；不存在/为空返回空串。 */
 function loadLegacyRuleText(root: string): string {
   const file = join(root, RULES_FILENAME)
   if (!existsSync(file)) return ''

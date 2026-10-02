@@ -20,13 +20,13 @@ const cleanup = (): void => rmSync(groupDir, { recursive: true, force: true })
 try {
   cleanup()
   // 建群
-  createGroup(groupDir, { era: '（时代）', world: '（世界观）', tone: '（基调）', scene: '（场景一）', statusRecord: false }, [{ name: '（场景一）', description: '（场景一描述）' }, { name: '（场景二）', description: '（场景二描述）' }])
+  createGroup(groupDir, { era: '（时代）', world: '（世界观）', tone: '（基调）', scene: '（场景一）', statusRecord: false, pinned: false }, [{ name: '（场景一）', description: '（场景一描述）' }, { name: '（场景二）', description: '（场景二描述）' }])
   assert.ok(existsSync(join(groupDir, '群设定.yaml')), '群设定必须是 .yaml（纯字段文件）')
   const gs = loadGroupSettings(groupDir)
-  assert.deepEqual(gs, { era: '（时代）', world: '（世界观）', tone: '（基调）', scene: '（场景一）', statusRecord: false })
+  assert.deepEqual(gs, { era: '（时代）', world: '（世界观）', tone: '（基调）', scene: '（场景一）', statusRecord: false, pinned: false })
   assert.ok(existsSync(join(groupDir, '场景', '（场景一）.md')), '场景文件按名落盘')
   assert.equal(listScenes(groupDir).length, 2, '建群即建图')
-  assert.throws(() => createGroup(groupDir, { era: '', world: '', tone: '', scene: '', statusRecord: false }), /已存在/)
+  assert.throws(() => createGroup(groupDir, { era: '', world: '', tone: '', scene: '', statusRecord: false, pinned: false }), /已存在/)
 
   // 零角色是合法状态：新建的群必须能被引擎打开（否则前端点进去就白屏）
   const empty = GroupSession.open('_acc-scaffold')

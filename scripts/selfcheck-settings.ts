@@ -1,6 +1,6 @@
 /**
  * 全局规则 + 模型设置的离线自检（无需 API key，全临时目录）：
- * 1) 规则：整表往返（确定性）、只拼已开启规则（禁用/空文本排除）、旧 规则.md 一次性迁移。
+ * 1) 规则：整表往返（确定性）、只拼已开启规则（禁用/空文本排除）、规则.md（单文件格式）导入。
  * 2) 设置：提供方列表往返、启用项解析、缺字段忽略、无提供方回退 .env。
  */
 import assert from 'node:assert/strict'
@@ -25,11 +25,11 @@ try {
   assert.equal(loadRuleList(root)[0]?.enabled, true, '启停状态随往返保持')
   assert.ok(readFileSync(join(root, RULES_LIST_FILENAME), 'utf8').includes('（测试规则一）'))
   assert.equal(loadRules(root), '（测试规则一）\n\n（测试规则二）\n（第二行）', '只拼接已开启且非空规则（禁用与空白排除）')
-  // 旧 规则.md 一次性迁移：jsonl 缺失且旧文件有内容 → ensureRuleMigration 落盘为一条开启规则（frontmatter 剥离；
-  // 引擎读取路径本身永不写盘，迁移只由规则页的 GET 端点触发）
+  // 规则.md（单文件格式）导入：jsonl 缺失且其有内容 → ensureRuleMigration 落盘为一条开启规则（frontmatter 剥离；
+  // 引擎读取路径本身纯读，落盘只由规则页的 GET 端点触发）
   const legacy = mkdtempSync(join(tmpdir(), 'rules-migrate-'))
   writeFileSync(join(legacy, RULES_FILENAME), '---\nnote: x\n---\n\n（带 frontmatter 的旧规则）', 'utf8')
-  assert.equal(loadRules(legacy), '（带 frontmatter 的旧规则）', '引擎纯读：旧 规则.md 虚拟迁移即可用')
+  assert.equal(loadRules(legacy), '（带 frontmatter 的旧规则）', '纯读：规则.md 内容即可用规则')
   assert.equal(existsSync(join(legacy, RULES_LIST_FILENAME)), false, '引擎读取不落盘（迁移只在规则页端点发生）')
   ensureRuleMigration(legacy)
   assert.equal(loadRules(legacy), '（带 frontmatter 的旧规则）', '迁移后 loadRules 不变')

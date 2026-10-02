@@ -3,7 +3,7 @@
  * CLI（src/group-cli.ts）与 HTTP 服务（src/server.ts）共用。
  *
  * 角色文件分工（SPEC §3.3-§3.6）：
- *   角色.md 只读（用户专属）· 性格.md 初始+演变 · 状态.md 实时字段 · 记忆.md 知情账本
+ *   角色.md 只读（用户专属）· 性格.md 初始 · 人物关系.md 初始 · 状态.yaml 状态账本 · 记忆.jsonl 知情账本
  * 一切变更先写 剧情.jsonl 的 ledger 行（唯一事实源），再刷新对应文件（派生缓存）。
  */
 import { appendFileSync, existsSync, readdirSync } from 'node:fs'
@@ -19,7 +19,8 @@ import { turnFromMessages } from '../host.ts'
 import { resolveRouter } from '../settings.ts'
 import { LEDGER_KEYS, loadFiles, saveMemory, savePersonality, saveRelationships, saveStatus, type CharacterFiles } from './status.ts'
 import { backfillKnowledge, buildMemory, missingRounds, transplantRounds, witnessSummary } from './knowledge.ts'
-import { recordThinking, removeThinking } from './thinking.ts'
+import { recordThinking, removeThinking, clearThinking } from './thinking.ts'
+import { rmSync } from 'node:fs'
 import { resolveCharacterName, type RoutableCharacter } from './router.ts'
 
 export type SessionEvent =
@@ -230,7 +231,7 @@ export class GroupSession {
   }
 
   /** 前端初始渲染快照：消息 + 路由行 + 场景（当前场景、地图、各角色位置）。 */
-  snapshot(): { name: string; era: string; world: string; tone: string; scene: string; scenes: Scene[]; locations: Record<string, string>; userName: string; present: string[]; remote: RemoteLink[]; overhear: RemoteLink[]; absent: string[]; characters: Array<{ name: string; dirName: string }>; messages: MsgLine[]; routes: RouteLine[]; statusRecord: boolean } {
+  snapshot(): { name: string; era: string; world: string; tone: string; scene: string; scenes: Scene[]; locations: Record<string, string>; userName: string; present: string[]; remote: RemoteLink[]; overhear: RemoteLink[]; absent: string[]; characters: Array<{ name: string; dirName: string }>; messages: MsgLine[]; routes: RouteLine[]; statusRecord: boolean; pinned: boolean } {
     const routes = this.store.allLines.filter((l): l is RouteLine => l.type === 'route')
     const present = this.presentNames()
     const remote = this.remoteLinks()
@@ -252,6 +253,7 @@ export class GroupSession {
       messages: this.store.effectiveMessages(),
       routes,
       statusRecord: this.settings.statusRecord === true,
+      pinned: this.settings.pinned === true,
     }
   }
 
@@ -566,6 +568,11 @@ export class GroupSession {
 
   private async drainBg(): Promise<void> {
     await this.bg.catch(() => undefined)
+  }
+
+  /** 等待后台队列清空（清空记录/删除群聊前调用——避免进行中的记账在操作之后写回旧数据）。 */
+  async flushBackground(): Promise<void> {
+    await this.drainBg()
   }
 
   /**
@@ -1300,6 +1307,30 @@ export class GroupSession {
     f.memory = f.memory.filter(e => !hits.includes(e))
     this.persistFiles(name)
     return hits.length
+  }
+
+  /** 清空聊天记录（聊天信息页「删除记录」）：移除全部消息与账本行、清空各角色记忆与状态账本、
+   *  清空思维链；route/presence/director/rename 行与 判定.jsonl 保留（后台日志与在场状态不清理）。
+   *  群设定、角色资产（角色.md/性格/人物关系）、头像不受影响；消息 id 永不复用。 */
+  async clearRecords(): Promise<void> {
+    await this.flushBackground()
+    this.store.clearChatRecords()
+    for (const c of this.characters) {
+      const f = this.filesFor(c.name)
+      if (f === undefined) continue
+      f.memory = []
+      f.status = {}
+      this.persistFiles(c.name)
+    }
+    this.books.clear()
+    try { clearThinking(this.groupDir) } catch { /* 清理失败不影响 */ }
+    this.judgeLog({ phase: '清空记录', note: '已清空聊天与状态账本（operational 行与判定日志保留）' })
+  }
+
+  /** 删除整个群聊（聊天信息页「删除」）：移除群目录下全部数据。仅端点层调用；调用方负责丢弃会话缓存。 */
+  static destroy(groupName: string): void {
+    if (groupName === undefined || groupName === '' || /[\\/]/.test(groupName)) throw new Error(`非法群聊名: ${String(groupName)}`)
+    rmSync(join(config.groupsDir, groupName), { recursive: true, force: true })
   }
 
   private backfillAll(): void {

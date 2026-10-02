@@ -42,7 +42,7 @@ function Shell(): React.ReactElement {
   } else if (top.k === 'chat') {
     body = <ChatView key={top.group} group={top.group} onBack={pop} onOpenInfo={() => push({ k: 'info', group: top.group })} />
   } else if (top.k === 'info') {
-    body = <InfoRoot key={top.group} group={top.group} onExit={pop} />
+    body = <InfoRoot key={top.group} group={top.group} onExit={pop} onDeleted={() => setStack([])} />
   } else {
     body = <NewGroupView onBack={pop} onCreated={openChat} />
   }

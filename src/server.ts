@@ -9,7 +9,7 @@
 import { Hono, type Context } from 'hono'
 import { serve } from '@hono/node-server'
 import { stream } from 'hono/streaming'
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { config } from './config.ts'
 import { GroupSession, listGroups, type SessionEvent } from './group/engine.ts'
@@ -109,7 +109,7 @@ app.post('/api/groups', async c => {
     return sn === '' ? [] : [{ name: sn, description: sd }]
   })
   const scene = String(body.scene ?? '').trim()
-  createGroup(dir, { era: String(body.era ?? ''), world: String(body.world ?? ''), tone: String(body.tone ?? ''), scene, statusRecord: false }, scenes)
+  createGroup(dir, { era: String(body.era ?? ''), world: String(body.world ?? ''), tone: String(body.tone ?? ''), scene, statusRecord: false, pinned: false }, scenes)
   return c.json({ ok: true, name })
 })
 
@@ -117,9 +117,9 @@ app.put('/api/group/:name/settings', async c => {
   const body = await c.req.json<Record<string, unknown>>().catch(() => ({}) as Record<string, unknown>)
   const dir = groupDir(c.req.param('name'))
   if (!existsSync(dir)) return c.json({ error: '群聊不存在' }, 400)
-  // scene（初始当前场景）是建群时定下的出发点，这里原样保留；状态记录开关同样原样保留
+  // scene（初始当前场景）是建群时定下的出发点，这里原样保留；状态记录/置顶开关同样原样保留
   const saved = loadGroupSettings(dir)
-  saveGroupSettings(dir, { era: String(body.era ?? ''), world: String(body.world ?? ''), tone: String(body.tone ?? ''), scene: saved.scene, statusRecord: saved.statusRecord })
+  saveGroupSettings(dir, { era: String(body.era ?? ''), world: String(body.world ?? ''), tone: String(body.tone ?? ''), scene: saved.scene, statusRecord: saved.statusRecord, pinned: saved.pinned })
   sessions.delete(c.req.param('name')) // 设定变了，丢弃缓存的会话
   return c.json({ ok: true })
 })
@@ -132,6 +132,40 @@ app.put('/api/group/:name/status-record', async c => {
   const saved = loadGroupSettings(dir)
   saveGroupSettings(dir, { ...saved, statusRecord: body.on === true })
   sessions.delete(c.req.param('name')) // 引擎每轮重读群设定；这里丢弃会话让快照立即反映新状态
+  return c.json({ ok: true })
+})
+
+/** 置顶聊天开关（每群独立）：true=主页列表置顶显示。 */
+app.put('/api/group/:name/pin', async c => {
+  const body = await c.req.json<Record<string, unknown>>().catch(() => ({}) as Record<string, unknown>)
+  const dir = groupDir(c.req.param('name'))
+  if (!existsSync(dir)) return c.json({ error: '群聊不存在' }, 400)
+  const saved = loadGroupSettings(dir)
+  saveGroupSettings(dir, { ...saved, pinned: body.on === true })
+  sessions.delete(c.req.param('name'))
+  return c.json({ ok: true })
+})
+
+/** 清空聊天记录：移除全部消息与账本行、清空各角色记忆与状态账本、清空思维链；
+ *  operational 行（route/presence/director/rename）与 判定.jsonl 保留。 */
+app.post('/api/group/:name/clear-records', async c => {
+  const dir = groupDir(c.req.param('name'))
+  if (!existsSync(dir)) return c.json({ error: '群聊不存在' }, 400)
+  const session = getSession(c.req.param('name'))
+  await session.clearRecords()
+  sessions.delete(c.req.param('name')) // 丢弃会话：下次进入从清空后的磁盘重开
+  return c.json({ ok: true })
+})
+
+/** 删除群聊（一键销毁）：移除群目录下全部数据，不可恢复。 */
+app.delete('/api/group/:name', async c => {
+  const name = c.req.param('name')
+  const dir = groupDir(name)
+  if (!existsSync(dir)) return c.json({ error: '群聊不存在' }, 400)
+  const session = sessions.get(name)
+  if (session !== undefined) await session.flushBackground() // 进行中的记账先落盘，再随目录一起销毁
+  GroupSession.destroy(name)
+  sessions.delete(name)
   return c.json({ ok: true })
 })
 
@@ -352,7 +386,7 @@ app.put('/api/group/:name/character/:dir/ledger', async c => {
 // ---------- 全局规则（多条，每条独立启停；name/enabled 是前端标签，只有 text 注入角色） ----------
 
 app.get('/api/rules', c => {
-  ensureRuleMigration() // 旧 规则.md → 规则.jsonl：仅在用户打开规则页时落盘（引擎读取路径永不写盘）
+  ensureRuleMigration() // 把 规则.md 的内容落盘为 规则.jsonl（幂等；仅规则页 GET 触发，引擎读取路径纯读）
   return c.json({ rules: loadRuleList() })
 })
 
