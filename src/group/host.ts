@@ -367,14 +367,19 @@ function asArray<T>(value: unknown): T[] {
  * 边界保守：拿不准就不给权限/不改名单/保持现状。宁可少记（总管可补），不可错记（撤回麻烦）。
  * toldMin：额外记忆一段触发线（低门槛——二段逐轮判定才是真正闸门，这里只决定要不要多查一次）；
  * extraRoundMin：额外记忆二段逐轮移植线（高门槛——宁缺勿滥，补错了要手动撤）。
+ * presentKnowsMin：知情判定的现场门槛（0.23）——人在现场是代码事实，判定对"当面说话"给的中间值
+ *   （真机实测 0.25~0.6）是噪声而非"听不到"；用 0.5 一刀切会让当面说的话大量进不了记忆。只有接近
+ *   明确否定（<0.23）才排除他。
  * unlinkedKnowsMin：知情判定的场外门槛——不在现场、也没有接入/单向感知链路的角色，必须过更高的把握
  *   才写进 visible_to。写进去就撤不掉（消息出生快照没有改写路径），所以别让单次概率尖峰把场外无关角色拉进名单。
  */
-export const JEV_THRESHOLDS = { confidenceMin: 0.45, perceiveMin: 0.7, interactMin: 0.7, interactMax: 0.3, gateKeep: 0.5, unlinkedKnowsMin: 0.65, toldMin: 0.5, extraRoundMin: 0.75 }
+export const JEV_THRESHOLDS = { confidenceMin: 0.45, perceiveMin: 0.7, interactMin: 0.7, interactMax: 0.3, presentKnowsMin: 0.23, gateKeep: 0.5, unlinkedKnowsMin: 0.65, toldMin: 0.5, extraRoundMin: 0.75 }
 
-/** 知情判定门槛：现场者与有感知链路者（接入/单向感知）沿用 gateKeep；两者都不是的场外角色用 unlinkedKnowsMin。 */
+/** 知情判定门槛分三档：现场者用 presentKnowsMin（人在跟前，只有接近明确否定才排除）；
+ *  有感知链路者（接入/单向感知）用 gateKeep；两者都不是的场外角色用 unlinkedKnowsMin。 */
 export function knowsThreshold(name: string, present: ReadonlySet<string>, linked: ReadonlySet<string>): number {
-  return present.has(name) || linked.has(name) ? JEV_THRESHOLDS.gateKeep : JEV_THRESHOLDS.unlinkedKnowsMin
+  if (present.has(name)) return JEV_THRESHOLDS.presentKnowsMin
+  return linked.has(name) ? JEV_THRESHOLDS.gateKeep : JEV_THRESHOLDS.unlinkedKnowsMin
 }
 
 export interface JevRouteInput {

@@ -180,7 +180,7 @@ try {
       interact_角色丙: { type: 'noul', noul: 0.1 },  // 能知道 + 不能互动 → 单向感知（偷听）
       mode_角色乙: { type: 'choice', choice: '语音', confidence: 0.9, probabilities: {} },
       mode_角色丙: { type: 'choice', choice: '视听', confidence: 0.9, probabilities: {} },
-      knows_角色甲: { type: 'noul', noul: 0.3 },    // 知情判定：甲感知不到本轮发言（<0.5 不给）
+      knows_角色甲: { type: 'noul', noul: 0.2 },    // 知情判定：现场者要接近明确否定（<0.23）才排除
       knows_角色乙: { type: 'noul', noul: 0.95 },
       knows_角色丙: { type: 'noul', noul: 0.9 },
       told_角色甲: { type: 'noul', noul: 0.2 },
@@ -199,26 +199,34 @@ try {
     assert.ok(over !== undefined, '丙能知道但不能互动 → 单向感知层')
     assert.equal(over?.perceive, '视听')
     assert.equal(r?.links?.remote.length, 0, '无双向接入')
-    assert.ok(!r?.knows.has('角色甲'), '知情 <0.5 的角色不得进知情名单')
+    assert.ok(r !== undefined && !r.knows.has('角色甲'), '现场者 <0.23（接近明确否定）才排除')
     assert.ok(r?.knows.has('角色乙') && r?.knows.has('角色丙'), '能感知到的角色必须在知情名单（知情=原文移植）')
     assert.deepEqual([...(r?.told ?? [])], ['角色丙'], '额外记忆一段触发：只有过线的丙')
     assert.equal(r?.stateDirty, false, 'state_dirty 0.05 → 不需要记账')
     m.server.close()
   }
 
-  // ── 1b) 场外无链路者的知情门槛：0.5 只给现场者/有链路者，场外无关角色必须过 0.65
+  // ── 1b) 知情门槛分三档：现场 0.23 / 有链路 0.5 / 场外无链路 0.65
   {
     const m = await mockJev({ answers: {
       next_speaker: { type: 'choice', choice: '角色甲', confidence: 0.9, probabilities: {} },
-      knows_角色甲: { type: 'noul', noul: 0.6 },  // 现场者：0.6 ≥ 0.5 → 在名单
-      knows_角色乙: { type: 'noul', noul: 0.6 },  // 场外无链路：0.6 < 0.65 → 不在名单
-      knows_角色丙: { type: 'noul', noul: 0.7 },  // 场外无链路：0.7 ≥ 0.65 → 在名单
+      knows_角色甲: { type: 'noul', noul: 0.25 },  // 现场者：0.25 ≥ 0.23 → 在名单（人在跟前，中间分不砍）
+      knows_角色乙: { type: 'noul', noul: 0.6 },   // 场外无链路：0.6 < 0.65 → 不在名单
+      knows_角色丙: { type: 'noul', noul: 0.7 },   // 场外无链路：0.7 ≥ 0.65 → 在名单
     } })
     const r = await jevRoute({ ...baseInput(m.port), present: ['角色甲'], remote: [], overhear: [] })
-    assert.ok(r?.knows.has('角色甲'), '现场者沿用 0.5：0.6 在知情名单')
-    assert.ok(!r?.knows.has('角色乙'), '场外无链路者需 0.65：0.6 不得进知情名单（防单次概率尖峰误标）')
+    assert.ok(r?.knows.has('角色甲'), '现场者用 0.23：0.25 在知情名单（当面说话不再被 0.5 砍掉）')
+    assert.ok(r !== undefined && !r.knows.has('角色乙'), '场外无链路者需 0.65：0.6 不得进知情名单（防单次概率尖峰误标）')
     assert.ok(r?.knows.has('角色丙'), '场外无链路者 0.7 ≥ 0.65：在知情名单')
     m.server.close()
+
+    const m1 = await mockJev({ answers: {
+      next_speaker: { type: 'choice', choice: '角色甲', confidence: 0.9, probabilities: {} },
+      knows_角色甲: { type: 'noul', noul: 0.2 },   // 现场者：接近明确否定才排除
+    } })
+    const r1 = await jevRoute({ ...baseInput(m1.port), present: ['角色甲'], remote: [], overhear: [] })
+    assert.ok(r1 !== undefined && !r1.knows.has('角色甲'), '现场者 0.2 < 0.23：明确否定才排除')
+    m1.server.close()
 
     const m2 = await mockJev({ answers: {
       next_speaker: { type: 'choice', choice: '角色甲', confidence: 0.9, probabilities: {} },
