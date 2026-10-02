@@ -455,9 +455,11 @@ export function ChatView({ group, onBack, onOpenInfo }: Props): React.ReactEleme
   )
 }
 
-/** 可点按的头像：设了图片时点击放大查看（未设置 = 首字色块，无图可看，不可点）。 */
+/** 可点按的头像：设了图片时点击放大查看（未设置 = 首字色块，无图可看，不可点）。
+ *  注意"不可点"（批量删除模式禁用查看）与"无图"是两回事——不可点也要照常显示图片。 */
 function TapAvatar({ name, url, size, onTap }: { name: string; url: string | undefined; size: number; onTap?: (url: string) => void }): React.ReactElement {
-  if (url === undefined || onTap === undefined) return <Avatar name={name} size={size} />
+  if (url === undefined) return <Avatar name={name} size={size} />
+  if (onTap === undefined) return <Avatar name={name} size={size} url={url} />
   return (
     <button className="avatar-btn" aria-label={`查看 ${name} 的头像`} onClick={e => { e.stopPropagation(); onTap(url) }}>
       <Avatar name={name} size={size} url={url} />
