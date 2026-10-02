@@ -19,7 +19,7 @@ export function ChatView({ group, onBack, onOpenInfo }: Props): React.ReactEleme
   const [snap, setSnap] = useState<Snapshot | null>(null)
   const [avatarV, setAvatarV] = useState(0)
   const [status, setStatus] = useState('')
-  const [input, setInput] = useState('')
+  const [input, setInput] = useState(() => loadDraft(group))
   const [busy, setBusy] = useState(false)
   const [menuMsg, setMenuMsg] = useState<Msg | null>(null)
   const [editMsg, setEditMsg] = useState<Msg | null>(null)
@@ -137,6 +137,7 @@ export function ChatView({ group, onBack, onOpenInfo }: Props): React.ReactEleme
     const text = input.trim()
     if (text === '' || busy || snap === null) return
     setInput('')
+    saveDraft(group, '') // 已发出：草稿清掉，别在重启后复活
     if (textareaRef.current !== null) textareaRef.current.style.height = 'auto'
     pinned.current = true
     const objective = objectiveMode
@@ -157,6 +158,9 @@ export function ChatView({ group, onBack, onOpenInfo }: Props): React.ReactEleme
     el.style.height = 'auto'
     el.style.height = `${Math.min(el.scrollHeight, 96)}px`
   }, [])
+
+  // 恢复草稿后按内容撑高输入框（多行草稿只显示一行会看不到全文）
+  useLayoutEffect(() => { autoGrow() }, [autoGrow])
 
   const onKeyDown = useCallback((e: React.KeyboardEvent<HTMLTextAreaElement>): void => {
     // 桌面 Enter 发送、Shift+Enter 换行；手机保持系统换行行为
@@ -344,7 +348,7 @@ export function ChatView({ group, onBack, onOpenInfo }: Props): React.ReactEleme
                 value={input}
                 disabled={busy}
                 placeholder={busy ? '生成中……' : objectiveMode ? '输入要注入的客观内容……' : '对大家说……'}
-                onChange={e => { setInput(e.target.value); autoGrow() }}
+                onChange={e => { setInput(e.target.value); saveDraft(group, e.target.value); autoGrow() }}
                 onKeyDown={onKeyDown}
               />
               <button className="composer-send" disabled={busy || input.trim() === ''} onClick={send}>发送</button>
@@ -494,4 +498,38 @@ function MessageRow({ msg, mine, avatar, onMenu, onAvatar, selectMode, picked, o
       </div>
     </div>
   )
+}
+
+/* ---------- 输入框草稿（按群聊，跟这台设备走） ---------- */
+/**
+ * 切到聊天信息页 / 退出聊天页再回来时 ChatView 会整棵卸载，输入框内容随之丢失——
+ * 草稿存 localStorage：没发出去的话回来还在（发送成功后清除）。
+ */
+const DRAFT_KEY = 'groupchat.drafts'
+
+let draftCache: Record<string, string> | null = null
+
+function loadDrafts(): Record<string, string> {
+  if (draftCache !== null) return draftCache
+  try {
+    const raw = localStorage.getItem(DRAFT_KEY)
+    const obj = raw === null ? null : JSON.parse(raw) as Record<string, string>
+    draftCache = obj !== null && typeof obj === 'object' && !Array.isArray(obj) ? obj : {}
+  } catch {
+    draftCache = {}
+  }
+  return draftCache
+}
+
+function loadDraft(group: string): string {
+  const v = loadDrafts()[group]
+  return typeof v === 'string' ? v : ''
+}
+
+/** 空串 = 清除该群草稿。写盘失败不影响本次输入（内存里仍生效）。 */
+function saveDraft(group: string, text: string): void {
+  const m = loadDrafts()
+  if (text === '') delete m[group]
+  else m[group] = text
+  try { localStorage.setItem(DRAFT_KEY, JSON.stringify(m)) } catch { /* 私密模式等 */ }
 }
