@@ -275,7 +275,7 @@ function RuleEditView({ id, onBack }: { id: string | null; onBack: () => void })
 function RegexView({ onBack }: { onBack: () => void }): React.ReactElement {
   const toast = useToast()
   const [rules, setRules] = useState<RegexRule[]>(() => loadRules())
-  const [editing, setEditing] = useState<{ id: string | null; pattern: string; replacement: string; name: string } | null>(null)
+  const [editing, setEditing] = useState<{ id: string | null; pattern: string; replacement: string; name: string; enabled: boolean } | null>(null)
 
   const persist = (next: RegexRule[]): void => {
     setRules(next)
@@ -298,6 +298,7 @@ function RegexView({ onBack }: { onBack: () => void }): React.ReactElement {
       pattern,
       replacement: editing.replacement,
       name: editing.name.trim() || pattern,
+      enabled: editing.enabled,
     }
     persist(editing.id === null ? [...rules, rule] : rules.map(r => (r.id === editing.id ? rule : r)))
     setEditing(null)
@@ -316,15 +317,21 @@ function RegexView({ onBack }: { onBack: () => void }): React.ReactElement {
       <NavBar title="正则替换" onBack={onBack} />
       <div className="scroll">
         <Cells>
-          <button className="cell" onClick={() => setEditing({ id: null, pattern: '', replacement: '', name: '' })}>
+          <button className="cell" onClick={() => setEditing({ id: null, pattern: '', replacement: '', name: '', enabled: true })}>
             <div className="cell-title"><div className="main" style={{ color: 'var(--brand)' }}>＋ 添加正则</div></div>
           </button>
           {rules.map(r => (
-            <button key={r.id} className="cell" onClick={() => setEditing({ id: r.id, pattern: r.pattern, replacement: r.replacement, name: r.name })}>
+            <button key={r.id} className="cell" onClick={() => setEditing({ id: r.id, pattern: r.pattern, replacement: r.replacement, name: r.name, enabled: r.enabled })}>
               <div className="cell-title">
                 <div className="main">{r.name}</div>
                 <div className="sub">{r.pattern} → {r.replacement === '' ? '（删除）' : r.replacement}</div>
               </div>
+              <span
+                className={'switch' + (r.enabled ? ' on' : '')}
+                onClick={e => { e.stopPropagation(); persist(rules.map(x => (x.id === r.id ? { ...x, enabled: !x.enabled } : x))) }}
+              >
+                <span className="knob" />
+              </span>
             </button>
           ))}
           {rules.length === 0 && <div className="hint">（还没有规则）</div>}

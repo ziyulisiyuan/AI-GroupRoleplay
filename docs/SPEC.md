@@ -966,6 +966,8 @@ theme only — deliberate). Desktop widths letterbox the app into a centered 520
 - **Display-layer regex** (`web/src/regex.ts`, user-requested): user-defined
   `pattern → replacement` rules applied **only when rendering** chat bubbles (messages and the
   streaming transcript), using the browser's native `RegExp` — no dependency, no model exposure.
+  Each rule carries an enable pill; disabled rules are skipped at render time (missing field in
+  old localStorage entries reads as enabled).
   Rule text, memories, ledgers, judgments and everything the characters see stay verbatim; the
   message editor shows the raw text. Rules live in `localStorage` on the device, are validated
   before saving (invalid patterns rejected), support `$1` back-references, and an empty

@@ -272,18 +272,21 @@ export function CheckCell({ on, label, onToggle }: { on: boolean; label: React.R
 
 /* ---------- 悬浮弹窗（居中）/ 确认框 ---------- */
 
-export function Modal({ open, onClose, title, children }: {
+export function Modal({ open, onClose, title, children, instantClose = false }: {
   open: boolean
   onClose: () => void
   title?: string
-  children: React.ReactNode
+  children?: React.ReactNode
+  /** 关闭即卸载（不播 200ms 收起动画）：内容含大图等重合成层的弹窗用它，避免收起动画期间的渲染伪影。 */
+  instantClose?: boolean
 }): React.ReactElement | null {
   const [render, setRender] = useState(open)
   useEffect(() => {
     if (open) { setRender(true); return }
+    if (instantClose) { setRender(false); return }
     const t = setTimeout(() => setRender(false), 200) // 收起动画播完再卸载
     return () => clearTimeout(t)
-  }, [open])
+  }, [open, instantClose])
   if (!render) return null
   const closing = !open
   return (

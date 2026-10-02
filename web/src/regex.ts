@@ -13,6 +13,8 @@ export interface RegexRule {
   replacement: string
   /** 命名，列表里显示用 */
   name: string
+  /** 启停拨片：关闭的规则不参与替换（缺省 = 开启，兼容旧存档）。 */
+  enabled: boolean
 }
 
 const KEY = 'groupchat.regex'
@@ -25,7 +27,9 @@ export function loadRules(): RegexRule[] {
   try {
     const raw = localStorage.getItem(KEY)
     const arr = raw === null ? [] : JSON.parse(raw) as RegexRule[]
-    cache = Array.isArray(arr) ? arr.filter(r => typeof r?.pattern === 'string' && r.pattern !== '') : []
+    cache = Array.isArray(arr)
+      ? arr.filter(r => typeof r?.pattern === 'string' && r.pattern !== '').map(r => ({ ...r, enabled: r.enabled !== false }))
+      : []
   } catch {
     cache = []
   }
@@ -48,6 +52,7 @@ export function applyRules(text: string): string {
   if (rules.length === 0) return text
   let out = text
   for (const r of rules) {
+    if (!r.enabled) continue
     try { out = out.replace(new RegExp(r.pattern, 'g'), r.replacement) } catch { /* 忽略坏规则 */ }
   }
   return out

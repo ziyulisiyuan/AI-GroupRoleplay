@@ -430,8 +430,9 @@ export function ChatView({ group, onBack, onOpenInfo }: Props): React.ReactEleme
         )}
       </Modal>
 
-      {/* 头像查看（只读悬浮）：点消息头像放大看图；未设置头像的消息没有此入口 */}
-      <Modal open={viewAvatar !== null} onClose={() => setViewAvatar(null)} title={viewAvatar === null ? '' : `${viewAvatar.name} 的头像`}>
+      {/* 头像查看（只读悬浮）：点消息头像放大看图；未设置头像的消息没有此入口。
+          关闭即卸载：大图在收起动画期间会出现白色亮带伪影（仅此弹窗），直接关掉。 */}
+      <Modal open={viewAvatar !== null} instantClose onClose={() => setViewAvatar(null)} title={viewAvatar === null ? '' : `${viewAvatar.name} 的头像`}>
         {viewAvatar !== null && <img className="avatar-view" src={viewAvatar.url} alt={viewAvatar.name} />}
       </Modal>
 
