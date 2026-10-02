@@ -456,7 +456,10 @@ correction window).
 - Fast path: for every message (user speech and each character reply) and **every character**, one
   noul question — "can this character perceive the content of this message?" — judged from the
   narrative, scene notes, and the character's status text (whispering, turned away, distance,
-  impairments, channel limits). ≥0.5 → in the knowledge audience; <0.5 → fully excluded (context
+  impairments, channel limits). A character who is present or linked (接入/单向感知) needs ≥0.5
+  (`gateKeep`); a character with **neither** — off-scene and no link — must clear the higher
+  `unlinkedKnowsMin` (0.65), so one probability spike cannot write a scene he has no channel to
+  into his `visible_to` (the snapshot is immutable). Below the bar → fully excluded (context
   and ledger). Map groups: characters colocated with the speaker (in `present`) are in the
   audience by record unless the judgment explicitly says they cannot hear (a missing answer keeps
   them in — they are standing there).
@@ -739,7 +742,7 @@ the turn ends and the floor returns to the user — "no consecutive output" is a
 probability outcome. Flips and blocks are logged to 判定.jsonl (`接力加权`).
 
 Thresholds (`JEV_THRESHOLDS`): `{ confidenceMin: 0.45, perceiveMin: 0.7, interactMin: 0.7,
-interactMax: 0.3, gateKeep: 0.5, toldMin: 0.5, extraRoundMin: 0.75 }`.
+interactMax: 0.3, gateKeep: 0.5, unlinkedKnowsMin: 0.65, toldMin: 0.5, extraRoundMin: 0.75 }`.
 
 ### 6.1b Slow path (`askBookkeeper`)
 

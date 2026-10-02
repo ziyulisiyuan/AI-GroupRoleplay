@@ -206,6 +206,30 @@ try {
     m.server.close()
   }
 
+  // ── 1b) 场外无链路者的知情门槛：0.5 只给现场者/有链路者，场外无关角色必须过 0.65
+  {
+    const m = await mockJev({ answers: {
+      next_speaker: { type: 'choice', choice: '角色甲', confidence: 0.9, probabilities: {} },
+      knows_角色甲: { type: 'noul', noul: 0.6 },  // 现场者：0.6 ≥ 0.5 → 在名单
+      knows_角色乙: { type: 'noul', noul: 0.6 },  // 场外无链路：0.6 < 0.65 → 不在名单
+      knows_角色丙: { type: 'noul', noul: 0.7 },  // 场外无链路：0.7 ≥ 0.65 → 在名单
+    } })
+    const r = await jevRoute({ ...baseInput(m.port), present: ['角色甲'], remote: [], overhear: [] })
+    assert.ok(r?.knows.has('角色甲'), '现场者沿用 0.5：0.6 在知情名单')
+    assert.ok(!r?.knows.has('角色乙'), '场外无链路者需 0.65：0.6 不得进知情名单（防单次概率尖峰误标）')
+    assert.ok(r?.knows.has('角色丙'), '场外无链路者 0.7 ≥ 0.65：在知情名单')
+    m.server.close()
+
+    const m2 = await mockJev({ answers: {
+      next_speaker: { type: 'choice', choice: '角色甲', confidence: 0.9, probabilities: {} },
+      knows_角色甲: { type: 'noul', noul: 0.9 },
+      knows_角色乙: { type: 'noul', noul: 0.6 },  // 有接入链路 → 沿用 0.5 → 在名单
+    } })
+    const r2 = await jevRoute({ ...baseInput(m2.port), present: ['角色甲'], remote: [{ character: '角色乙', perceive: '语音' }], overhear: [] })
+    assert.ok(r2?.knows.has('角色乙'), '有链路的角色沿用 0.5：0.6 仍在知情名单')
+    m2.server.close()
+  }
+
   // ── 2) 低置信 → 路由置空回退；名单外 → 同；回退必须落判定日志（不再静默）
   {
     const logs: Array<Record<string, unknown>> = []

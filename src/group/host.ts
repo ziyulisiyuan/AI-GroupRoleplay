@@ -367,8 +367,15 @@ function asArray<T>(value: unknown): T[] {
  * 边界保守：拿不准就不给权限/不改名单/保持现状。宁可少记（总管可补），不可错记（撤回麻烦）。
  * toldMin：额外记忆一段触发线（低门槛——二段逐轮判定才是真正闸门，这里只决定要不要多查一次）；
  * extraRoundMin：额外记忆二段逐轮移植线（高门槛——宁缺勿滥，补错了要手动撤）。
+ * unlinkedKnowsMin：知情判定的场外门槛——不在现场、也没有接入/单向感知链路的角色，必须过更高的把握
+ *   才写进 visible_to。写进去就撤不掉（消息出生快照没有改写路径），所以别让单次概率尖峰把场外无关角色拉进名单。
  */
-export const JEV_THRESHOLDS = { confidenceMin: 0.45, perceiveMin: 0.7, interactMin: 0.7, interactMax: 0.3, gateKeep: 0.5, toldMin: 0.5, extraRoundMin: 0.75 }
+export const JEV_THRESHOLDS = { confidenceMin: 0.45, perceiveMin: 0.7, interactMin: 0.7, interactMax: 0.3, gateKeep: 0.5, unlinkedKnowsMin: 0.65, toldMin: 0.5, extraRoundMin: 0.75 }
+
+/** 知情判定门槛：现场者与有感知链路者（接入/单向感知）沿用 gateKeep；两者都不是的场外角色用 unlinkedKnowsMin。 */
+export function knowsThreshold(name: string, present: ReadonlySet<string>, linked: ReadonlySet<string>): number {
+  return present.has(name) || linked.has(name) ? JEV_THRESHOLDS.gateKeep : JEV_THRESHOLDS.unlinkedKnowsMin
+}
 
 export interface JevRouteInput {
   llm: { baseUrl: string; apiKey: string; model: string }
@@ -440,6 +447,8 @@ export async function jevRoute(input: JevRouteInput): Promise<JevRouteResult | u
   const criteria: Record<string, string> = {}
   for (const c of input.roster) criteria[c.name] = overviews.get(c.name) ?? ''
   const absentNow = input.allNames.filter(n => !input.present.includes(n))
+  const presentSet = new Set(input.present)
+  const linkedSet = new Set([...input.remote, ...input.overhear].map(l => l.character))
   const statusOf = new Map(input.statusNotes.map(l => [l.split('｜')[0]?.trim() ?? '', l.split('｜').slice(1).join('｜').trim()]))
   // 地图（§4）：非空 = 地图群，追加换场景与位置判定
   const scenes = input.scenes ?? []
@@ -610,10 +619,10 @@ export async function jevRoute(input: JevRouteInput): Promise<JevRouteResult | u
     const knowsNoul: Record<string, number> = {}
     for (const n of input.allNames) {
       const g = answers[`knows_${n}`]
-      const wasPresent = input.present.includes(n)
+      const wasPresent = presentSet.has(n)
       const p = g?.type === 'noul' ? g.noul : wasPresent ? 1 : 0
       knowsNoul[n] = p
-      if (p >= JEV_THRESHOLDS.gateKeep) knows.add(n)
+      if (p >= knowsThreshold(n, presentSet, linkedSet)) knows.add(n)
     }
 
     // 额外记忆触发名单：缺答案 = 未触发（二段判定本来就不该乱跑；漏触发只是维持现状）。
@@ -716,6 +725,8 @@ export async function jevAfterReply(input: {
   presentNotes: string[]
   /** 地图群当前在场者：知情缺答案时按在场事实默认在列（人就在屋里）。 */
   present?: string[]
+  /** 有感知链路的角色名（接入 ∪ 单向感知）：与现场者同用 gateKeep；两者都不是者用 unlinkedKnowsMin。 */
+  linked?: string[]
   /** 最近对话（不含本段回复——回复原文单独给）。 */
   recent: string
   tone: string
@@ -769,10 +780,12 @@ export async function jevAfterReply(input: {
       timeoutMs: input.timeoutMs,
     })
     const audience = new Set<string>()
+    const presentSet = new Set(input.present ?? [])
+    const linkedSet = new Set(input.linked ?? [])
     for (const n of input.candidates) {
       const g = answers[`knows_${n}`]
-      if (g?.type === 'noul' && g.noul >= JEV_THRESHOLDS.gateKeep) audience.add(n)
-      else if (g === undefined && input.present?.includes(n)) audience.add(n) // 在场者缺答案按在场事实在列
+      if (g?.type === 'noul' && g.noul >= knowsThreshold(n, presentSet, linkedSet)) audience.add(n)
+      else if (g === undefined && presentSet.has(n)) audience.add(n) // 在场者缺答案按在场事实在列
     }
     const told = new Set<string>()
     for (const n of input.candidates) {

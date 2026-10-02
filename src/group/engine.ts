@@ -14,7 +14,7 @@ import { hasGroupSettings, loadCharacters, loadGroupSettings, loadUserPersona, t
 import { loadRules } from './rules.ts'
 import { canWitness, loadScene, perceives, saveScene, type RemoteLink, type SceneAccess } from './presence.ts'
 import { listScenes, type Scene } from './scene.ts'
-import { askDirector, askOffStoryDiscovery, askOffStoryPOV, askSceneSummarizer, assembleGroup, askBookkeeper, jevAfterReply, jevExtraRounds, jevRoute, routeNextSpeaker, JEV_THRESHOLDS, type JevAfterReplyResult, type RouteResult } from './host.ts'
+import { askDirector, askOffStoryDiscovery, askOffStoryPOV, askSceneSummarizer, assembleGroup, askBookkeeper, jevAfterReply, jevExtraRounds, jevRoute, knowsThreshold, routeNextSpeaker, type JevAfterReplyResult, type RouteResult } from './host.ts'
 import { turnFromMessages } from '../host.ts'
 import { resolveRouter } from '../settings.ts'
 import { LEDGER_KEYS, loadFiles, saveMemory, savePersonality, saveRelationships, saveStatus, type CharacterFiles } from './status.ts'
@@ -751,9 +751,10 @@ export class GroupSession {
     } else if (isMap && quick !== undefined) {
       const knowsNoul = quick.knowsNoul ?? {}
       const inRoom = new Set(this.presentNames())
+      const linked = new Set([...this.remoteLinks(), ...this.overhearLinks()].map(l => l.character))
       const base = this.characters
         .map(c => c.name)
-        .filter(n => (inRoom.has(n) ? knowsNoul[n] ?? 1 : knowsNoul[n] ?? 0) >= JEV_THRESHOLDS.gateKeep)
+        .filter(n => (inRoom.has(n) ? knowsNoul[n] ?? 1 : knowsNoul[n] ?? 0) >= knowsThreshold(n, inRoom, linked))
       audience = this.audienceOf(new Set(base), this.store.nextMsgId)
     } else {
       const knows = quick?.knows ?? new Set(this.witnesses())
@@ -1034,6 +1035,7 @@ export class GroupSession {
             statusNotes: this.statusNotes(),
             presentNotes: this.presentNotes(),
             present: this.presentNames(),
+            linked: [...this.remoteLinks(), ...this.overhearLinks()].map(l => l.character),
             recent: this.store.effectiveMessages().slice(-config.contextWindow).map(m => `${m.name}：${m.text}`).join('\n'),
             tone: this.settings.tone,
             timeoutMs: config.jevTimeoutMs,
