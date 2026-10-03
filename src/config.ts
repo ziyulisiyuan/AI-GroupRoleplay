@@ -1,6 +1,6 @@
 /**
  * 运行环境配置：全部可被环境变量覆盖；.env（工作区根目录）可选，KEY=VALUE 逐行。
- * SPEC §2：DeepSeek 优先；M0 角色直连，M1 起总管走 dsh runtime。
+
  */
 import { existsSync, readFileSync } from 'node:fs'
 import { resolve, dirname } from 'node:path'

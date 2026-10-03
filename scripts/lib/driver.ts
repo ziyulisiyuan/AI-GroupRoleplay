@@ -1,7 +1,7 @@
 /**
  * 群聊 CLI 测试驱动：spawn 一个群聊进程，逐条喂输入。
- * 回合边界用 CLI 的确定性标记 [[TURN_DONE]]（CLI_TURN_MARKER=1）判定，
- * 不再依赖"输出静默"猜测——思考模式下回复前静默可达十几秒，猜不准。
+ * 回合边界用 CLI 的确定性标记 [[TURN_DONE]]（CLI_TURN_MARKER=1）判定——
+ * 思考模式下回复前静默可达十几秒，按静默猜测不可靠。
  * 供 acceptance-m1 / m2 / m3 复用。
  */
 import { spawn, type ChildProcess } from 'node:child_process'

@@ -551,7 +551,7 @@ export class GroupSession {
    * - 事件补全（§5.9）= 本轮新出现在现场的所有人（after.present − before.present）：
    *   "角色走向用户"与"用户走向角色"都是重逢——用户移到某角色的场景时，一直等在那里的
    *   原住民同样补离场经历；首次进场者由 runOffStory 内部按 absenceStartId 跳过（不虚构前史）。
-   *   全程未分开的随行者不在此集（无新离场窗口），也因此不会再被重喂已消费过的旧窗口。
+   *   全程未分开的随行者不在此集（与用户之间没有离场窗口）。
    * 说话回合与用户手动修正都走这里；接力判到名单内的人发言时，speakAs 组装前会先等注入完成。
    */
   maybeSnapshotEntrants(before: SceneAccess, note = '新进现场'): void {
@@ -898,7 +898,7 @@ export class GroupSession {
       const r = yield* this.speakAs(current, this.store.effectiveMessages())
       replies.push({ speaker: current, text: r.text })
       if (!spokenWeight.has(current)) spokenWeight.set(current, 1) // 首次发言记 1；再次发言不重置（衰减叠加）
-      if (r.text.trim() === '') break // 空回复不再接力、不记账
+      if (r.text.trim() === '') break // 空回复不接力、不记账
       // 转告触发：这条回复若在向谁转告他不知道的事，先移植记忆再考虑接力
       if (r.judge !== undefined && r.judge.told.size > 0 && routerLlm !== undefined) {
         yield* this.grantExtraMemory(r.judge.told, r.text, routerLlm)

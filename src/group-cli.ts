@@ -70,7 +70,7 @@ rl.on('line', line => {
   if (text === '/quit') { rl.close(); process.exit(0) }
   if (streaming) { pending.push(text); return }
   if (text === '/new') {
-    // 引擎不暴露 reset（M0 CLI 专用）；群聊重建走文件级操作
+    // 引擎不暴露 reset；群聊重建走文件级操作
     console.log('（/new 请直接删除 groups 下的 剧情.jsonl 后重启）')
     return
   }

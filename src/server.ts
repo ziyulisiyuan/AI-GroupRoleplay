@@ -25,7 +25,7 @@ import { loadSettings, saveSettings, resolveLlm, healOrphanSettingsBackup, type 
 import { registerStatic } from './server-static.ts'
 
 const PORT = Number(process.env.HOST_PORT ?? 8787)
-/** 绑定地址：不设 = 默认（全部网卡，PC 现状不变）；安卓壳设 127.0.0.1 只绑回环。 */
+/** 绑定地址：不设 = 全部网卡（PC 形态）；安卓壳设 127.0.0.1 只绑回环。 */
 const HOST_BIND = process.env.HOST_BIND || undefined
 const sessions = new Map<string, GroupSession>()
 
@@ -90,7 +90,7 @@ app.post('/api/group/:name/message', async c => {
 
 app.post('/api/group/:name/roll', c => runEvents(c, getSession(c.req.param('name')).roll()))
 
-// ---------- 编辑器（M5）：建群 / 群设定 / 角色资料 ----------
+// ---------- 编辑器：建群 / 群设定 / 角色资料 ----------
 
 function groupDir(name: string): string {
   if (!isValidName(name)) throw new Error('非法群聊名')

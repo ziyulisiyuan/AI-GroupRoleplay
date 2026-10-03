@@ -1,8 +1,8 @@
 /**
  * 前端静态托管（安卓自包含部署用；PC 上 dist 存在时顺带同一端口出界面）。
  * 只做增量：ROOT/dist 存在时才注册，把**未知 GET** 回退到 index.html（SPA 单页）。
- * /api 各路由在 server.ts 中先注册先命中，不受影响；dist 不存在时本模块完全不注册，
- * 后端行为与历史版本一致。独立成文件，回滚 = 删本文件 + 删 server.ts 里的两行接线。
+ * /api 各路由在 server.ts 中先注册先命中，不受影响；dist 不存在时本模块完全不注册。
+ * 独立成文件；移除 = 删本文件 + 删 server.ts 里的两行接线。
  */
 import { existsSync } from 'node:fs'
 import { readFileSync, statSync } from 'node:fs'

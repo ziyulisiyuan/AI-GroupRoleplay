@@ -230,7 +230,7 @@ Then one JSON object per line:
 | `msg` | `id, role(user\|character\|system), name, text, round, visible_to("all"\|[名]), ts, objective?(true)` | `id` is monotonic: `nextMsgId = max(header.lastMsgId, existing ids) + 1`. **User edits/deletes/rerolls physically rewrite/remove msg lines** — the log is the current context. `visible_to` = knowledge-audience snapshot taken at append time (§4.4). `objective: true` marks an objective-injection line (§4.6): backfill transplants it as `source=客观`; omitted for ordinary messages. |
 | `route` | `round, picked, reason, fallback` | one per director decision (including each relay hop; relay rows carry reason `接力`) |
 | `presence` | `scene?, locations?{角色: 场景}, present[], remote?[{character, perceive(语音\|视听), note?, since?}], overhear?[{same}], reason, ts` | scene change (§4); map rows carry the active scene and every character's location (missing key = 其他); omitted layers = unchanged |
-| `ledger` | `character, section(status\|knowledge\|personality\|relationship), op(set\|append\|unset\|retract), content` | payloads in §3.3; `personality`/`relationship` sections are retired (replay ignores them) |
+| `ledger` | `character, section(status\|knowledge\|personality\|relationship), op(set\|append\|unset\|retract), content` | payloads in §3.3; `personality`/`relationship` sections may exist in existing logs and are ignored by replay |
 | `director` | `text, reply, applied[], ts` | correction-window archive; never shown to characters (§6.3) |
 | `rename` | `from, to, ts` | character rename; historical rows are mapped to the current name via the name chain (§3.10) |
 
@@ -796,7 +796,7 @@ and 判定.jsonl) and never fatal.
 `route_and_remember` tool: routing + `状态账本` + `presence_updates` in one call; ledger updates
 apply inline after the reply. This is the director's **compensatory takeover** — it runs only
 when the Jev call itself failed (a salvage turn keeps Jev's own scene corrections and the
-director's `presence_updates` are ignored by the pre-existing if/else split). Its scene-people
+director's `presence_updates` are ignored by the engine's fallback branch). Its scene-people
 authority is **extremely strict, two rules**: a character absent from the roster joins only when
 the dialogue explicitly depicts him entering/appearing/being called in; a character on the roster
 leaves only when the dialogue explicitly depicts him unconscious or leaving — plausibility
@@ -951,16 +951,15 @@ rename without the frontend twin breaks the UI silently):
 - Per-message edit/delete and reroll are physical operations; the delete confirm must keep
   saying the text is removed from the log.
 - The models panel edits API keys only; providers are managed by editing settings.yaml.
-  **Amendment (§12 self-contained build):** on the Android app the group data and
+  On the Android app (§12) the group data and
   `settings.yaml` live in app-private storage with **no external editor path**, so the panel
-  becomes a two-section page: (1) **模型** — one custom dialogue provider, edited in place
+  is a two-section page: (1) **模型** — one custom dialogue provider, edited in place
   (API 密钥 / API 地址 / 模型 ID + a single 保存; creates the provider and activates it when
   none exists yet); (2) **总管快速判断（可选）** — a single key field: entering a key creates-or-
   updates the fixed Jev provider (`https://api.inferera.com`, `jev-latest`, effort `off`) and
   sets `routerId`; leaving it empty keeps the fast path off, so the engine falls back to the
-  full director (the dialogue model) exactly as designed. 停用 clears `routerId`. The backend is
-  unchanged; on the PC the panel keeps its historical key-only behaviour and the file remains
-  the source of truth.
+  full director (the dialogue model) exactly as designed. 停用 clears `routerId`. On the PC the panel edits the API key only and `settings.yaml`
+  remains the source of truth.
 - **Route registration order:** literal segments must be registered **before** sibling `:param`
   routes (hono matches in registration order). `PUT /api/models/router` therefore sits above
   `PUT /api/models/:id`; swapping them silently turns the router endpoint into a 404
@@ -1172,7 +1171,7 @@ zips the payload with `tar -a` (forward-slash entry names).
 
 **Server-side additions (§2/§7).** `server.ts` gains two additive lines and one environment
 gate: `registerStatic(app)` (only active when `ROOT/dist` exists; unknown GETs fall back to
-`index.html`) and `hostname: process.env.HOST_BIND` (`unset` = historical behaviour; the app sets
+`index.html`) and `hostname: process.env.HOST_BIND` (`unset` = all interfaces, the PC shape; the app sets
 `127.0.0.1` so the server is not exposed to the LAN).
 
 **Known limitations.** The APK ships `arm64-v8a` only; `minSdk 30`; the back key backgrounds the

@@ -181,7 +181,7 @@ try {
   // ⊘ 手选跳过判定：questions 里没有 scene_change，也没有 present_*
   const askedKeys = Object.keys((jev.hits[0]?.body as { questions: Record<string, unknown> }).questions)
   assert.ok(!askedKeys.includes('scene_change'), '手选时不得再问换场景判定')
-  assert.ok(!askedKeys.some(k => k.startsWith('present_')), 'present 判定已删除：不得再问')
+  assert.ok(!askedKeys.some(k => k.startsWith('present_')), 'present 由位置表派生：不得询问 present_*')
   assert.ok(askedKeys.includes('location_角色甲'), '位置判定必须问')
   assert.equal(session.snapshot().scene, S2, '手选生效：当前场景=场景二')
   assert.deepEqual(session.presentNames().sort(), ['角色甲', '角色丙'].sort(), '目的地里的人 + 随行者现场；留守的乙不在')

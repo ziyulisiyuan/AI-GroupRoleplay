@@ -1,7 +1,7 @@
 /**
  * 群聊 Host（SPEC §4.2 / §4.1）：
- * - assembleGroup：角色每轮输入组装（只读角色.md + 性格.md(含演变) + 状态.md + 记忆注入 + 群设定 + 最近12条）
- * - routeNextSpeaker：总管一次 tool-call（≤2k 增量输入），超时/失败→启发式降级
+ * - assembleGroup：角色每轮输入组装（只读 角色.md/性格.md/人物关系.md + 状态账本 + 记忆注入 + 群设定 + 场景地图 + 最近36条）
+ * - routeNextSpeaker：总管一次 tool-call，超时/失败→启发式降级
  */
 import { chatToolCall, type ToolSpec } from '../llm/deepseek.ts'
 import { jevDecide } from '../llm/jev.ts'
@@ -69,7 +69,7 @@ export function assembleGroup(
     settings.era !== '' ? `【时代背景】${settings.era}` : '',
     settings.world !== '' ? `【世界观】${settings.world}` : '',
   ].filter(s => s !== '')
-  // 地图（§4）：世界由这些场景构成，全部内容每轮注入——空间对角色不再是脑补
+  // 地图（§4）：世界由这些场景构成，全部内容每轮注入——空间由此成为每个角色的既知事实
   const mapSection = scenes !== undefined && scenes.length > 0
     ? [
         '【场景（这个世界的地点，你就在其中之一）】',
@@ -412,7 +412,7 @@ export interface JevRouteInput {
   activeScene?: string
   /** 各角色所在场景（地图群；缺键 = 其他）。 */
   locations?: Record<string, string>
-  /** 用户手选的目标场景（⊘ 按钮）：设置时不再问换场景判定，直接按"是"处理。 */
+  /** 用户手选的目标场景（⊘ 按钮）：设置时跳过换场景判定，直接按"是"处理。 */
   manualScene?: string
   /** 判定日志回调（判定.jsonl 用，只给人看）：成功带全部原始答案与耗时，失败带原因。 */
   log?: (entry: Record<string, unknown>) => void

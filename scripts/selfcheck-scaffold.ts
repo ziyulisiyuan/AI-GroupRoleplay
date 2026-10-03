@@ -1,5 +1,5 @@
 /**
- * 编辑器（M5）离线自检：脚手架产物必须能被真正的加载器与组装器吃下。
+ * 编辑器离线自检：脚手架产物必须能被真正的加载器与组装器吃下。
  * 全程在工作区 groups/_acc-scaffold 内进行，finally 清理。
  */
 import assert from 'node:assert/strict'
@@ -97,7 +97,7 @@ try {
   assert.ok(isValidName('正常名字'))
   for (const bad of ['', '   ', 'a/b', 'a\\b', '..', 'x:y']) assert.ok(!isValidName(bad), `应拒绝: ${JSON.stringify(bad)}`)
 
-  console.log('M5 离线自检通过：建群/建角色/五文件落盘/回填/名字校验')
+  console.log('编辑器离线自检通过：建群/建角色/五文件落盘/回填/名字校验')
 } finally {
   cleanup()
 }

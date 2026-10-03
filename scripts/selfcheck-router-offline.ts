@@ -6,7 +6,7 @@
  * 3) jevExtraRounds：二段逐轮判定（≥0.75 命中、低分不移植、故障不移植）。
  * 4) missingRounds/transplantRounds：缺失轮计算与逐字移植（source=额外得知，带 mid）。
  * 5) 端到端 speak：快路径（Jev 路由）→ 合并判定（知情+总门+转告+接力一次调用）→ 记账门控
- *    （无变化零 DeepSeek 调用）→ 额外记忆移植（幂等：无缺失轮不再触发二段）→
+ *    （无变化零 DeepSeek 调用）→ 额外记忆移植（幂等：无缺失轮不触发二段）→
  *    接力累计衰减（刚发言压0：不可能连续发言；权重每判定乘0.8且重新发言不重置；无硬上限，衰减最终判回用户）；
  *    Jev 故障 → 整轮回退 deepseek 完整总管（记账随总管结果即时应用）。
  * settings.yaml 若存在则备份、结束恢复（测试注入 routerId/activeId 指向本地 mock）。
@@ -203,7 +203,7 @@ try {
     assert.ok(r?.knows.has('角色乙') && r?.knows.has('角色丙'), '能感知到的角色必须在知情名单（知情=原文移植）')
     assert.deepEqual([...(r?.told ?? [])], ['角色丙'], '额外记忆一段触发：只有过线的丙')
     assert.equal(r?.stateDirty, false, 'state_dirty 0.05 → 不需要记账')
-    assert.ok(JSON.stringify(m.hits[0]?.body ?? {}).includes('你：（测试发言）'), '主判定请求体必须带最近对话（recent 不再是死参数）')
+    assert.ok(JSON.stringify(m.hits[0]?.body ?? {}).includes('你：（测试发言）'), '主判定请求体必须带最近对话')
     m.server.close()
   }
 
@@ -216,7 +216,7 @@ try {
       knows_角色丙: { type: 'noul', noul: 0.7 },   // 场外无链路：0.7 ≥ 0.65 → 在名单
     } })
     const r = await jevRoute({ ...baseInput(m.port), present: ['角色甲'], remote: [], overhear: [] })
-    assert.ok(r?.knows.has('角色甲'), '现场者用 0.23：0.25 在知情名单（当面说话不再被 0.5 砍掉）')
+    assert.ok(r?.knows.has('角色甲'), '现场者用 0.23：0.25 在知情名单（当面说话的中间值是噪声）')
     assert.ok(r !== undefined && !r.knows.has('角色乙'), '场外无链路者需 0.65：0.6 不得进知情名单（防单次概率尖峰误标）')
     assert.ok(r?.knows.has('角色丙'), '场外无链路者 0.7 ≥ 0.65：在知情名单')
     m.server.close()
@@ -239,7 +239,7 @@ try {
     m2.server.close()
   }
 
-  // ── 2) 低置信 → 路由置空回退；名单外 → 同；回退必须落判定日志（不再静默）
+  // ── 2) 低置信 → 路由置空回退；名单外 → 同；回退必须落判定日志
   {
     const logs: Array<Record<string, unknown>> = []
     const m = await mockJev({ answers: {
@@ -249,7 +249,7 @@ try {
     const r = await jevRoute({ ...baseInput(m.port), log: e => logs.push(e) })
     assert.ok(r !== undefined && r.picked === '', '置信度低于阈值：路由必须置空（回退完整总管）')
     assert.ok(r?.reason.includes('回退'), '理由必须说明路由已回退')
-    assert.ok(logs.some(l => typeof l.note === 'string' && String(l.note).includes('回退')), '路由回退必须落判定日志（不再盲审）')
+    assert.ok(logs.some(l => typeof l.note === 'string' && String(l.note).includes('回退')), '路由回退必须落判定日志')
     assert.ok(logs.every(l => l.answers !== undefined), '回退日志必须带 Jev 原始答案')
     m.server.close()
     const logs2: Array<Record<string, unknown>> = []
@@ -328,7 +328,7 @@ try {
     llm.baseUrl = `http://127.0.0.1:${m.port}`
     const got = await jevExtraRounds({ llm, character: '角色丙', retoldText: '我把一件事转告给了他', missing: [{ round: 1, text: '你：（测试发言）' }, { round: 2, text: '角色甲：（测试发言）' }, { round: 3, text: '角色乙：（整轮第一句）\n角色乙：（整轮第二句）' }], timeoutMs: 1000 })
     assert.deepEqual([...(got ?? [])].sort(), [2, 3], '≥0.75 的轮必须命中，低分轮不给')
-    // 请求体必须带整轮原文（不再只给首句摘要）
+    // 请求体必须带整轮原文（逐字、无省略）
     const extraBody = JSON.stringify(m.hits[0]?.body ?? {})
     assert.ok(extraBody.includes('（整轮第一句）') && extraBody.includes('（整轮第二句）'), '二段判定必须收到整轮的每一条消息')
     assert.ok(!extraBody.includes('（等'), '二段判定请求体不得再出现"（等N条）"式省略')
@@ -364,7 +364,7 @@ try {
     assert.deepEqual(missingRounds(store, mem).map(x => x.round), [2], '补过的轮不再缺失（幂等基础）')
   }
 
-  // ── 3d) 人物速览 = 外观全文（不再截断到第一小句）
+  // ── 3d) 人物速览 = 外观全文
   {
     rmSync(accDir, { recursive: true, force: true })
     buildGroupFixture(accDir, { chars: [{ dir: '角色甲', name: '角色甲', personality: '（测试设定）', appearance: '（测试外观，后半句；第三段）', relationships: '（测试关系）' }] })
@@ -425,7 +425,7 @@ try {
     const replyIdx = types.indexOf('reply')
     assert.ok(replyIdx >= 0, '必须有回复事件')
     assert.ok(events.some(e => e.type === 'info' && (e.text ?? '').includes('后台')), '记账门控通过：后台记账提示出现')
-    assert.ok(!types.includes('ledger'), '后台记账不再发实时 ledger 事件（流及时结束，不锁输入）')
+    assert.ok(!types.includes('ledger'), '后台记账不发实时 ledger 事件（流及时结束，不锁输入）')
     assert.equal(events.filter(e => e.type === 'route').length, 1, '接力判给用户：只有一个 route 事件')
     assert.equal(ds.hits.filter(h => h.kind === 'route').length, 0, '快路径成功时不得再调 deepseek 路由')
     assert.equal(jev.hits.length, 2, 'Jev 调用：1 主判定 + 1 合并判定')
@@ -529,7 +529,7 @@ try {
     ds.server.close(); jev.server.close()
   }
 
-  // ── 4c) 循环上限已取消 + 衰减跨发言叠加：接力无硬上限，靠持续衰减最终把发言权判回用户。
+  // ── 4c) 接力无硬上限 + 衰减跨发言叠加：靠持续衰减最终把发言权判回用户。
   //         甲0.64 时再次发言 → 下一次判定压 0（衰减不推进）→ 再下一次 0.64×0.8=0.512（不重置）；
   //         正是 0.512×0.23 < 你 0.12 让链在第 5 条回复后判回用户——若实现错误地"发言即重置"，
   //         甲会是 0.8×0.23=0.184 > 0.12 继续说第 6 条，本钉即红。
@@ -570,7 +570,7 @@ try {
     }
     const replyCount = events.filter(e => e.type === 'reply').length
     assert.equal(replyCount, 5, `无上限且衰减叠加：链长超过旧上限（4 条）后由衰减判回用户，实得 ${replyCount}`)
-    assert.ok(!events.some(e => e.type === 'info' && (e.text ?? '').includes('上限')), '上限已取消：不得再出现上限提示')
+    assert.ok(!events.some(e => e.type === 'info' && (e.text ?? '').includes('上限')), '接力无硬上限：不出现任何上限提示')
     assert.equal(jev.hits.length, 6, 'Jev 调用：1 主判定 + 每条回复 1 次合并判定（5 条回复）')
     const picks = events.filter(e => e.type === 'route').map(e => e.picked)
     assert.deepEqual(picks, ['角色甲', '角色乙', '角色丙', '角色甲', '角色乙'], `接力按累计衰减日程推进，实得 ${JSON.stringify(picks)}`)
@@ -582,7 +582,7 @@ try {
     ds.server.close(); jev.server.close()
   }
 
-  // ── 4d) 额外记忆（转告→二段判定→逐字移植）：命中移植、堆在账本末尾、无缺失轮不再触发二段
+  // ── 4d) 额外记忆（转告→二段判定→逐字移植）：命中移植、堆在账本末尾、无缺失轮不触发二段
   {
     const ds = await mockDeepseek({ streamText: '（测试回复·会上内容）' })
     const cast = { // 丙在第1轮缺席（不在场），第2轮进场后被转告
@@ -803,7 +803,7 @@ try {
     assert.ok(memOf2('角色乙').includes('离场经历') && memOf2('角色乙').includes('替甲办妥'), '未入场的参与者乙同样获得乙视角的离场经历')
     assert.ok(memOf2('角色甲').includes('现场所见'), '回归者同时拿到现场所见')
     assert.ok(!memOf2('角色丙').includes('离场经历'), '非参与者丙不得获得离场经历')
-    // 平面群无地图：场景相关的段/约束行不得出现在提示词里（相对旧版逐字节不变）
+    // 平面群无地图：场景相关的段/约束行不得出现在提示词里
     const flatSceneHit = ds.hits.filter(h => h.kind === 'scene').at(-1)
     assert.ok(flatSceneHit !== undefined, '平面群的现场所见调用存在')
     const flatSceneBody = JSON.stringify(flatSceneHit.body)
@@ -1203,7 +1203,7 @@ try {
     assert.equal(ds.hits.filter(h => h.kind === 'route').length, 1, '回退时应恰好一次 deepseek 路由调用')
     assert.ok(!JSON.stringify(ds.hits.find(h => h.kind === 'route')?.body ?? {}).includes(RULES_MARKER),
       '回退总管的提示词不得包含用户规则')
-    assert.equal(ds.hits.filter(h => h.kind === 'bookkeep').length, 0, '回退路径不再单独记账')
+    assert.equal(ds.hits.filter(h => h.kind === 'bookkeep').length, 0, '回退路径记账即时应用（无后台记账）')
     assert.equal(jev.hits.length, 2, 'Jev 仍被尝试（主判定 + 合并判定，均失败走保底）')
     ds.server.close(); jev.server.close()
   }

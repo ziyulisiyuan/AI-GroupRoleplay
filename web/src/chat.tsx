@@ -372,7 +372,7 @@ export function ChatView({ group, onBack, onOpenInfo }: Props): React.ReactEleme
         )}
       </Modal>
 
-      {/* ⊘ 场景手选（悬浮）：选中的场景随本轮发送生效——不再走换场景判定，直接按"是"处理 */}
+      {/* ⊘ 场景手选（悬浮）：选中的场景随本轮发送生效——跳过换场景判定，直接按"是"处理 */}
       <Modal open={scenePick} onClose={() => setScenePick(false)} title="前往哪个场景？">
         {(snap?.scenes ?? []).map(s => (
           <button key={s.name} className="menu-item" onClick={() => { setPendingScene(s.name); setObjectiveMode(false); setScenePick(false) }}>
