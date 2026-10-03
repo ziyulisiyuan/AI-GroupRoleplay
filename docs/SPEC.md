@@ -589,7 +589,7 @@ granted to the told character as **extra memory**:
    speaker is assembled): candidate rounds = **every** round holding messages missing from that
    character's ledger (oldest first, no cap), each carrying the round's **full verbatim messages**
    (`missingRounds`, pure code; Jev has no input cap, so nothing is summarized or truncated).
-   One `round_<N>` noul per candidate; ≥0.75 → that round's messages the character lacks are
+   One `round_<N>` noul per candidate; ≥0.39 → that round's messages the character lacks are
    transplanted verbatim (`transplantRounds`), `source = 额外得知`, keeping the original `mid` and
    `round`, appended at the end of the ledger. Every new entry gets its ledger row (§5.4) and an
    info event names the granted rounds.
@@ -749,7 +749,7 @@ turn ends (relay-failure semantics). This replaces separate audience and relay c
 call per reply.
 
 **Stage-2 retelling rounds (`jevExtraRounds`).** One call per triggered character (§5.7): per
-missing round a `round_<N>` noul, ≥0.75 → transplant. Failure or no hit grants nothing.
+missing round a `round_<N>` noul, ≥0.39 → transplant. Failure or no hit grants nothing.
 
 **Relay.** From the merged judgment: a picked character → append route row and continue; the
 user, low confidence (<0.45), an out-of-roster pick, or failure → turn ends. Uncertainty resolves
@@ -770,7 +770,7 @@ probability outcome. Flips and blocks are logged to 判定.jsonl (`接力加权`
 
 Thresholds (`JEV_THRESHOLDS`): `{ confidenceMin: 0.45, perceiveMin: 0.7, interactMin: 0.7,
 interactMax: 0.3, presentKnowsMin: 0.23, gateKeep: 0.5, unlinkedKnowsMin: 0.65, toldMin: 0.5,
-extraRoundMin: 0.75 }`.
+extraRoundMin: 0.39 }`.
 
 ### 6.1b Slow path (`askBookkeeper`)
 

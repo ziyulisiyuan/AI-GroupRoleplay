@@ -3,7 +3,7 @@
  * 1) jevDecide：原生 systemone 响应解析、HTTP 错误抛出、超时抛出。
  * 2) jevRoute：路由命中/低置信回退/名单外回退/noul 阈值变换（进场/离场/模糊保持）/接入判断/perceive
  *    /额外记忆一段触发（told_X）/状态总门（state_dirty）。
- * 3) jevExtraRounds：二段逐轮判定（≥0.75 命中、低分不移植、故障不移植）。
+ * 3) jevExtraRounds：二段逐轮判定（≥0.39 命中、低分不移植、故障不移植）。
  * 4) missingRounds/transplantRounds：缺失轮计算与逐字移植（source=额外得知，带 mid）。
  * 5) 端到端 speak：快路径（Jev 路由）→ 合并判定（知情+总门+转告+接力一次调用）→ 记账门控
  *    （无变化零 DeepSeek 调用）→ 额外记忆移植（幂等：无缺失轮不触发二段）→
@@ -321,13 +321,13 @@ try {
   {
     const llm = { baseUrl: '', apiKey: 'fake', model: 'jev-test' }
     const m = await mockJev({ answers: {
-      round_1: { type: 'noul', noul: 0.3 },  // 低分：不属于转告范围
-      round_2: { type: 'noul', noul: 0.8 },  // ≥0.75：命中
-      round_3: { type: 'noul', noul: 0.75 }, // 恰在阈值：命中
+      round_1: { type: 'noul', noul: 0.38 }, // 阈值下：不属于转告范围
+      round_2: { type: 'noul', noul: 0.4 },  // ≥0.39：命中
+      round_3: { type: 'noul', noul: 0.39 }, // 恰在阈值：命中
     } })
     llm.baseUrl = `http://127.0.0.1:${m.port}`
     const got = await jevExtraRounds({ llm, character: '角色丙', retoldText: '我把一件事转告给了他', missing: [{ round: 1, text: '你：（测试发言）' }, { round: 2, text: '角色甲：（测试发言）' }, { round: 3, text: '角色乙：（整轮第一句）\n角色乙：（整轮第二句）' }], timeoutMs: 1000 })
-    assert.deepEqual([...(got ?? [])].sort(), [2, 3], '≥0.75 的轮必须命中，低分轮不给')
+    assert.deepEqual([...(got ?? [])].sort(), [2, 3], '≥0.39 的轮必须命中，低分轮不给')
     // 请求体必须带整轮原文（逐字、无省略）
     const extraBody = JSON.stringify(m.hits[0]?.body ?? {})
     assert.ok(extraBody.includes('（整轮第一句）') && extraBody.includes('（整轮第二句）'), '二段判定必须收到整轮的每一条消息')
