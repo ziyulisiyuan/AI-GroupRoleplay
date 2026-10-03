@@ -11,6 +11,8 @@
  * 6) 场景全文注入角色（assembleGroup）。
  * 7) 离开者去向=其他：位置清空（图外）。
  * 8) 跨场景通话：perceive+interact 双高 → 双向接入（语音）→ 接入者可被路由接话，位置不动。
+ * 9) 用户走向角色（触发拆分）：位置未变的目的地原住民不拿现场所见，但按各自视角补离场经历；
+ *    首次见面者（无分离窗口）两头皆无；随行者只拿现场所见。
  * settings.yaml 若存在则备份、结束恢复（测试注入 routerId/activeId 指向本地 mock）。
  */
 import assert from 'node:assert/strict'
@@ -54,7 +56,7 @@ async function mockJev(script: { answers?: Record<string, unknown> | Array<Recor
 
 interface DeepseekHit { kind: 'route' | 'bookkeep' | 'scene' | 'offstory' | 'pov' | 'stream'; body: Record<string, unknown> }
 
-async function mockDeepseek(script: { streamText?: string; scene?: string }): Promise<{ server: Server; port: number; hits: DeepseekHit[] }> {
+async function mockDeepseek(script: { streamText?: string; scene?: string; offstory?: Array<{ summary: string; participants: string[] }>; povMap?: Record<string, string>; pov?: string }): Promise<{ server: Server; port: number; hits: DeepseekHit[] }> {
   const hits: DeepseekHit[] = []
   const server = createServer((req, res) => {
     let buf = ''
@@ -72,6 +74,19 @@ async function mockDeepseek(script: { streamText?: string; scene?: string }): Pr
         hits.push({ kind: 'bookkeep', body })
         res.setHeader('content-type', 'application/json')
         res.end(JSON.stringify({ choices: [{ message: { content: '', tool_calls: [{ function: { name: 'record_round', arguments: '{}' } }] } }] }))
+        return
+      }
+      if (tools.includes('record_offstory')) {
+        hits.push({ kind: 'offstory', body })
+        res.setHeader('content-type', 'application/json')
+        res.end(JSON.stringify({ choices: [{ message: { content: '', tool_calls: [{ function: { name: 'record_offstory', arguments: JSON.stringify({ events: script.offstory ?? [] }) } }] } }] }))
+        return
+      }
+      if (tools.includes('render_memory')) {
+        hits.push({ kind: 'pov', body })
+        const who = /以(.+?)的限知视角/.exec(buf)?.[1] ?? ''
+        res.setHeader('content-type', 'application/json')
+        res.end(JSON.stringify({ choices: [{ message: { content: '', tool_calls: [{ function: { name: 'render_memory', arguments: JSON.stringify({ memory: script.povMap?.[who] ?? script.pov ?? '（视角记忆）' }) } }] } }] }))
         return
       }
       hits.push({ kind: 'stream', body })
@@ -174,10 +189,13 @@ try {
   assert.ok(vis.includes('角色丙') && vis.includes('角色甲'), '目的地里的人与随行者听见进门这句')
   assert.ok(!vis.includes('角色乙'), '留守原地的乙听不到')
   assert.ok(events.some(e => e.type === 'info' && (e.text ?? '').includes('手选')), '场景更新事件必须标注手选')
-  // 丙一直在目的地（位置没变）→ 不入入场包；甲随行（位置变了）→ 入场包
+  // 丙一直在目的地（位置没变）→ 不入现场所见；甲随行（位置变了）→ 入场包
   await sleep(1200)
   assert.ok(!memOf('角色丙').includes('现场所见'), '一直在目的地者不得获得现场所见')
   assert.ok(memOf('角色甲').includes('现场所见'), '随行者进入新场景必须获得现场所见')
+  // 丙本轮虽"新出现在现场"，但从未在用户场景出现过（无离场窗口）→ 也不获得离场经历（不虚构前史）
+  assert.ok(!memOf('角色丙').includes('离场经历'), '首次见面的目的地原住民不获得离场经历')
+  assert.ok(!memOf('角色甲').includes('离场经历'), '全程随行者无新离场窗口，不获得离场经历')
 
   // ── 3) 判定移动回场景一（scene_change 命中）；甲丙留守（去向=场景二）；乙在场
   ds.server.close(); jev.server.close()
@@ -393,7 +411,89 @@ try {
     ds6.server.close(); jev6.server.close()
   }
 
-  console.log('地图机制自检通过：场景文件层(创建/重名/描述可改/名称不可改) · 建群即建图 · 初始场景落位 · ⊘手选跳过判定生效(不问scene_change/present_*) · 目的地者直接在场听见进门句 · 同行者/离开者按location落位 · 判定移动与极严苛不动 · 客观注入(不问知情转告/location照问/受众=当前场景现场者/他场景者不收) · 对话进场晚于快照且入场包照常 · 一直在场者不入入场包 · 场景全文+当前场景注入角色 · 离开去向=其他清位 · 跨场景通话(双向接入建立/接入者可被路由/位置不动/呼叫句可听)')
+  // ── 9) 用户走向角色（触发拆分核心钉）：手选移回场景二，甲丙一直等在那里（位置未变）——
+  //         现场所见：谁都不拿（没有"进门"）；离场经历：甲丙都"新出现在现场"且都有分离窗口
+  //         → 都按各自视角补全。旧判据（只认位置变化）下这一整包都不会发生。
+  {
+    const ds9 = await mockDeepseek({
+      streamText: '（测试回复·重逢）',
+      offstory: [{ summary: '（测试事件：甲托付的事在分开期间办妥。）', participants: ['角色甲', '角色丙'] }],
+      povMap: {
+        角色甲: '（测试视角·甲：你托付的事已经办妥。）',
+        角色丙: '（测试视角·丙：你替甲办妥了那件事。）',
+      },
+    })
+    const jev9 = await mockJev({ answers: [
+      { // 主判定：⊘ 手选移回场景二。判定发生在移动**之前**——此刻可发言名单只有丙（甲还在场景二
+        // 不在名单、乙图外），next_speaker 必须在名单内，否则路由整体回退启发式总管。
+        next_speaker: { type: 'choice', choice: '角色丙', confidence: 0.9, probabilities: {} },
+        location_角色甲: { type: 'choice', choice: S2, confidence: 0.9, probabilities: {} },
+        location_角色乙: { type: 'choice', choice: '其他', confidence: 0.9, probabilities: {} },
+        location_角色丙: { type: 'choice', choice: S2, confidence: 0.9, probabilities: {} },
+        perceive_角色甲: { type: 'noul', noul: 0.05 },
+        interact_角色甲: { type: 'noul', noul: 0.05 },
+        perceive_角色乙: { type: 'noul', noul: 0.05 },
+        interact_角色乙: { type: 'noul', noul: 0.05 },
+        perceive_角色丙: { type: 'noul', noul: 0.05 },
+        interact_角色丙: { type: 'noul', noul: 0.05 },
+        knows_角色甲: { type: 'noul', noul: 0.95 },
+        knows_角色乙: { type: 'noul', noul: 0.05 },
+        knows_角色丙: { type: 'noul', noul: 0.9 },
+        told_角色甲: { type: 'noul', noul: 0.05 },
+        told_角色乙: { type: 'noul', noul: 0.05 },
+        told_角色丙: { type: 'noul', noul: 0.05 },
+        state_dirty: { type: 'noul', noul: 0.1 },
+      },
+      { // 丙回复的合并判定（候选=甲乙）→ 接力甲（移动后甲已在现场名单内）
+        knows_角色甲: { type: 'noul', noul: 0.9 },
+        knows_角色乙: { type: 'noul', noul: 0.05 },
+        told_角色甲: { type: 'noul', noul: 0.05 },
+        told_角色乙: { type: 'noul', noul: 0.05 },
+        state_dirty: { type: 'noul', noul: 0.1 },
+        next_speaker: { type: 'choice', choice: '角色甲', confidence: 0.9, probabilities: {} },
+      },
+      { // 甲回复的合并判定（候选=乙丙）→ 用户
+        knows_角色乙: { type: 'noul', noul: 0.05 },
+        knows_角色丙: { type: 'noul', noul: 0.9 },
+        told_角色乙: { type: 'noul', noul: 0.05 },
+        told_角色丙: { type: 'noul', noul: 0.05 },
+        state_dirty: { type: 'noul', noul: 0.1 },
+        next_speaker: { type: 'choice', choice: '你', confidence: 0.9, probabilities: {} },
+      },
+    ] })
+    writeTestSettings(ds9.port, jev9.port)
+    const memCountOf = (name: string, marker: string): number => memOf(name).split(marker).length - 1
+    const snapBefore = { 甲: memCountOf('角色甲', '现场所见'), 丙: memCountOf('角色丙', '现场所见') }
+    const ev9: Array<{ type: string; text?: string; picked?: string }> = []
+    for await (const ev of session.speak('（测试发言·重逢）', S2)) {
+      ev9.push(ev.type === 'route' ? { type: ev.type, picked: ev.picked } : { type: ev.type, ...('text' in ev ? { text: ev.text } : {}) })
+    }
+    assert.equal(session.snapshot().scene, S2, '手选移回场景二')
+    assert.deepEqual(session.presentNames().sort(), ['角色甲', '角色丙'].sort(), '甲丙原位在目的地（位置未变）')
+    assert.deepEqual(ev9.filter(e => e.type === 'route').map(e => e.picked), ['角色丙', '角色甲'], '快路径路由丙 + 接力甲（无回退）')
+    assert.ok(ev9.every(e => e.type !== 'info' || !(e.text ?? '').includes('降级')), '路由不得走启发式降级')
+    assert.ok(ev9.filter(e => e.type === 'info' && (e.text ?? '').includes('环顾四周')).length >= 2, '丙与甲开口前都先等入场包（提示出现）')
+    for (let i = 0; i < 40; i++) {
+      if (memOf('角色甲').includes('离场经历') && memOf('角色丙').includes('离场经历')) break
+      await sleep(250)
+    }
+    assert.ok(memOf('角色甲').includes('离场经历') && memOf('角色甲').includes('你托付的事已经办妥'), '分离过的目的地原住民（甲）获得甲视角的离场经历')
+    assert.ok(memOf('角色丙').includes('离场经历') && memOf('角色丙').includes('替甲办妥'), '分离过的目的地原住民（丙）获得丙视角的离场经历')
+    assert.equal(memCountOf('角色甲', '现场所见'), snapBefore.甲, '原地居民（甲）不新增现场所见条目（位置未变，无进门）')
+    assert.equal(memCountOf('角色丙', '现场所见'), snapBefore.丙, '原地居民（丙）不新增现场所见条目（位置未变，无进门）')
+    assert.equal(ds9.hits.filter(h => h.kind === 'scene').length, 0, '无人进门：现场所见调用为零')
+    assert.equal(ds9.hits.filter(h => h.kind === 'offstory').length, 1, '事件发现恰一次（全部新现者合并进一次调用）')
+    assert.ok(JSON.stringify(ds9.hits.filter(h => h.kind === 'offstory')[0]?.body).includes('（测试发言·离开）'), '发现调用必须携带分离窗口的对话')
+    assert.equal(ds9.hits.filter(h => h.kind === 'pov').length, 2, '每个（事件×参与者）各渲染一次')
+    // 两段生成（丙→甲）各自按"你扮演「X」"定位，断言开口前各自视角记忆已在上下文里
+    const genOf = (who: string): Record<string, unknown> | undefined =>
+      ds9.hits.filter(h => h.kind === 'stream' && JSON.stringify(h.body).includes(`你扮演「${who}」`)).at(-1)?.body
+    assert.ok(JSON.stringify(genOf('角色丙') ?? {}).includes('替甲办妥'), '丙开口前视角记忆已注入其上下文（先有记忆再开口）')
+    assert.ok(JSON.stringify(genOf('角色甲') ?? {}).includes('你托付的事已经办妥'), '甲开口前视角记忆已注入其上下文（先有记忆再开口）')
+    ds9.server.close(); jev9.server.close()
+  }
+
+  console.log('地图机制自检通过：场景文件层(创建/重名/描述可改/名称不可改) · 建群即建图 · 初始场景落位 · ⊘手选跳过判定生效(不问scene_change/present_*) · 目的地者直接在场听见进门句 · 同行者/离开者按location落位 · 判定移动与极严苛不动 · 客观注入(不问知情转告/location照问/受众=当前场景现场者/他场景者不收) · 对话进场晚于快照且入场包照常 · 一直在场者不入入场包 · 场景全文+当前场景注入角色 · 离开去向=其他清位 · 跨场景通话(双向接入建立/接入者可被路由/位置不动/呼叫句可听) · 用户走向角色(触发拆分:原地居民无新增现场所见但有离场经历/发现恰一次合并/开口前记忆已注入)')
 } finally {
   rmSync(accDir, { recursive: true, force: true })
   if (hadSettings) writeFileSync(settingsFile, backup ?? '', 'utf8')

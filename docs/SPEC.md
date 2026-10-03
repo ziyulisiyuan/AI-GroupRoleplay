@@ -99,8 +99,15 @@ a fallback full director (deepseek, §6.1c), and a correction window (§6.3).
    director `presence_updates`) — **after** the snapshot: characters entering now hear the next
    message, not this one. Names are normalized
    via `resolveCharacterName` ("甲" matches "角色甲"); unmatched names are dropped.
-7. Entry-kit trigger (§5.8/§5.9): present-after minus present-before (flat) / location-changed
-   entrants (map, pure code) → background kit for entrants.
+7. Entry-kit trigger (§5.8/§5.9), two pure-code sets inside one background kit: the
+   scene-perception snapshot targets the truly-arrived (flat: present-after minus
+   present-before; map: location changed into the active scene); off-story completion targets
+   **every character newly present** in the active scene (present-after minus present-before,
+   both modes) — the user moving to a character's scene is also a reunion, so a resident who
+   stayed put gets his separation window completed. First-time entrants have no absence window
+   and are skipped inside §5.9; continuous followers (present before and after) get the
+   snapshot but no off-story (no unconsumed window). The speakAs wait set is the union of both
+   sets.
 8. Append the `route` row and emit the route event. If the picked speaker has no speech rights
    (not in 现场 ∪ 接入 — e.g. single-direction overhearers), emit an info prompt and end the turn
    without calling the character model (the gated bookkeeper may still run on the user message).
@@ -416,8 +423,9 @@ the dialogue **explicitly** depicts him entering (then his location becomes the 
 leaving (his location becomes his `location_<角色>` answer — a created scene, or 其他 when the
 dialogue does not say or the place is off-map), and (c) who can perceive the message. Characters
 colocated in the destination scene are there by record — they hear the arrival line, and they are
-**not** entry-kit targets (nothing is new to them); only characters whose location changed are
-(§5.8/§5.9).
+**not** scene-snapshot targets (nothing there is new to see); only characters whose location
+changed are (§5.8). They are, however, off-story targets (§5.9): the user arriving is also a
+reunion, and their separation window is completed like any other's.
 
 **Flat groups** (no scenes): presence is the explicit list judged abstractly as before — the judge
 asks whether someone has *any way* to perceive and whether the scene can *interact* in real time;
@@ -598,7 +606,8 @@ present-before; no Jev cost), the system generates **one** observable-state desc
 injects it into every entrant's ledger (`source = 现场所见`, no `mid`, current round). Map
 groups narrow the entrant set to characters whose **location changed** into the active scene —
 followers and dialogue-summoned entrants; characters colocated in the destination by record are
-not entrants (nothing there is new to them):
+not snapshot targets (nothing there is new to see — their off-story completion is §5.9's
+concern, via the newly-present set):
 
 - `askSceneSummarizer` (deepseek, `record_scene` tool) reads the present notes, the judge's
   location table, **all**
@@ -624,7 +633,12 @@ not entrants (nothing there is new to them):
 The story runs on multiple threads: while a character is off-scene, things happen to him (orders
 given to others get fulfilled, appointments kept, relationships moved). Messages only carry the
 on-scene thread, so a returning character's memory ends at his last departure. When the entry kit
-fires (§5.8 trigger, same pure-code diff), re-entrants — characters whose last departure can be
+fires, the off-story half targets **every character newly present** in the active scene
+(present-after minus present-before, both modes): a resident who stayed put while the user moved
+to his scene is included — the user arriving is also a reunion — and so is everyone the §5.8
+snapshot covers, while continuous followers (present before and after) are not, since they were
+never separated (this also stops their already-consumed windows from being re-fed to discovery).
+Re-entrants — characters whose last departure can be
 located in the presence history (`store.absenceStartId`, pure code; first-time entrants have no
 window and are skipped) — additionally get their off-screen life simulated and injected:
 
@@ -1070,7 +1084,7 @@ Convention [INV 11]: fixtures are temporary and always deleted. Offline checks n
 | `selfcheck:presence` | offline | three-layer yaml round-trip (with `since`) · parse semantics (omitted=keep/empty=clear/unknown=语音) · perception keywords · visible_to snapshots |
 | `selfcheck:engine` | offline | bad-line tolerance + id continuity · text-retract no-resurrection (restart/replay) · edit living-ledger (physical ledger-row rewrite, respects retracts) · deleted-message physical removal (no text left in log) + memory cleanup + id monotonicity · rename chains |
 | `selfcheck:router` | offline | Jev hit / three-layer derivation / knowledge audience (incl. overhearers) / `told` stage-1 + `state_dirty` parsing (missing = safe side) · low-confidence, out-of-roster → route-only fallback with raw answers logged · scene/knowledge salvage when route unusable · `jevExtraRounds` stage-2 thresholds / failure grants nothing · `missingRounds`/`transplantRounds` units (verbatim, mid, own-speech prefix) · end-to-end merged judgment (1 call/reply) · extra-memory grant (end-append order, ledger rows, idempotence on re-telling) · gate (zero deepseek calls when clean, exactly one when dirty) · bookkeeper has no roster authority (overreach discarded) · objective injection (knows/told not asked · audience = present by record · remote/overhear excluded · 客观 entry carries mid, living-ledger rewrite · pipeline unchanged) · status-record switch (off = state_dirty not asked, dirty reply records nothing, fallback director's ledger discarded · 群设定 flipped to true mid-session: judgment and recording resume immediately) · scene-perception snapshot (entrant detection, injection before entrant speaks via relay, manual-fix entries snapshotted too) · off-story experiences (absence anchor pure-code, discovery merged per entry, event×participant limited-POV renders injected to all participants, first-time entrants skipped) · judgment log (判定.jsonl rows with phases + raw answers + elapsed) · relay (user turn / cumulative decay: ×0 right after a speech — no consecutive output, that judgment does not advance the multiplier; `RELAY_DECAY` applied at every other judgment, cumulative across re-speeches; no hard cap, the undecaying user weight ends the chain; hard block hands the floor back to the user on just-spoke re-picks and all-zero distributions) · fallback = single full director · unconfigured = fast path off |
-| `selfcheck:scene` | offline | scene file layer (create / duplicate reject / description editable / name immutable / invalid name) · group creation builds the map + initial scene · character 初始场景 placement · ⊘ manual move skips scene_change (questions assert) and still moves · destination occupants present by record and hear the arrival line · followers placed, leavers fall to their location answer (其他 clears) · judged move (confidence-guarded) · strict no-move · objective injection (location/scene_change still asked, knows/told not · audience = active scene's present · other scenes excluded) · dialogue entrant lands post-snapshot (not in visible_to) with the entry kit injected · colocated-by-record characters are not entry-kit targets · map full text + active scene injected into characters |
+| `selfcheck:scene` | offline | scene file layer (create / duplicate reject / description editable / name immutable / invalid name) · group creation builds the map + initial scene · character 初始场景 placement · ⊘ manual move skips scene_change (questions assert) and still moves · destination occupants present by record and hear the arrival line · followers placed, leavers fall to their location answer (其他 clears) · judged move (confidence-guarded) · strict no-move · objective injection (location/scene_change still asked, knows/told not · audience = active scene's present · other scenes excluded) · dialogue entrant lands post-snapshot (not in visible_to) with the entry kit injected · colocated-by-record characters are not scene-snapshot targets · split entry-kit triggers: user moves to residents → separated residents gain off-story entries (own POV) and no new snapshot, first-time residents get neither, followers get the snapshot only · discovery merged in one call carrying the separation-window dialogue · each speaker's POV memory injected before he speaks · map full text + active scene injected into characters |
 | `acceptance-*` (m1–m5, isolation, models, context-edit, presence, director) | online | end-to-end behaviors per milestone; re-run after any fast-path or memory change |
 
 `DSH_DEBUG=1` prints director/judge failure causes.

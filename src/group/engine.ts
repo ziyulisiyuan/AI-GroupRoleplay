@@ -45,8 +45,8 @@ export class GroupSession {
   private readonly books = new Map<string, CharacterFiles>()
   /** 后台任务队列（慢路径记账）：串行执行；新一轮发言前先清空队列，避免与新一轮的文件写入交错。 */
   private bg: Promise<void> = Promise.resolve()
-  /** 本轮进行中的"入场包"（§5.8 现场所见 + §5.9 事件补全）：接力判到进场者发言时，
-   *  speakAs 组装前必须等它完成——进场者必须先带着记忆开口。 */
+  /** 本轮进行中的"入场包"（§5.8 现场所见 + §5.9 事件补全）：接力判到名单内的人发言时，
+   *  speakAs 组装前必须等它完成——先带着记忆开口。 */
   private sceneSnapshot?: { targets: Set<string>; done: Promise<void> }
   private readonly roster: RoutableCharacter[]
   private readonly rosterLines: string[]
@@ -523,36 +523,47 @@ export class GroupSession {
   }
 
   /**
-   * 入场包（§5.8 + §5.9）：现场所见（全体进场者）与事件补全（回归者的离场经历，按参与者限知视角）
-   * **并行**执行；注入全部落盘后 done 才结算——接力判到进场者发言时 speakAs 会先等整个包完成。
+   * 入场包（§5.8 + §5.9）：现场所见（真正进门者）与事件补全（离场经历，按参与者限知视角）
+   * **并行**执行；注入全部落盘后 done 才结算——接力判到名单内的人发言时 speakAs 会先等整个包完成。
+   * 等待集 = 两份触发集的并集（所有将被注入记忆的人，先有记忆再开口）。
    */
-  private beginEntryKit(entrants: string[]): { targets: Set<string>; done: Promise<void> } {
-    const targets = new Set(entrants)
+  private beginEntryKit(sceneEntrants: string[], offStoryTargets: string[]): { targets: Set<string>; done: Promise<void> } {
+    const targets = new Set([...sceneEntrants, ...offStoryTargets])
     const done = (async (): Promise<void> => {
-      await Promise.all([this.runSceneSnapshot(targets), this.runOffStory(targets)])
+      await Promise.all([
+        sceneEntrants.length > 0 ? this.runSceneSnapshot(new Set(sceneEntrants)) : Promise.resolve(undefined),
+        this.runOffStory(new Set(offStoryTargets)),
+      ])
     })()
     return { targets, done }
   }
 
   /**
-   * 入场包触发（纯代码差集，不花 Jev）：地图群下认"位置发生了变化"的新现场者——
-   * 随行/被叫进来的人要拿到现场所见，一直在目的地的人不算进场；无地图群 = present 差集。
-   * 说话回合与用户手动修正都走这里；接力判到进场者发言时 speakAs 会先等注入完成。
+   * 入场包触发（纯代码差集，不花 Jev），两份触发集语义不同、拆开发放：
+   * - 现场所见（§5.8）= 真正进门的人：地图群下位置发生了变化的新现场者（随行/被叫进来），
+   *   一直在目的地的人没有"第一眼"；无地图群 = present 差集。
+   * - 事件补全（§5.9）= 本轮新出现在现场的所有人（after.present − before.present）：
+   *   "角色走向用户"与"用户走向角色"都是重逢——用户移到某角色的场景时，一直等在那里的
+   *   原住民同样补离场经历；首次进场者由 runOffStory 内部按 absenceStartId 跳过（不虚构前史）。
+   *   全程未分开的随行者不在此集（无新离场窗口），也因此不会再被重喂已消费过的旧窗口。
+   * 说话回合与用户手动修正都走这里；接力判到名单内的人发言时，speakAs 组装前会先等注入完成。
    */
   maybeSnapshotEntrants(before: SceneAccess, note = '新进现场'): void {
     const after = this.sceneAccess()
     const beforeLoc = before.locations ?? {}
     const afterLoc = after.locations ?? {}
-    const entrants = after.present.filter(n =>
-      this.byName.has(n)
-      && (after.scene === undefined
-        ? !before.present.includes(n)
-        : afterLoc[n] !== beforeLoc[n]))
-    if (entrants.length === 0) return
-    const job = this.beginEntryKit(entrants)
+    const presentNow = after.present.filter(n => this.byName.has(n))
+    const sceneEntrants = presentNow.filter(n =>
+      after.scene === undefined ? !before.present.includes(n) : afterLoc[n] !== beforeLoc[n])
+    const newlyPresent = presentNow.filter(n => !before.present.includes(n))
+    if (sceneEntrants.length === 0 && newlyPresent.length === 0) return
+    const job = this.beginEntryKit(sceneEntrants, newlyPresent)
     this.sceneSnapshot = job
     this.enqueueBg(() => job.done.then(() => undefined))
-    this.judgeLog({ phase: '现场所见', note: `${note}：${entrants.join('、')}——后台生成入场包（现状快照+离场经历）` })
+    this.judgeLog({
+      phase: '现场所见',
+      note: `${note}——后台生成入场包：现场所见 ${sceneEntrants.join('、') || '（无）'}；离场经历 ${newlyPresent.join('、') || '（无）'}`,
+    })
   }
 
   /**
