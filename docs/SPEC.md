@@ -180,8 +180,10 @@ a fallback full director (deepseek, §6.1c), and a correction window (§6.3).
   (default 4000), `DEEPSEEK_MAX_TOKENS` (default 8192 — explicit per-generation token ceiling:
   without it the API default budget is consumed by deep thinking, producing "typing indicator but
   empty output"), `RELAY_DECAY` (default 0.8, §6.1a relay
-  decay), `CONTEXT_WINDOW` (default 36, message window), `HTTPS_PROXY`/`HTTP_PROXY` (used by
-  the Jev client for outbound calls; localhost endpoints are exempt).
+  decay), `CONTEXT_WINDOW` (default 36, message window), `JEV_CONTEXT_WINDOW` (default 75,
+  dialogue window fed to the Jev fast path — Jev has no input cap and is priced by input only),
+  `HTTPS_PROXY`/`HTTP_PROXY` (used by the Jev client for outbound calls; localhost endpoints are
+  exempt).
 - `settings.yaml` holds provider credentials and is gitignored.
 - Startup self-heal: server and CLI call `healOrphanSettingsBackup()` — if an offline selfcheck
   was hard-crashed mid-run and left a mock `settings.yaml`, the orphaned
@@ -584,8 +586,9 @@ granted to the told character as **extra memory**:
    telling X something he does not know?" ≥0.5 triggers stage 2 (low bar — it only decides
    whether to spend one more cheap call; missing answer = not triggered).
 2. **Stage 2** (`jevExtraRounds`, one call per triggered character, synchronous — before the next
-   speaker is assembled): candidate rounds = rounds holding messages missing from that character's
-   ledger, newest 8, each summarized by its first missing message (`missingRounds`, pure code).
+   speaker is assembled): candidate rounds = **every** round holding messages missing from that
+   character's ledger (oldest first, no cap), each carrying the round's **full verbatim messages**
+   (`missingRounds`, pure code; Jev has no input cap, so nothing is summarized or truncated).
    One `round_<N>` noul per candidate; ≥0.75 → that round's messages the character lacks are
    transplanted verbatim (`transplantRounds`), `source = 额外得知`, keeping the original `mid` and
    `round`, appended at the end of the ledger. Every new entry gets its ledger row (§5.4) and an
@@ -723,8 +726,10 @@ text; transport failures throw and are caught). Questions:
   is ever skipped for "the environment did not change": presence, knowledge, retelling, routing
   and the gate are all re-judged every turn and after every reply.
 
-State passed to the judge assembles the full relevant context (candidates, scene notes, complete
-status lines, the user utterance, recent history).
+State passed to the judge assembles the full relevant context with no truncation: candidates
+(each roster line carries the character's **full appearance**), scene notes, complete status
+lines, the user utterance, and the recent dialogue (last `JEV_CONTEXT_WINDOW` messages, default
+75).
 
 **Merged post-reply judgment (`jevAfterReply`).** One call after each character reply, before
 that reply is appended, answers four things at once: the reply's knowledge audience

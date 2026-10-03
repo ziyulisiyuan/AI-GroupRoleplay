@@ -87,12 +87,13 @@ export function buildMemory(
 
 /**
  * 该角色**缺失的轮次**（额外记忆二段判定的候选集）：生效视图里有消息、但这些消息都不在他
- * 账本里的轮。升序返回全部缺失轮，每轮附摘要（首条缺失消息）供 Jev 判断转告范围。
+ * 账本里的轮。升序返回全部缺失轮，每轮附**整轮原文**（该轮全部消息逐字，不截断不摘要）
+ * 供 Jev 判断转告范围——Jev 没有输入上限，给全才判得准。
  */
 export function missingRounds(
   store: StoryStore,
   memory: KnowledgeEntry[],
-): Array<{ round: number; summary: string }> {
+): Array<{ round: number; text: string }> {
   const known = new Set(memory.filter(k => k.mid !== undefined).map(k => k.mid as number))
   const byRound = new Map<number, MsgLine[]>()
   for (const m of store.effectiveMessages()) {
@@ -105,7 +106,7 @@ export function missingRounds(
     .sort((a, b) => a[0] - b[0])
     .map(([round, msgs]) => ({
       round,
-      summary: `${msgs[0].name}：${msgs[0].text}${msgs.length > 1 ? `（等${msgs.length}条）` : ''}`,
+      text: msgs.map(m => `${m.name}：${m.text}`).join('\n'), // 整轮原文：与 transplantRounds 移植的文本逐字一致
     }))
 }
 

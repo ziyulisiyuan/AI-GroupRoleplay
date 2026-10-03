@@ -48,6 +48,8 @@ export const config = {
   relayDecay: Number(get('RELAY_DECAY') ?? 0.8),
   /** 角色可见的消息窗口条数（assembleGroup 注入 + 记忆注入的去重窗口共用）。 */
   contextWindow: Number(get('CONTEXT_WINDOW') ?? 36),
+  /** Jev 快路径的对话窗口条数（Jev 没有输入上限、按输入计费且很便宜，给得比角色窗口宽）。 */
+  jevContextWindow: Number(get('JEV_CONTEXT_WINDOW') ?? 75),
   /** 单次生成的 token 上限：不显式设高时，API 默认额度会被深度思考分走，
    *  出现"状态栏显示正在输出、最后却什么内容都没有"——思考烧完额度，可见输出为空。 */
   outputMaxTokens: Number(get('DEEPSEEK_MAX_TOKENS') ?? 8192),

@@ -471,6 +471,7 @@ export async function jevRoute(input: JevRouteInput): Promise<JevRouteResult | u
       `[人员位置] ${input.allNames.map(n => `${n}=${input.locations?.[n] ?? '其他'}`).join('、')}`,
     ].join('\n') : '',
     input.statusNotes.length > 0 ? `状态：${input.statusNotes.join('；')}（原文）` : '',
+    input.recent.trim() !== '' ? `[最近对话]\n${input.recent}` : '',
     input.userText !== undefined ? `用户刚说：${input.userText}` : '',
   ].filter(s => s !== '').join('\n')
 
@@ -831,7 +832,7 @@ export async function jevAfterReply(input: {
 
 /**
  * 额外记忆二段判定：对一段触发转告的角色，逐轮打分"该轮内容是否属于这次转告要告知的"。
- * 候选轮 = 该角色账本里还没有的消息所在轮（他错过的），由调用方算好传入（带每轮一句话摘要）。
+ * 候选轮 = 该角色账本里还没有的消息所在轮（他错过的），由调用方算好传入（每轮附整轮原文）。
  * ≥ extraRoundMin 的轮由调用方逐字移植（source=额外得知）。整体失败返回 undefined（不移植——
  * 漏补只是维持现状，错补要手动撤，宁缺勿滥）。
  */
@@ -840,8 +841,8 @@ export async function jevExtraRounds(input: {
   character: string
   /** 转告原话（触发判定的那条消息文本）。 */
   retoldText: string
-  /** 候选轮（该角色缺失的轮次，升序，已按窗口预算截断）。 */
-  missing: Array<{ round: number; summary: string }>
+  /** 候选轮（该角色缺失的轮次，升序）：每轮带**整轮原文**（该轮全部消息逐字，不截断不摘要）。 */
+  missing: Array<{ round: number; text: string }>
   timeoutMs?: number
   /** 判定日志回调（判定.jsonl 用，只给人看）。 */
   log?: (entry: Record<string, unknown>) => void
@@ -861,8 +862,8 @@ export async function jevExtraRounds(input: {
       state: [
         '你在判断一次"转告"：某人用一句话把之前发生的某段事情告知了一个当时不在场的人。逐轮判断哪些轮的内容属于这次转告的范围。',
         `[转告原话]\n${input.retoldText}`,
-        `[${input.character} 缺少的轮次（他不在场/未被知会期间的对话，附首句摘要）]`,
-        ...input.missing.map(m => `第${m.round}轮：${m.summary}`),
+        `[${input.character} 缺少的轮次（他不在场/未被知会期间的对话，整轮原文）]`,
+        ...input.missing.map(m => `第${m.round}轮：\n${m.text}`),
       ].join('\n'),
       questions,
       timeoutMs: input.timeoutMs,

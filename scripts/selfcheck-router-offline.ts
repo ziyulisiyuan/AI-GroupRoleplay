@@ -203,6 +203,7 @@ try {
     assert.ok(r?.knows.has('角色乙') && r?.knows.has('角色丙'), '能感知到的角色必须在知情名单（知情=原文移植）')
     assert.deepEqual([...(r?.told ?? [])], ['角色丙'], '额外记忆一段触发：只有过线的丙')
     assert.equal(r?.stateDirty, false, 'state_dirty 0.05 → 不需要记账')
+    assert.ok(JSON.stringify(m.hits[0]?.body ?? {}).includes('你：（测试发言）'), '主判定请求体必须带最近对话（recent 不再是死参数）')
     m.server.close()
   }
 
@@ -325,12 +326,16 @@ try {
       round_3: { type: 'noul', noul: 0.75 }, // 恰在阈值：命中
     } })
     llm.baseUrl = `http://127.0.0.1:${m.port}`
-    const got = await jevExtraRounds({ llm, character: '角色丙', retoldText: '我把一件事转告给了他', missing: [{ round: 1, summary: '你：（测试发言）' }, { round: 2, summary: '角色甲：（测试发言）' }, { round: 3, summary: '角色乙：（测试发言）' }], timeoutMs: 1000 })
+    const got = await jevExtraRounds({ llm, character: '角色丙', retoldText: '我把一件事转告给了他', missing: [{ round: 1, text: '你：（测试发言）' }, { round: 2, text: '角色甲：（测试发言）' }, { round: 3, text: '角色乙：（整轮第一句）\n角色乙：（整轮第二句）' }], timeoutMs: 1000 })
     assert.deepEqual([...(got ?? [])].sort(), [2, 3], '≥0.75 的轮必须命中，低分轮不给')
+    // 请求体必须带整轮原文（不再只给首句摘要）
+    const extraBody = JSON.stringify(m.hits[0]?.body ?? {})
+    assert.ok(extraBody.includes('（整轮第一句）') && extraBody.includes('（整轮第二句）'), '二段判定必须收到整轮的每一条消息')
+    assert.ok(!extraBody.includes('（等'), '二段判定请求体不得再出现"（等N条）"式省略')
     m.server.close()
     const f = await mockJev({ fail: true })
     llm.baseUrl = `http://127.0.0.1:${f.port}`
-    assert.equal(await jevExtraRounds({ llm, character: '角色丙', retoldText: 'x', missing: [{ round: 1, summary: 'y' }], timeoutMs: 1000 }), undefined, '二段故障 = 不移植（维持现状）')
+    assert.equal(await jevExtraRounds({ llm, character: '角色丙', retoldText: 'x', missing: [{ round: 1, text: 'y' }], timeoutMs: 1000 }), undefined, '二段故障 = 不移植（维持现状）')
     f.server.close()
   }
 
@@ -344,10 +349,12 @@ try {
     store.append('user', '你', '第一轮发言', ['角色甲', '角色乙'])
     store.append('character', '角色甲', '（甲发言）我喜欢乙。', ['角色甲', '角色乙'])
     store.append('user', '你', '第二轮的事', 'all')
+    store.append('character', '角色乙', '（乙的回复）', 'all')
     const mem = [{ source: '亲历', mid: 1, round: 1, text: '你：第一轮发言' }]
     const missing = missingRounds(store, mem)
     assert.deepEqual(missing.map(x => x.round), [1, 2], '第1轮（缺甲发言）与第2轮（全缺）都是缺失轮')
-    assert.ok(missing[0].summary.startsWith('角色甲：'), '摘要 = 轮内首条缺失消息')
+    assert.ok(missing[0].text.startsWith('角色甲：'), '整轮原文 = 轮内全部缺失消息（逐字，不摘要）')
+    assert.ok(missing[1].text.includes('第二轮的事') && missing[1].text.includes('（乙的回复）') && !missing[1].text.includes('（等'), '候选轮必须给整轮每一条消息，不得只给首句/省略')
     const added = transplantRounds(store, '角色甲', mem, new Set([1]))
     assert.equal(added.length, 1, '只补第1轮里他缺的那条')
     assert.equal(added[0]?.mid, 2)
@@ -355,6 +362,16 @@ try {
     assert.equal(added[0]?.round, 1)
     assert.equal(added[0]?.text, '你自己说过：（甲发言）我喜欢乙。', '逐字原文 + 说话人标识（自己的发言 = 你自己说过），无改写')
     assert.deepEqual(missingRounds(store, mem).map(x => x.round), [2], '补过的轮不再缺失（幂等基础）')
+  }
+
+  // ── 3d) 人物速览 = 外观全文（不再截断到第一小句）
+  {
+    rmSync(accDir, { recursive: true, force: true })
+    buildGroupFixture(accDir, { chars: [{ dir: '角色甲', name: '角色甲', personality: '（测试设定）', appearance: '（测试外观，后半句；第三段）', relationships: '（测试关系）' }] })
+    const { GroupSession } = await import('../src/group/engine.ts')
+    const s = GroupSession.open(accName)
+    const lines = (s as unknown as { rosterLines: string[] }).rosterLines
+    assert.ok((lines[0] ?? '').includes('后半句') && (lines[0] ?? '').includes('第三段'), `rosterLines 必须给外观全文，实得：${lines[0]}`)
   }
 
   // ── 4) 端到端：快路径路由 → 知情名单（原文移植）→ 合并判定 → 记账门控（回复脏 → 恰一次记账）

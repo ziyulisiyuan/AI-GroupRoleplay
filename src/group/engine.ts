@@ -73,9 +73,8 @@ export class GroupSession {
     this.scene = raw
     this.byName = new Map(this.characters.map(c => [c.name, c]))
     this.roster = this.characters.map(c => ({ name: c.name }))
-    this.rosterLines = this.characters.map(c =>
-      `${c.name}｜${c.appearance.split(/[，。.！!？?\n]/)[0] ?? ''}`,
-    )
+    // 人物速览 = 外观原文（不截断）：Jev 的 next_speaker 选项说明与 deepseek 各提示词的[可选角色]都用它。
+    this.rosterLines = this.characters.map(c => `${c.name}｜${c.appearance}`)
   }
 
   /** 地图群尚无 presence 行时的初始状态：当前场景 = 建群时指定；各角色站在自己的初始场景。 */
@@ -666,7 +665,7 @@ export class GroupSession {
     // ── 快路径（SPEC §6.1a）：Jev 一次调用回答"谁接话 + 三层场景名单 + 知情名单 + 转告 + 状态门"。
     // 未配置/调用失败 → undefined；路由不可用（置信不足/名单外）→ picked 置空：路由回退完整总管，
     // 场景/知情/转告/状态门判定照常生效（各自带阈值，不与路由连坐）。
-    const recent = this.store.effectiveMessages().slice(-config.contextWindow).map(m => `${m.name}：${m.text}`).join('\n')
+    const recent = this.store.effectiveMessages().slice(-config.jevContextWindow).map(m => `${m.name}：${m.text}`).join('\n')
     const routerLlm = resolveRouter()
     if (routerLlm === undefined) this.judgeLog({ phase: '主判定', note: '未配置快路径，走完整总管' })
     let quick: import('./host.ts').JevRouteResult | undefined
@@ -1047,7 +1046,7 @@ export class GroupSession {
             presentNotes: this.presentNotes(),
             present: this.presentNames(),
             linked: [...this.remoteLinks(), ...this.overhearLinks()].map(l => l.character),
-            recent: this.store.effectiveMessages().slice(-config.contextWindow).map(m => `${m.name}：${m.text}`).join('\n'),
+            recent: this.store.effectiveMessages().slice(-config.jevContextWindow).map(m => `${m.name}：${m.text}`).join('\n'),
             tone: this.settings.tone,
             timeoutMs: config.jevTimeoutMs,
             statusRecord: this.settings.statusRecord === true,
