@@ -311,7 +311,7 @@ export class GroupSession {
    * 同步执行——必须在下一跳发言组装前完成（"让他也说一下"后接力到他时，记忆必须已就位）。
    * 二段失败/零命中静默跳过：漏补只是维持现状（可手动补），错补却要手动撤。
    */
-  private async *grantExtraMemory(targets: ReadonlySet<string>, retoldText: string, routerLlm: NonNullable<ReturnType<typeof resolveRouter>>): AsyncGenerator<SessionEvent> {
+  private async *grantExtraMemory(targets: ReadonlySet<string>, retoldText: string, teller: string, routerLlm: NonNullable<ReturnType<typeof resolveRouter>>): AsyncGenerator<SessionEvent> {
     for (const name of targets) {
       const files = this.filesFor(name)
       if (files === undefined) continue
@@ -329,13 +329,14 @@ export class GroupSession {
         log: e => this.judgeLog({ phase: '额外记忆判定', ...e }),
       })
       if (flagged === undefined || flagged.size === 0) continue
-      const added = transplantRounds(this.store, name, files.memory, flagged)
+      const added = transplantRounds(this.store, name, files.memory, flagged, teller)
       for (const e of added) {
         this.store.appendLedgerLine(name, 'knowledge', 'append', JSON.stringify({
           source: e.source,
           ...(e.mid === undefined ? {} : { mid: e.mid }),
           round: e.round,
           text: e.text,
+          ...(e.teller === undefined ? {} : { teller: e.teller }),
         }))
       }
       if (added.length > 0) {
@@ -786,7 +787,7 @@ export class GroupSession {
     // userDirty = 状态账本总门（用户发言部分）；缺答案按 true（安全侧）。
     const userDirty = quick?.stateDirty ?? true
     if (quick !== undefined && quick.told.size > 0 && routerLlm !== undefined) {
-      yield* this.grantExtraMemory(quick.told, text, routerLlm)
+      yield* this.grantExtraMemory(quick.told, text, this.userPersona.name, routerLlm)
     }
 
     if (isMap && quick !== undefined) {
@@ -901,7 +902,7 @@ export class GroupSession {
       if (r.text.trim() === '') break // 空回复不接力、不记账
       // 转告触发：这条回复若在向谁转告他不知道的事，先移植记忆再考虑接力
       if (r.judge !== undefined && r.judge.told.size > 0 && routerLlm !== undefined) {
-        yield* this.grantExtraMemory(r.judge.told, r.text, routerLlm)
+        yield* this.grantExtraMemory(r.judge.told, r.text, current, routerLlm)
       }
       if (recordStatus && (r.judge === undefined || r.judge.stateDirty)) dirtyWork.push({ speaker: current, replyText: r.text })
       if (routerLlm === undefined || route !== undefined) break // 无快路径/回退路径：一次回复（旧行为）
@@ -1380,6 +1381,7 @@ export class GroupSession {
           ...(e.mid === undefined ? {} : { mid: e.mid }),
           round: e.round,
           text: e.text,
+          ...(e.teller === undefined ? {} : { teller: e.teller }),
         }))
       }
       if (added.length > 0) this.persistFiles(c.name)

@@ -45,7 +45,7 @@ for (const persona of characters) {
   for (const e of onDisk.memory) {
     const dup = derived.memory.some(x => (x.mid !== undefined && x.mid === e.mid) || x.text === e.text)
     if (dup) continue
-    const payload: KnowledgeEntry = { source: e.source, ...(e.mid === undefined ? {} : { mid: e.mid }), round: e.round, text: e.text }
+    const payload: KnowledgeEntry = { source: e.source, ...(e.mid === undefined ? {} : { mid: e.mid }), round: e.round, text: e.text, ...(e.teller === undefined ? {} : { teller: e.teller }) }
     store.appendLedgerLine(persona.name, 'knowledge', 'append', JSON.stringify(payload))
     applyLedgerEvent(derived, 'append', 'knowledge', JSON.stringify(payload), e.round)
     repaired++

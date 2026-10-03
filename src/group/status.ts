@@ -19,6 +19,8 @@ export interface KnowledgeEntry {
   text: string
   /** 亲历条目关联的消息 id（公开事件自动登记）；总管推断类条目无此字段。 */
   mid?: number
+  /** 额外得知条目：这段事是谁转告他的（注入时据此加"X告诉了你"的框架句；其余来源无此字段）。 */
+  teller?: string
 }
 
 /** 性格.md 只承载用户初始性格；动态演变在状态账本（§3.4a）。 */
@@ -101,13 +103,14 @@ function parseMemoryJsonl(raw: string): KnowledgeEntry[] {
     const s = line.trim()
     if (s === '') continue
     try {
-      const j = JSON.parse(s) as { source?: string; round?: number; text?: string; mid?: number }
+      const j = JSON.parse(s) as { source?: string; round?: number; text?: string; mid?: number; teller?: string }
       if (typeof j.text === 'string' && j.text !== '') {
         out.push({
           source: j.source ?? '亲历',
           ...(typeof j.mid === 'number' ? { mid: j.mid } : {}),
           round: typeof j.round === 'number' ? j.round : 0,
           text: j.text,
+          ...(typeof j.teller === 'string' && j.teller !== '' ? { teller: j.teller } : {}),
         })
       }
     } catch {
@@ -188,6 +191,7 @@ export function saveMemory(dir: string, memory: KnowledgeEntry[]): void {
     ...(k.mid === undefined ? {} : { mid: k.mid }),
     round: k.round,
     text: k.text,
+    ...(k.teller === undefined ? {} : { teller: k.teller }),
   }))
   writeFileSync(memoryPath(dir), lines.length === 0 ? '' : lines.join('\n') + '\n', 'utf8')
 }
@@ -247,13 +251,14 @@ export function applyLedgerEvent(
     }
     return
   }
-  const parsed = JSON.parse(content) as { source?: string; round?: number; text?: string; mid?: number }
+  const parsed = JSON.parse(content) as { source?: string; round?: number; text?: string; mid?: number; teller?: string }
   if (typeof parsed.text === 'string' && parsed.text !== '') {
     files.memory.push({
       source: parsed.source ?? '亲历',
       ...(typeof parsed.mid === 'number' ? { mid: parsed.mid } : {}),
       round: parsed.round ?? round,
       text: parsed.text,
+      ...(typeof parsed.teller === 'string' && parsed.teller !== '' ? { teller: parsed.teller } : {}),
     })
   }
 }

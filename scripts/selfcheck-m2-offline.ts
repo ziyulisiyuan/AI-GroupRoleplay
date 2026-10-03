@@ -35,6 +35,7 @@ try {
   applySnapshot(filesA, snapshots[1])
   applyLedgerEvent(filesA, 'append', 'knowledge', JSON.stringify({ source: '亲历', mid: 42, round: 4, text: '（将被按 mid 撤回）' }), 4)
   applyLedgerEvent(filesA, 'append', 'knowledge', JSON.stringify({ source: '推断', round: 3, text: '（测试条目二）' }), 3)
+  applyLedgerEvent(filesA, 'append', 'knowledge', JSON.stringify({ source: '额外得知', mid: 7, round: 6, text: '（转告内容·测试）', teller: '（转告人甲）' }), 6)
   applyLedgerEvent(filesA, 'retract', 'knowledge', JSON.stringify({ mid: 42 }), 5)
 
   writeFileSync(join(dir, '角色.md'), ROLE_MD, 'utf8')
@@ -59,8 +60,9 @@ try {
   assert.equal(again.status['生理状态'], '（值一改）', '整体快照 = 最新版')
   assert.ok(!JSON.stringify(again.status).includes('（平静）'), '旧版本字段不得残留（防上下文污染）')
   assert.equal(again.status['姓名变化'], '无')
-  assert.equal(again.memory.length, 1, '撤回后应只剩 1 条记忆')
+  assert.equal(again.memory.length, 2, '撤回后应只剩 2 条记忆')
   assert.ok(!again.memory.some(e => e.mid === 42), '按 mid 撤回必须生效')
+  assert.equal(again.memory.find(e => e.source === '额外得知')?.teller, '（转告人甲）', '转告人必须随记忆落盘并读回（save/load 与日志重放都不丢）')
 
   // 3) prompt 片段：账本固定格式 + 初始性格/关系不含动态
   assert.ok(ledgerPrompt(again.status).includes('生理状态:"（值一改）"'), '账本 prompt 用固定格式')

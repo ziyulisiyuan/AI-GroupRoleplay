@@ -55,6 +55,8 @@ export function backfillKnowledge(
  * 注入片段（§5.5）：最新条目优先，总预算 budgetChars；
  * 与"最近 recentCount 条可见消息"重叠的条目跳过——近期内容由消息窗口承担，不重复注入。
  * 条目文本即原文移植（库存原文，注入按预算截断）。
+ * 「额外得知」条目在注入时按转告人加一句框架（"X 把下面这些事告诉了你——你当时不在场……"）——
+ * 只加在提示词里，台账原文不动；没有 teller 的老条目退回旧标签。
  */
 export function buildMemory(
   store: StoryStore,
@@ -72,17 +74,31 @@ export function buildMemory(
     .filter(k => k.mid === undefined || !recentIds.has(k.mid))
     .sort((a, b) => b.round - a.round)
 
-  const blocks: string[] = []
+  const lines: string[] = []
   let used = 0
-  for (const k of entries) {
-    if (used >= budgetChars) break
-    const block = `- （第${k.round}轮得知，${k.source}）${k.text}`
-    if (used + block.length > budgetChars && blocks.length > 0) break
-    used += block.length
-    blocks.push(block)
+  /** 当前所处的「额外得知」连续段由谁转告（undefined = 不在段内，或该段没有转告人）。 */
+  let framedTeller: string | undefined
+  const push = (line: string): boolean => {
+    if (used + line.length + 1 > budgetChars && lines.length > 0) return false
+    used += line.length + 1
+    lines.push(line)
+    return true
   }
-  if (blocks.length === 0) return ''
-  return `【你已知悉的事】\n${blocks.join('\n')}`
+  for (const k of entries) {
+    // 额外得知：同一转告人的连续段前加一句框架——"X告诉了你"。这句只在提示词里，台账原文不动。
+    if (k.source === '额外得知' && k.teller !== undefined) {
+      if (k.teller !== framedTeller) {
+        framedTeller = k.teller
+        if (!push(`${k.teller}把下面这些事告诉了你——你当时不在场，是听${k.teller}说的。这些内容你已经知道，可以直接提起：`)) break
+      }
+      if (!push(`- （第${k.round}轮得知）${k.text}`)) break
+      continue
+    }
+    framedTeller = undefined
+    if (!push(`- （第${k.round}轮得知，${k.source}）${k.text}`)) break
+  }
+  if (lines.length === 0) return ''
+  return `【你已知悉的事】\n${lines.join('\n')}`
 }
 
 /**
@@ -114,18 +130,27 @@ export function missingRounds(
  * 额外记忆移植（§5.7）：把命中轮里该角色还没有的消息**逐字**移植进账本，
  * source=额外得知（不是他的亲历感知，是被转告的），带原 mid/round（幂等、可撤回、活账本跟随）。
  * 按消息顺序追加在账本末尾。返回新增条目，调用方必须为其写 ledger 行。
+ * teller = 谁把这段事转告给他的（注入时据此加一句"X告诉了你"的框架；用户发言触发=用户称呼，
+ * 角色回复触发=当时说话的角色名）。缺省（老数据/无来源）不加框架。
  */
 export function transplantRounds(
   store: StoryStore,
   name: string,
   memory: KnowledgeEntry[],
   rounds: ReadonlySet<number>,
+  teller?: string,
 ): KnowledgeEntry[] {
   const known = new Set(memory.filter(k => k.mid !== undefined).map(k => k.mid as number))
   const added: KnowledgeEntry[] = []
   for (const m of store.effectiveMessages()) {
     if (!rounds.has(m.round) || known.has(m.id)) continue
-    const entry: KnowledgeEntry = { source: '额外得知', mid: m.id, round: m.round, text: witnessSummary(m, name) }
+    const entry: KnowledgeEntry = {
+      source: '额外得知',
+      mid: m.id,
+      round: m.round,
+      text: witnessSummary(m, name),
+      ...(teller === undefined || teller === '' ? {} : { teller }),
+    }
     memory.push(entry)
     added.push(entry)
   }

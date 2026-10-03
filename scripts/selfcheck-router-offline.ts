@@ -355,7 +355,8 @@ try {
     assert.deepEqual(missing.map(x => x.round), [1, 2], '第1轮（缺甲发言）与第2轮（全缺）都是缺失轮')
     assert.ok(missing[0].text.startsWith('角色甲：'), '整轮原文 = 轮内全部缺失消息（逐字，不摘要）')
     assert.ok(missing[1].text.includes('第二轮的事') && missing[1].text.includes('（乙的回复）') && !missing[1].text.includes('（等'), '候选轮必须给整轮每一条消息，不得只给首句/省略')
-    const added = transplantRounds(store, '角色甲', mem, new Set([1]))
+    const added = transplantRounds(store, '角色甲', mem, new Set([1]), '（转告人甲）')
+    assert.equal(added[0]?.teller, '（转告人甲）', '移植条目必须记下转告人')
     assert.equal(added.length, 1, '只补第1轮里他缺的那条')
     assert.equal(added[0]?.mid, 2)
     assert.equal(added[0]?.source, '额外得知')
@@ -678,6 +679,7 @@ try {
     assert.deepEqual(extra.map(e => e.mid).sort(), [1, 2], '额外条目带原 mid')
     assert.deepEqual(extra.map(e => e.round), [1, 1], '保留原轮号')
     assert.ok(extra.every(e => /：.+$/.test(e.text) && !e.text.startsWith('（额外')), '条目 = 说话人前缀 + 逐字原文')
+    assert.ok(extra.every(e => (e as { teller?: string }).teller === '你'), '移植条目必须记下转告人（用户发言触发 → 用户称呼）')
     // 堆在账本末尾：移植时额外条目按原消息顺序追加在他已有条目之后；
     // 本轮结束时甲回复又以亲历正常续后（移植只保证"插入即末尾"，不冻结账本尾部）
     assert.ok(bing[0] !== undefined && bing[0].source === '亲历' && bing[0].mid === 3)
@@ -687,6 +689,7 @@ try {
     assert.equal(memLines('角色乙').filter(e => e.source === '额外得知').length, 0, '未被转告者不得获得额外条目')
     const extraLedgerRows = session.store.allLines.filter(l => l.type === 'ledger' && (l as { character?: string }).character === '角色丙' && ((l as { content?: string }).content ?? '').includes('额外得知'))
     assert.equal(extraLedgerRows.length, 2, '每条额外条目都有 ledger 行（唯一事实源）')
+    assert.ok(extraLedgerRows.every(l => ((l as { content?: string }).content ?? '').includes('"teller":"你"')), 'ledger 行必须带上转告人（重建/重放不丢）')
     // T3：再转告一次——丙已无缺失轮，二段判定不得再触发（幂等）
     for await (const ev of session.speak('（测试发言·重复转告）')) void ev
     assert.equal(jev.hits.length, 7, 'Jev 调用：T1/T2/T3 各 1 主判定 + T2/T3 各 1 合并判定 + T2 恰 1 次二段')

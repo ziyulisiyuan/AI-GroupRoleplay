@@ -49,12 +49,17 @@ try {
   const big: KnowledgeEntry[] = [...memory]
   big.push({ source: '亲历', mid: 2, round: 1, text: '（占位条目）' })
   big.push({ source: '推断', round: 2, text: '（推断条目）' })
+  big.push({ source: '额外得知', mid: 7, round: 3, text: '（转告内容甲）', teller: '（转告人甲）' })
+  big.push({ source: '额外得知', mid: 8, round: 4, text: '（转告内容乙）' })
   const mem = buildMemory(store, '角色甲', big, { recentCount: 3, budgetChars: 2000 })
   assert.ok(mem.includes('你已知悉的事'), '注入块标题')
   assert.ok(mem.includes('（推断条目）'), '无 mid 条目直接注入')
   assert.ok(mem.includes('（公开发言二）'), '条目即原文移植')
   // 原文移植：亲历条目必须是逐字原文（含说话人标识），不是摘要/改写
   assert.ok(memory.some(k => k.mid === 1 && k.text === '你：（公开发言一）'), `亲历条目必须逐字原文，实得：${JSON.stringify(memory.find(k => k.mid === 1)?.text)}`)
+  assert.ok(mem.includes('（转告人甲）把下面这些事告诉了你'), '额外得知必须带转告人框架句')
+  assert.ok(mem.includes('（转告内容甲）') && mem.includes('（转告内容乙）'), '转告内容照旧逐字注入')
+  assert.ok(mem.includes('- （第4轮得知，额外得知）（转告内容乙）'), '无转告人的老条目保持旧标签（渲染兼容）')
   const tiny = buildMemory(store, '角色甲', big, { recentCount: 3, budgetChars: 100 })
   assert.ok(tiny.length < 400, `超小预算应大幅截断，实得 ${tiny.length} 字符`)
 

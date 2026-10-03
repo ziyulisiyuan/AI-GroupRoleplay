@@ -565,7 +565,11 @@ no memory fields.
 
 Newest entries first, total budget 6000 chars; entries overlapping the last `CONTEXT_WINDOW`
 (default 36) visible messages are skipped (the message window already carries them). Entries are
-verbatim; the budget truncates injection, not the stored text.
+verbatim; the budget truncates injection, not the stored text. `额外得知` entries are grouped by
+their `teller` and prefixed once per run with a framing sentence ("X 把下面这些事告诉了你——你当时
+不在场，是听X说的。这些内容你已经知道，可以直接提起：") so the character claims the retold content
+instead of filtering it out as something he "should not know". Entries without a `teller` (old
+data) keep the plain `（第N轮得知，额外得知）` label — byte-identical to before.
 
 ### 5.6 Living ledger
 
@@ -591,8 +595,10 @@ granted to the told character as **extra memory**:
    (`missingRounds`, pure code; Jev has no input cap, so nothing is summarized or truncated).
    One `round_<N>` noul per candidate; ≥0.39 → that round's messages the character lacks are
    transplanted verbatim (`transplantRounds`), `source = 额外得知`, keeping the original `mid` and
-   `round`, appended at the end of the ledger. Every new entry gets its ledger row (§5.4) and an
-   info event names the granted rounds.
+   `round`, appended at the end of the ledger. Each entry also carries `teller` = who retold it
+   (user message → the user's persona name; character reply → that character), persisted with the
+   entry and its ledger row so replay/rebuild/message-edits keep it (§5.5 renders it as a framing
+   sentence). Every new entry gets its ledger row (§5.4) and an info event names the granted rounds.
 
 The `mid` linkage gives extra entries the full living-ledger semantics for free: idempotent
 (re-granted rounds yield nothing), retractable by mid/text (memory panel, correction window),
