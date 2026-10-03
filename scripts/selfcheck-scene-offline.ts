@@ -7,12 +7,13 @@
  * 3) ⊘ 手选移动：跳过 scene_change 判定（questions 无此题）；目的地里的人直接在场并听见进门这句；
  *    同行者按 location 答案随行；一直在目的地者不入入场包。
  * 4) 判定移动：scene_change choice 命中（含置信阈值）；未命中/未移动不动。
- * 5) 对话进场：location 答案把图外角色落位当前场景（晚于快照：不在 visible_to），入场包照常注入。
+ * 5) 对话进场：location 答案把图外角色落位当前场景（晚于快照：不在 visible_to），入场包照常注入；
+ *    现场所见只携带当前场景的描述（其他场景不得混入）。
  * 6) 场景全文注入角色（assembleGroup）。
  * 7) 离开者去向=其他：位置清空（图外）。
  * 8) 跨场景通话：perceive+interact 双高 → 双向接入（语音）→ 接入者可被路由接话，位置不动。
  * 9) 用户走向角色（触发拆分）：位置未变的目的地原住民不拿现场所见，但按各自视角补离场经历；
- *    首次见面者（无分离窗口）两头皆无；随行者只拿现场所见。
+ *    首次见面者（无分离窗口）两头皆无；随行者只拿现场所见；事件发现携带场景地图全文。
  * settings.yaml 若存在则备份、结束恢复（测试注入 routerId/activeId 指向本地 mock）。
  */
 import assert from 'node:assert/strict'
@@ -328,6 +329,9 @@ try {
   assert.ok(memOf('角色丙').includes('测试现状描述'), '进场者必须先拿到现场所见再开口')
   const sceneHit = ds4.hits.filter(h => h.kind === 'scene').at(-1)
   assert.ok(sceneHit !== undefined && JSON.stringify(sceneHit.body).includes('[人员位置'), '现场所见提示词必须携带判定层的位置表')
+  const sceneBody5 = JSON.stringify(sceneHit?.body)
+  assert.ok(sceneBody5.includes('（测试描述一）'), '现场所见必须携带当前场景的描述（白描的地皮）')
+  assert.ok(!sceneBody5.includes('（测试描述二）'), '现场所见只携带当前场景：其他场景的描述不得混入')
 
   // ── 6) 场景全文注入角色
   const streamHit = ds4.hits.filter(h => h.kind === 'stream').at(-1)
@@ -483,7 +487,9 @@ try {
     assert.equal(memCountOf('角色丙', '现场所见'), snapBefore.丙, '原地居民（丙）不新增现场所见条目（位置未变，无进门）')
     assert.equal(ds9.hits.filter(h => h.kind === 'scene').length, 0, '无人进门：现场所见调用为零')
     assert.equal(ds9.hits.filter(h => h.kind === 'offstory').length, 1, '事件发现恰一次（全部新现者合并进一次调用）')
-    assert.ok(JSON.stringify(ds9.hits.filter(h => h.kind === 'offstory')[0]?.body).includes('（测试发言·离开）'), '发现调用必须携带分离窗口的对话')
+    const offBody9 = JSON.stringify(ds9.hits.filter(h => h.kind === 'offstory')[0]?.body)
+    assert.ok(offBody9.includes('（测试发言·离开）'), '发现调用必须携带分离窗口的对话')
+    assert.ok(offBody9.includes('（测试描述一）') && offBody9.includes('（测试描述二）'), '事件发现必须携带场景地图全文（事件骨架的地名锚）')
     assert.equal(ds9.hits.filter(h => h.kind === 'pov').length, 2, '每个（事件×参与者）各渲染一次')
     // 两段生成（丙→甲）各自按"你扮演「X」"定位，断言开口前各自视角记忆已在上下文里
     const genOf = (who: string): Record<string, unknown> | undefined =>
@@ -493,7 +499,7 @@ try {
     ds9.server.close(); jev9.server.close()
   }
 
-  console.log('地图机制自检通过：场景文件层(创建/重名/描述可改/名称不可改) · 建群即建图 · 初始场景落位 · ⊘手选跳过判定生效(不问scene_change/present_*) · 目的地者直接在场听见进门句 · 同行者/离开者按location落位 · 判定移动与极严苛不动 · 客观注入(不问知情转告/location照问/受众=当前场景现场者/他场景者不收) · 对话进场晚于快照且入场包照常 · 一直在场者不入入场包 · 场景全文+当前场景注入角色 · 离开去向=其他清位 · 跨场景通话(双向接入建立/接入者可被路由/位置不动/呼叫句可听) · 用户走向角色(触发拆分:原地居民无新增现场所见但有离场经历/发现恰一次合并/开口前记忆已注入)')
+  console.log('地图机制自检通过：场景文件层(创建/重名/描述可改/名称不可改) · 建群即建图 · 初始场景落位 · ⊘手选跳过判定生效(不问scene_change/present_*) · 目的地者直接在场听见进门句 · 同行者/离开者按location落位 · 判定移动与极严苛不动 · 客观注入(不问知情转告/location照问/受众=当前场景现场者/他场景者不收) · 对话进场晚于快照且入场包照常 · 一直在场者不入入场包 · 场景全文+当前场景注入角色 · 离开去向=其他清位 · 跨场景通话(双向接入建立/接入者可被路由/位置不动/呼叫句可听) · 用户走向角色(触发拆分:原地居民无新增现场所见但有离场经历/发现恰一次合并/开口前记忆已注入) · 现场所见只携当前场景描述 · 事件发现携场景地图全文')
 } finally {
   rmSync(accDir, { recursive: true, force: true })
   if (hadSettings) writeFileSync(settingsFile, backup ?? '', 'utf8')

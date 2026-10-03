@@ -424,10 +424,16 @@ export class GroupSession {
   private runSceneSnapshot(targets: Set<string>): Promise<string | undefined> {
     return (async (): Promise<string | undefined> => {
       try {
+        // 地图群：白描对象就是当前场景——把它的名与描述全文交给记录员对照（平面群无此输入）。
+        const sceneName = this.scene.scene
+        const activeScene = sceneName !== undefined
+          ? listScenes(this.groupDir).find(s => s.name === sceneName)
+          : undefined
         const summary = await askSceneSummarizer({
           presentNotes: this.presentNotes(),
           locations: { ...(this.scene.locations ?? {}) },
           ledgers: this.ledgerLines(),
+          ...(activeScene !== undefined ? { activeScene: { name: activeScene.name, description: activeScene.description } } : {}),
           recent: this.store.effectiveMessages().slice(-12).map(m => `${m.name}：${m.text}`).join('\n'),
           tone: this.settings.tone,
           timeoutMs: Math.max(config.directorTimeoutMs, 60000),
@@ -480,6 +486,7 @@ export class GroupSession {
         ...(hasObjective ? { objectiveAnnotated: true } : {}),
         known,
         rosterNames: this.characterNames(),
+        ...(this.scene.scene !== undefined ? { scenes: listScenes(this.groupDir) } : {}),
         tone: this.settings.tone,
         timeoutMs: Math.max(config.directorTimeoutMs, 60000),
         log: e => this.judgeLog({ phase: '事件补全发现', ...e }),

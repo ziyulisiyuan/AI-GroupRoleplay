@@ -1127,6 +1127,8 @@ export async function askSceneSummarizer(input: {
   locations?: Record<string, string>
   /** 全部角色的状态账本行（不筛在场——现场遗留物属于场景，不属于人）。 */
   ledgers: string[]
+  /** 地图群：进场者进入的房间（当前场景，名+描述全文）——白描对象的地皮。缺省（平面群/场景未定）不给。 */
+  activeScene?: { name: string; description: string }
   /** 最近对话（进场者缺席期间的，只供参考其中留下的可见痕迹）。 */
   recent: string
   tone: string
@@ -1139,12 +1141,18 @@ export async function askSceneSummarizer(input: {
     input.locations !== undefined && Object.keys(input.locations).length > 0
       ? `[人员位置（判定层记录）]\n${Object.entries(input.locations).map(([k, v]) => `${k}=${v}`).join('、')}`
       : '',
+    input.activeScene !== undefined
+      ? `[当前场景（他进入的房间）]\n${input.activeScene.name}：${input.activeScene.description}`
+      : '',
     input.ledgers.length > 0 ? '[各角色当前状态（原始资料，只提取其中肉眼可见的部分）]\n' + input.ledgers.join('\n') : '',
     '[最近对话（他不在场期间发生的事；只能参考其中留下的可见痕迹，不要复述剧情）]',
     input.recent,
     input.tone !== '' ? `[群聊基调]\n${input.tone}` : '',
     '要求（违反任何一条都不合格）：',
     '- 只写此刻可观察的现状：人物的姿态、位置、伤势、衣着、表情与动作；地上的血迹、痕迹、器物；陈设与环境的当前状况。',
+    ...(input.activeScene !== undefined
+      ? ['- 场景描述是这个房间本来的陈设与布局，供你对照辨认；只写其中此刻实际可观察到的状况。']
+      : []),
     '- 不回顾历史，不解释来龙去脉，不推断是谁做了什么、怎么发生的（可见的客观证据可以陈述）。',
     '- 不写任何人的内心、情绪、动机——可见的表情与动作可以写。',
     '- 禁止伏笔、隐喻、暗示、渲染、夸大、对比、评价与文采；禁止"仿佛、似乎、显然、暗中"这类词。',
@@ -1208,6 +1216,8 @@ export async function askOffStoryDiscovery(input: {
   /** 已有的离场经历条目（防重复/防矛盾锚）。 */
   known: string[]
   rosterNames: string[]
+  /** 地图（全部场景，名+描述全文）：事件骨架的地名锚。缺省（平面群）不给。 */
+  scenes?: Array<{ name: string; description: string }>
   tone: string
   timeoutMs?: number
   log?: (e: Record<string, unknown>) => void
@@ -1217,6 +1227,9 @@ export async function askOffStoryDiscovery(input: {
     ...(input.objectiveAnnotated === true
       ? ['对话窗口中带【客观】标注的行，是以叙事者身份写下、已对世界生效的客观事实。重点关注：逐一对照该角色需要补全的事件，检查客观事实是否要求调整事件的骨架、参与者或经过——需要调整的必须调整，与客观事实相矛盾的补全一律不合格。']
       : []),
+    ...(input.scenes !== undefined && input.scenes.length > 0
+      ? ['[场景地图（这个世界的全部地点）]', ...input.scenes.map(s => `- ${s.name}：${s.description}`)]
+      : ''),
     ...input.windows.map(w => `[${w.character} 离场期间的对话]\n${w.dialogue}`),
     input.known.length > 0 ? '[已有的事件补全（不得重复、不得矛盾）]\n' + input.known.map(k => `- ${k}`).join('\n') : '',
     `[全部角色]\n${input.rosterNames.join('、')}`,
@@ -1224,6 +1237,9 @@ export async function askOffStoryDiscovery(input: {
     '要求（违反任何一条都不合格）：',
     '- 只补全对话中有依据的事：对他下的指令、与他的约定、对他的邀请、别人提到的关于他的打算——合理模拟这些事的履行经过。',
     '- 每件事一句话客观骨架（谁对谁做了什么/发生了什么）+ 全部参与者名单（含离场者本人）。',
+    ...(input.scenes !== undefined && input.scenes.length > 0
+      ? ['- 骨架里提到的地点，只能取自场景地图或对话原文；不得发明地图上不存在的地点。']
+      : []),
     '- 日常化：禁止编造重大事件（死亡/重伤/重大转折/新角色登场），对话毫无依据的事一律不补。',
     '- 不得与已有的事件补全重复或矛盾；没有可补全的就返回空数组。',
     '- 最多 4 件，每件最多 4 名参与者（超出取与剧情最相关的）。',

@@ -613,14 +613,18 @@ not snapshot targets (nothing there is new to see — their off-story completion
 concern, via the newly-present set):
 
 - `askSceneSummarizer` (deepseek, `record_scene` tool) reads the present notes, the judge's
-  location table, **all**
-  characters' status ledgers (traces of the absent — a corpse — belong to the room), and the last
-  12 effective messages, and must output a 2–4 sentence plain description of what is observable
-  *right now*: postures, positions, injuries, clothing, expressions, blood, traces, furnishings.
-  Hard constraints (enforced in the tool description and prompt): no history recap, no inference
-  of who did what, no inner states (visible expressions/actions are fine), no foreshadowing,
-  metaphor, exaggeration, or evaluation; "现场无异样" when nothing stands out. This is the
-  system's only generated memory (see [INV 8]).
+  location table, the **active scene's own name and description** (the room it is describing;
+  map groups only — other scenes' descriptions are not injected, and flat groups get none),
+  **all** characters' status ledgers (traces of the absent — a corpse — belong to the room), and
+  the last 12 effective messages, and must output a 2–4 sentence plain description of what is
+  observable *right now*: postures, positions, injuries, clothing, expressions, blood, traces,
+  furnishings. Hard constraints (enforced in the tool description and prompt): no history recap,
+  no inference of who did what, no inner states (visible expressions/actions are fine), no
+  foreshadowing, metaphor, exaggeration, or evaluation; the scene description (map groups, when
+  present) is the room's canonical layout for reference only — only what is observable right now
+  may be written;
+  "现场无异样" when nothing stands out. This is the system's only generated memory (see
+  [INV 8]).
 - **Ordering**: the generation runs in the background; if the relay judgment hands the floor to
   an entrant, `speakAs` waits for the snapshot to land before assembling that reply — the
   entrant must see the scene before speaking (the reverse of normal bookkeeping, which is
@@ -650,7 +654,9 @@ window and are skipped) — additionally get their off-screen life simulated and
    messages after their departure id, capped at the last 40; objective-injection lines carry a
    【客观】 prefix, and the prompt requires checking them against the events completed) +
    **all existing `离场经历` entries**
-   (anti-repeat / anti-contradiction anchor) + the roster. Output = up to 4 events, each a
+   (anti-repeat / anti-contradiction anchor) + the roster + the scene map (map groups: every
+   created scene's full description — skeleton place names must come from the map or the
+   dialogue, never invented). Output = up to 4 events, each a
    one-sentence objective skeleton (`summary`) + full `participants` list (≤4). Hard constraints:
    only extend what the dialogue gives grounds for (orders to him, promises, invitations,
    relationships, others' stated intentions about him — reasonably simulate their fulfillment);
@@ -1089,7 +1095,7 @@ Convention [INV 11]: fixtures are temporary and always deleted. Offline checks n
 | `selfcheck:presence` | offline | three-layer yaml round-trip (with `since`) · parse semantics (omitted=keep/empty=clear/unknown=语音) · perception keywords · visible_to snapshots |
 | `selfcheck:engine` | offline | bad-line tolerance + id continuity · text-retract no-resurrection (restart/replay) · edit living-ledger (physical ledger-row rewrite, respects retracts) · deleted-message physical removal (no text left in log) + memory cleanup + id monotonicity · rename chains |
 | `selfcheck:router` | offline | Jev hit / three-layer derivation / knowledge audience (incl. overhearers) / `told` stage-1 + `state_dirty` parsing (missing = safe side) · low-confidence, out-of-roster → route-only fallback with raw answers logged · scene/knowledge salvage when route unusable · `jevExtraRounds` stage-2 thresholds / failure grants nothing · `missingRounds`/`transplantRounds` units (verbatim, mid, own-speech prefix) · end-to-end merged judgment (1 call/reply) · extra-memory grant (end-append order, ledger rows, idempotence on re-telling) · gate (zero deepseek calls when clean, exactly one when dirty) · bookkeeper has no roster authority (overreach discarded) · objective injection (knows/told not asked · audience = present by record · remote/overhear excluded · 客观 entry carries mid, living-ledger rewrite · pipeline unchanged) · status-record switch (off = state_dirty not asked, dirty reply records nothing, fallback director's ledger discarded · 群设定 flipped to true mid-session: judgment and recording resume immediately) · scene-perception snapshot (entrant detection, injection before entrant speaks via relay, manual-fix entries snapshotted too) · off-story experiences (absence anchor pure-code, discovery merged per entry, event×participant limited-POV renders injected to all participants, first-time entrants skipped) · judgment log (判定.jsonl rows with phases + raw answers + elapsed) · relay (user turn / cumulative decay: ×0 right after a speech — no consecutive output, that judgment does not advance the multiplier; `RELAY_DECAY` applied at every other judgment, cumulative across re-speeches; no hard cap, the undecaying user weight ends the chain; hard block hands the floor back to the user on just-spoke re-picks and all-zero distributions) · fallback = single full director · unconfigured = fast path off |
-| `selfcheck:scene` | offline | scene file layer (create / duplicate reject / description editable / name immutable / invalid name) · group creation builds the map + initial scene · character 初始场景 placement · ⊘ manual move skips scene_change (questions assert) and still moves · destination occupants present by record and hear the arrival line · followers placed, leavers fall to their location answer (其他 clears) · judged move (confidence-guarded) · strict no-move · objective injection (location/scene_change still asked, knows/told not · audience = active scene's present · other scenes excluded) · dialogue entrant lands post-snapshot (not in visible_to) with the entry kit injected · colocated-by-record characters are not scene-snapshot targets · split entry-kit triggers: user moves to residents → separated residents gain off-story entries (own POV) and no new snapshot, first-time residents get neither, followers get the snapshot only · discovery merged in one call carrying the separation-window dialogue · each speaker's POV memory injected before he speaks · map full text + active scene injected into characters |
+| `selfcheck:scene` | offline | scene file layer (create / duplicate reject / description editable / name immutable / invalid name) · group creation builds the map + initial scene · character 初始场景 placement · ⊘ manual move skips scene_change (questions assert) and still moves · destination occupants present by record and hear the arrival line · followers placed, leavers fall to their location answer (其他 clears) · judged move (confidence-guarded) · strict no-move · objective injection (location/scene_change still asked, knows/told not · audience = active scene's present · other scenes excluded) · dialogue entrant lands post-snapshot (not in visible_to) with the entry kit injected · colocated-by-record characters are not scene-snapshot targets · split entry-kit triggers: user moves to residents → separated residents gain off-story entries (own POV) and no new snapshot, first-time residents get neither, followers get the snapshot only · discovery merged in one call carrying the separation-window dialogue · snapshot prompt carries the active scene's description only (other scenes excluded) · discovery prompt carries the scene map · each speaker's POV memory injected before he speaks · map full text + active scene injected into characters |
 | `acceptance-*` (m1–m5, isolation, models, context-edit, presence, director) | online | end-to-end behaviors per milestone; re-run after any fast-path or memory change |
 
 `DSH_DEBUG=1` prints director/judge failure causes.

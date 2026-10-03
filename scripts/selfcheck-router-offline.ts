@@ -803,9 +803,15 @@ try {
     assert.ok(memOf2('角色乙').includes('离场经历') && memOf2('角色乙').includes('替甲办妥'), '未入场的参与者乙同样获得乙视角的离场经历')
     assert.ok(memOf2('角色甲').includes('现场所见'), '回归者同时拿到现场所见')
     assert.ok(!memOf2('角色丙').includes('离场经历'), '非参与者丙不得获得离场经历')
+    // 平面群无地图：场景相关的段/约束行不得出现在提示词里（相对旧版逐字节不变）
+    const flatSceneHit = ds.hits.filter(h => h.kind === 'scene').at(-1)
+    assert.ok(flatSceneHit !== undefined, '平面群的现场所见调用存在')
+    const flatSceneBody = JSON.stringify(flatSceneHit.body)
+    assert.ok(!flatSceneBody.includes('当前场景（他进入的房间）') && !flatSceneBody.includes('本来的陈设'), '平面群现场所见提示词不得出现当前场景段/场景描述约束行')
     const offHits = ds.hits.filter(h => h.kind === 'offstory')
     assert.equal(offHits.length, 1, '事件发现恰一次（同轮进场者合并）')
     assert.ok(JSON.stringify(offHits[0]?.body).includes('（测试发言·履约）'), '发现调用必须带离场窗口对话')
+    assert.ok(!JSON.stringify(offHits[0]?.body).includes('场景地图'), '平面群事件发现提示词不得出现场景地图段/约束行')
     const povHits = ds.hits.filter(h => h.kind === 'pov')
     assert.equal(povHits.length, 2, '每个（事件×参与者）各渲染一次')
     // 首次进场（丁，无离场史）→ 不触发事件发现，只拿现场所见
