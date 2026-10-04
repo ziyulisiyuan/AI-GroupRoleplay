@@ -57,7 +57,8 @@ function params(model: string, messages: ChatMessage[], extra: { reasoningEffort
     messages,
     // 显式上限：API 默认额度会被深度思考占用，思考烧完额度时可见输出为空（"正在输出却无内容"）
     ...(config.outputMaxTokens > 0 ? { max_tokens: config.outputMaxTokens } : {}),
-    ...(extra.reasoningEffort === undefined ? {} : { reasoning_effort: extra.reasoningEffort }),
+    // effort=off/空 = 完全不发该字段：不认它的提供方/模型不会因这个多余键被拒
+    ...(extra.reasoningEffort === undefined || extra.reasoningEffort === '' || extra.reasoningEffort === 'off' ? {} : { reasoning_effort: extra.reasoningEffort }),
     ...(extra.temperature === undefined ? {} : { temperature: extra.temperature }),
   }
 }

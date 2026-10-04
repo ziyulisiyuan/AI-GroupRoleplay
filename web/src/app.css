@@ -529,6 +529,20 @@ button.cell:active, .cell.tap:active { background: var(--bg-press); }
 .dir-input-bar button { flex: none; height: 40px; padding: 0 var(--s-4); border-radius: var(--r-btn); background: var(--brand); color: #fff; font-size: var(--fs-sub); }
 .dir-input-bar button:disabled { background: #c9e9d6; }
 
+/* 模型配置：字段行 + 行内动作键（获取列表/选择）——动作键只在需要它的行出现 */
+.field-row { display: flex; align-items: flex-end; gap: var(--s-2); }
+.field-row .field { flex: 1; min-width: 0; }
+.field-action { flex: none; padding: 0 var(--s-4) 10px 0; color: var(--brand); font-size: var(--fs-sub); }
+.field-action:disabled { color: var(--text-3); }
+
+/* 弹窗内列表（可用模型 / 思考档位）：微信式白底行，选中项品牌色。
+   行自身已有左右内边距，外层不得再撑宽（负边距通铺会让 modal-body 溢出，出现横向滚动条）。 */
+.pick-list { max-height: 320px; overflow-y: auto; }
+.pick-row { display: block; width: 100%; padding: 13px var(--s-4); text-align: left; font-size: var(--fs-cell); color: var(--text-1); position: relative; }
+.pick-row:not(:last-child)::after { content: ""; position: absolute; left: var(--s-4); right: 0; bottom: 0; height: 1px; background: var(--line); transform: scaleY(0.5); }
+.pick-row:active { background: var(--bg-press); }
+.pick-row.on { color: var(--brand); }
+
 /* 危险操作行（删除群聊）：白底红字居中，置底 */
 .danger-row {
   display: block;

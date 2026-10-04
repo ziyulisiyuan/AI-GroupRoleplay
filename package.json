@@ -21,6 +21,7 @@
     "typecheck": "tsc --noEmit",
     "selfcheck:scaffold": "tsx scripts/selfcheck-scaffold.ts",
     "selfcheck:settings": "tsx scripts/selfcheck-settings.ts",
+    "selfcheck:models": "tsx scripts/selfcheck-models-offline.ts",
     "accept:isolation": "tsx scripts/acceptance-isolation.ts",
     "accept:models": "tsx scripts/acceptance-models.ts",
     "accept:context-edit": "tsx scripts/acceptance-context-edit.ts",

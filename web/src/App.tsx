@@ -375,13 +375,29 @@ function RegexView({ onBack }: { onBack: () => void }): React.ReactElement {
      留空则保持未启用，引擎按设计自动回退"完整总管"（角色模型代偿）。
    概念边界：Jev 是 TypeSafe SystemOne 判定模型（不生成文本），永远不当角色模型。 */
 
+/** 思考档位（值逐字发给提供方；off = 完全不发该字段——不认它的模型/提供方照样能用）。
+ *  没有接口能查某模型支持哪些档位，故全列；提供方是最终校验者。 */
+const EFFORT_LABEL: Record<string, string> = {
+  off: '不发送（off）',
+  minimal: 'minimal',
+  low: 'low',
+  medium: 'medium',
+  high: 'high',
+  max: 'max',
+}
+
 function ModelsView(): React.ReactElement {
   const toast = useToast()
   const [info, setInfo] = useState<ModelsInfo | null>(null)
   const [openCustom, setOpenCustom] = useState(false)
-  const [draft, setDraft] = useState({ baseUrl: '', model: '', apiKey: '' })
+  const [draft, setDraft] = useState({ baseUrl: '', model: '', apiKey: '', reasoningEffort: 'high' })
   const [jevKey, setJevKey] = useState('')
   const [busy, setBusy] = useState(false)
+  /** 拉取到的可选模型 ID（空数组 = 未拉取/无结果；弹窗据此渲染）。 */
+  const [modelList, setModelList] = useState<string[]>([])
+  const [pickOpen, setPickOpen] = useState(false)
+  const [effortOpen, setEffortOpen] = useState(false)
+  const [fetching, setFetching] = useState(false)
 
   const load = useCallback(async (): Promise<void> => {
     try {
@@ -404,7 +420,13 @@ function ModelsView(): React.ReactElement {
 
   /** 展开自定义设置：预填当前生效值，密钥留空（不回显既有密钥）。 */
   const openEditor = (): void => {
-    setDraft({ baseUrl: active?.baseUrl ?? 'https://api.deepseek.com', model: active?.model ?? 'deepseek-flash', apiKey: '' })
+    setDraft({
+      baseUrl: active?.baseUrl ?? 'https://api.deepseek.com',
+      model: active?.model ?? 'deepseek-flash',
+      apiKey: '',
+      reasoningEffort: active?.reasoningEffort ?? 'high',
+    })
+    setModelList([])
     setOpenCustom(true)
   }
 
@@ -421,19 +443,21 @@ function ModelsView(): React.ReactElement {
     try {
       if (active !== undefined) {
         await putJson(`/api/models/${enc(active.id)}`, {
-          baseUrl: draft.baseUrl.trim(), model: draft.model.trim(),
+          baseUrl: draft.baseUrl.trim(), model: draft.model.trim(), reasoningEffort: draft.reasoningEffort,
           ...(draft.apiKey.trim() === '' ? {} : { apiKey: draft.apiKey.trim() }),
         })
         toast('已保存')
       } else {
         const created = await postJson<{ ok: boolean; id: string }>('/api/models', {
-          name: '自定义', baseUrl: draft.baseUrl.trim(), model: draft.model.trim(), apiKey: draft.apiKey.trim(),
+          name: '自定义', baseUrl: draft.baseUrl.trim(), model: draft.model.trim(),
+          apiKey: draft.apiKey.trim(), reasoningEffort: draft.reasoningEffort,
         })
         await postJson(`/api/models/${enc(created.id)}/activate`, {})
         toast('已保存并启用')
       }
       setOpenCustom(false)
-      setDraft({ baseUrl: '', model: '', apiKey: '' })
+      setDraft({ baseUrl: '', model: '', apiKey: '', reasoningEffort: 'high' })
+      setModelList([])
       await load()
     } catch (e) {
       toast(e instanceof Error ? e.message : String(e))
@@ -472,6 +496,24 @@ function ModelsView(): React.ReactElement {
     }
   }
 
+  /** 服务端代查可用模型 ID（浏览器直连会被 CORS 拦，密钥也不该进页面作用域）。 */
+  const fetchModels = async (): Promise<void> => {
+    if (draft.baseUrl.trim() === '') { toast('先填 API 地址'); return }
+    if (draft.apiKey.trim() === '' && active === undefined) { toast('先填 API 密钥'); return } // 已有提供方时留空 = 用已存密钥（后端兜底）
+    setFetching(true)
+    try {
+      const r = await postJson<{ models: string[] }>('/api/models/discover', {
+        baseUrl: draft.baseUrl.trim(), apiKey: draft.apiKey.trim(),
+      })
+      setModelList(r.models)
+      setPickOpen(true)
+    } catch (e) {
+      toast(e instanceof Error ? e.message : String(e))
+    } finally {
+      setFetching(false)
+    }
+  }
+
   const disableRouter = async (): Promise<void> => {
     try {
       await putJson('/api/models/router', { id: '' })
@@ -501,8 +543,21 @@ function ModelsView(): React.ReactElement {
                 onChange={v => setDraft(d => ({ ...d, apiKey: v }))} />
               <Field label="API 地址" value={draft.baseUrl} placeholder="https://api.example.com"
                 onChange={v => setDraft(d => ({ ...d, baseUrl: v }))} />
-              <Field label="模型 ID" value={draft.model} placeholder="如 gpt-4o-mini"
-                onChange={v => setDraft(d => ({ ...d, model: v }))} />
+              <div className="field-row">
+                <Field label="模型 ID" value={draft.model} placeholder="如 gpt-4o-mini"
+                  onChange={v => setDraft(d => ({ ...d, model: v }))} />
+                <button className="field-action" disabled={fetching} onClick={() => void fetchModels()}>
+                  {fetching ? '查询中…' : '获取列表'}
+                </button>
+              </div>
+              {/* 思考档位：模型定下后才出现，值由用户自选（off = 不发该字段，不认它的模型也能用） */}
+              {draft.model.trim() !== '' && (
+                <div className="field-row">
+                  <Field label="思考档位" value={EFFORT_LABEL[draft.reasoningEffort] ?? draft.reasoningEffort}
+                    onChange={() => undefined} />
+                  <button className="field-action" onClick={() => setEffortOpen(true)}>选择</button>
+                </div>
+              )}
             </>
           )}
         </Cells>
@@ -511,6 +566,30 @@ function ModelsView(): React.ReactElement {
             {busy ? '保存中…' : '保存'}
           </button>
         )}
+
+        {/* 可用模型 ID：服务端代查的结果，点选即填入模型 ID */}
+        <Modal open={pickOpen} onClose={() => setPickOpen(false)} title="可用模型">
+          <div className="pick-list">
+            {modelList.map(m => (
+              <button key={m} className={'pick-row' + (m === draft.model ? ' on' : '')}
+                onClick={() => { setDraft(d => ({ ...d, model: m })); setPickOpen(false) }}>
+                {m}
+              </button>
+            ))}
+          </div>
+        </Modal>
+
+        {/* 思考档位：DeepSeek 与 OpenAI 两套用词都列出，提供方自己校验，选错只报它自己的错 */}
+        <Modal open={effortOpen} onClose={() => setEffortOpen(false)} title="思考档位">
+          <div className="pick-list">
+            {Object.entries(EFFORT_LABEL).map(([k, label]) => (
+              <button key={k} className={'pick-row' + (k === draft.reasoningEffort ? ' on' : '')}
+                onClick={() => { setDraft(d => ({ ...d, reasoningEffort: k })); setEffortOpen(false) }}>
+                {label}
+              </button>
+            ))}
+          </div>
+        </Modal>
 
         <Cells>
           <Cell

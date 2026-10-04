@@ -12,6 +12,7 @@ import { stream } from 'hono/streaming'
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { config } from './config.ts'
+import { discoverApiKey, discoverModels } from './llm/discover.ts'
 import { GroupSession, listGroups, type SessionEvent } from './group/engine.ts'
 import {
   createCharacter, createGroup, isValidName, readCharacterDraft, saveGroupSettings, saveUserPersona, updateCharacter,
@@ -414,6 +415,17 @@ app.get('/api/models', c => {
   const s = loadSettings()
   const active = resolveLlm()
   return c.json({ providers: s.providers, activeId: s.activeId, routerId: s.routerId, current: { ...active } })
+})
+
+/** 模型 ID 下拉列表的取数端点（服务端代查，见 llm/discover.ts）。注册在 `/api/models/:id` 之前。 */
+app.post('/api/models/discover', async c => {
+  const body = await c.req.json<Record<string, unknown>>().catch(() => ({}) as Record<string, unknown>)
+  const baseUrl = String(body.baseUrl ?? '').trim()
+  if (baseUrl === '') throw new Error('先填 API 地址，再获取模型列表')
+  // 密钥留空 = 复用已存密钥，但仅当要查的地址就是当前提供方存地址本身——
+  // 存储密钥绝不发往表单里任意填写的地址（局域网设备/恶意网页都可能构造该请求）。
+  const key = discoverApiKey(baseUrl, String(body.apiKey ?? '').trim(), resolveLlm())
+  return c.json({ models: await discoverModels(baseUrl, key) })
 })
 
 app.post('/api/models', async c => {

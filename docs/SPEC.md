@@ -377,7 +377,7 @@ per-turn cost rather than losing rules; it is the only injected section without 
 activeId: <provider id for character generation + slow bookkeeping; empty = fall back to .env>
 routerId: <provider id for the fast-path judge; empty = fast path off>
 providers:
-  - { id, name, baseUrl, apiKey, model, reasoningEffort(off|low|high|max) }
+  - { id, name, baseUrl, apiKey, model, reasoningEffort(off|low|high|max|minimal|medium) }
 ```
 
 Entries missing baseUrl/apiKey/model are ignored. `activeId` falling on a missing entry falls back
@@ -385,6 +385,10 @@ to the first provider. `routerId` falling on a missing/ignored entry disables th
 director runs the single full call). The fast-path provider must
 serve `POST {baseUrl}/v1/systemone` with the TypeSafe native protocol; the AIHubMix relay
 (`https://api.inferera.com`, `model: jev-latest`) is a known-good choice.
+reasoningEffort is per-provider: **`off` = the field is never sent**, for models/providers that
+reject it; `low`/`high`/`max` are DeepSeek's ladder, `minimal`/`low`/`medium`/`high` OpenAI's. The
+model-config UI offers the union (no endpoint publishes a model's ladder) and the provider is the
+validator — a rejected value surfaces as that provider's own error.
 
 ### 3.9 在场.yaml (derived cache; source of truth = presence rows, §9)
 
@@ -900,6 +904,7 @@ stale-entry heal (§5.3).
 | `GET\|POST /api/group/{name}/director` | correction window history / speak |
 | `GET\|PUT /api/rules` | global rules list (`{rules:[{id,name,enabled,text}]}`; PUT saves the whole list, name/enabled are frontend labels) |
 | `GET\|POST /api/models` · `PUT\|DELETE /api/models/{id}` · `POST /api/models/{id}/activate` · `PUT /api/models/router` | provider management; deleting the active provider falls back to the first; the router endpoint sets/clears the fast-path provider (deleting that provider clears it too) |
+| `POST /api/models/discover` | body `{baseUrl, apiKey?}` (`apiKey` empty = reuse the active provider's stored key, **only when `baseUrl` matches that provider's stored URL** — a stored key is never sent to a caller-supplied other address; mismatch requires a typed key, so the non-echoing key field needs no re-typing when editing the provider) → `{models:[string]}`: the **server** (never the browser — CORS, and the key must not reach page scope) calls the provider's `GET {baseUrl}/models` so the model-ID field can offer a picker; failures → the provider's own reason as an error |
 
 Errors: thrown → 400 `{"error"}`. Session cache `Map<群名, GroupSession>`; invalidated on group
 settings/user/character/rules changes; status/memory/location changes do not invalidate (the
@@ -1099,6 +1104,7 @@ Convention [INV 11]: fixtures are temporary and always deleted. Offline checks n
 | `selfcheck:scaffold` | offline | group/character creation products load · updates keep user content · name validation · empty rules inject nothing |
 | `selfcheck:settings` | offline | rules zero-built-in round-trip · provider parsing/fallback · router provider resolution |
 | `selfcheck:presence` | offline | three-layer yaml round-trip (with `since`) · parse semantics (omitted=keep/empty=clear/unknown=语音) · perception keywords · visible_to snapshots |
+| `selfcheck:models` | offline | model discovery proxy (`GET {baseUrl}/models`: baseUrl normalization with/without `/v1`, Bearer auth, dedupe+sort, id-only filter) · failure reasons readable (401/403 key rejected, 404 no list endpoint, non-JSON, missing `data`, empty list) · reasoning effort `off` = the request body carries **no** `reasoning_effort`, other levels pass through verbatim · key-source guard: empty key reuses the stored one only for the active provider's own URL, any other URL demands a typed key |
 | `selfcheck:engine` | offline | bad-line tolerance + id continuity · text-retract no-resurrection (restart/replay) · edit living-ledger (physical ledger-row rewrite, respects retracts) · deleted-message physical removal (no text left in log) + memory cleanup + id monotonicity · rename chains |
 | `selfcheck:router` | offline | Jev hit / three-layer derivation / knowledge audience (incl. overhearers) / `told` stage-1 + `state_dirty` parsing (missing = safe side) · low-confidence, out-of-roster → route-only fallback with raw answers logged · scene/knowledge salvage when route unusable · `jevExtraRounds` stage-2 thresholds / failure grants nothing · `missingRounds`/`transplantRounds` units (verbatim, mid, own-speech prefix) · end-to-end merged judgment (1 call/reply) · extra-memory grant (end-append order, ledger rows, idempotence on re-telling) · gate (zero deepseek calls when clean, exactly one when dirty) · bookkeeper has no roster authority (overreach discarded) · objective injection (knows/told not asked · audience = present by record · remote/overhear excluded · 客观 entry carries mid, living-ledger rewrite · pipeline unchanged) · status-record switch (off = state_dirty not asked, dirty reply records nothing, fallback director's ledger discarded · 群设定 flipped to true mid-session: judgment and recording resume immediately) · scene-perception snapshot (entrant detection, injection before entrant speaks via relay, manual-fix entries snapshotted too) · off-story experiences (absence anchor pure-code, discovery merged per entry, event×participant limited-POV renders injected to all participants, first-time entrants skipped) · judgment log (判定.jsonl rows with phases + raw answers + elapsed) · relay (user turn / cumulative decay: ×0 right after a speech — no consecutive output, that judgment does not advance the multiplier; `RELAY_DECAY` applied at every other judgment, cumulative across re-speeches; no hard cap, the undecaying user weight ends the chain; hard block hands the floor back to the user on just-spoke re-picks and all-zero distributions) · fallback = single full director · unconfigured = fast path off |
 | `selfcheck:scene` | offline | scene file layer (create / duplicate reject / description editable / name immutable / invalid name) · group creation builds the map + initial scene · character 初始场景 placement · ⊘ manual move skips scene_change (questions assert) and still moves · destination occupants present by record and hear the arrival line · followers placed, leavers fall to their location answer (其他 clears) · judged move (confidence-guarded) · strict no-move · objective injection (location/scene_change still asked, knows/told not · audience = active scene's present · other scenes excluded) · dialogue entrant lands post-snapshot (not in visible_to) with the entry kit injected · colocated-by-record characters are not scene-snapshot targets · split entry-kit triggers: user moves to residents → separated residents gain off-story entries (own POV) and no new snapshot, first-time residents get neither, followers get the snapshot only · discovery merged in one call carrying the separation-window dialogue · snapshot prompt carries the active scene's description only (other scenes excluded) · discovery prompt carries the scene map · each speaker's POV memory injected before he speaks · map full text + active scene injected into characters |

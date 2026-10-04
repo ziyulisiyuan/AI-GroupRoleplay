@@ -7,8 +7,8 @@
  *   score  —— 按标尺打分（本系统暂未使用）
  * 国内网络经中转通常仍需代理：读 HTTPS_PROXY/https_proxy 环境变量（undici ProxyAgent）。
  */
-import { ProxyAgent, fetch as undiciFetch } from 'undici'
-import { config } from '../config.ts'
+import { fetch as undiciFetch } from 'undici'
+import { proxyFor } from '../config.ts'
 
 export interface JevLlm {
   baseUrl: string
@@ -36,13 +36,6 @@ export interface JevNoulAnswer {
 
 export type JevAnswer = JevChoiceAnswer | JevNoulAnswer | { type: 'score'; score: number; confidence: number }
 
-function proxyDispatcher(url: string): ProxyAgent | undefined {
-  // 本地端点（自检 mock / 本地网关）不走代理；远端经中转通常需要（环境变量优先，.env 兜底）
-  if (/^https?:\/\/(127\.0\.0\.1|localhost|\[::1\])(:|\/)/.test(url)) return undefined
-  const proxy = config.proxy
-  return proxy === '' ? undefined : new ProxyAgent(proxy)
-}
-
 /**
  * 发起一次 Jev 判断。任何失败（网络/超时/HTTP 非 2xx/响应缺 answers）都抛错，
  * 由调用方决定回退——快路径的失败必须静默退到完整总管，不打断剧情。
@@ -59,7 +52,7 @@ export async function jevDecide(opts: {
     method: 'POST',
     headers: { authorization: `Bearer ${opts.llm.apiKey}`, 'content-type': 'application/json' },
     body: JSON.stringify({ model: opts.llm.model, state: opts.state, questions: opts.questions }),
-    dispatcher: proxyDispatcher(url),
+    dispatcher: proxyFor(url),
     signal: AbortSignal.timeout(opts.timeoutMs ?? 4000),
   })
   const text = await res.text()

@@ -5,6 +5,7 @@
 import { existsSync, readFileSync } from 'node:fs'
 import { resolve, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { ProxyAgent } from 'undici'
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 
@@ -59,4 +60,11 @@ export const config = {
     return process.env.HTTPS_PROXY ?? process.env.https_proxy ?? process.env.HTTP_PROXY ?? process.env.http_proxy
       ?? get('HTTPS_PROXY') ?? get('https_proxy') ?? get('HTTP_PROXY') ?? get('http_proxy') ?? ''
   },
+}
+
+/** 本机端点（自检 mock / 本地网关）不走代理；远端按 config.proxy 走。 */
+export function proxyFor(url: string): ProxyAgent | undefined {
+  if (/^https?:\/\/(127\.0\.0\.1|localhost|\[::1\])(:|\/)/.test(url)) return undefined
+  const proxy = config.proxy
+  return proxy === '' ? undefined : new ProxyAgent(proxy)
 }
