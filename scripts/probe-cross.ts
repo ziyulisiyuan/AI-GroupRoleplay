@@ -109,7 +109,8 @@ let host: ChildProcess | undefined
 try {
   cleanup()
   writeFileSync(CAP, '', 'utf8')
-  const env = { ...process.env, DEEPSEEK_BASE_URL: `http://127.0.0.1:${FAKE_PORT}`, DEEPSEEK_API_KEY: 'fake', DEEPSEEK_MODEL: 'fake-model', DEEPSEEK_REASONING_EFFORT: 'off', FAKE_STOP_MS: '1500' }
+  // 用主环境名 LLM_*（同 probe-cost：真实 .env/环境会盖掉旧名设的假地址）
+  const env = { ...process.env, LLM_BASE_URL: `http://127.0.0.1:${FAKE_PORT}`, LLM_API_KEY: 'fake', LLM_MODEL: 'fake-model', LLM_REASONING_EFFORT: 'off', FAKE_STOP_MS: '1500' }
   fake = spawn(process.execPath, [join('node_modules', 'tsx', 'dist', 'cli.mjs'), join('scripts', 'probe-fake-llm.ts'), String(FAKE_PORT), CAP], { cwd: config.root, env, stdio: ['ignore', 'ignore', 'pipe'], windowsHide: true })
   fake.stderr!.on('data', () => undefined)
   await sleep(2500)

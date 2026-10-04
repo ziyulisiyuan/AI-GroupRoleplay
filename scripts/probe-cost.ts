@@ -33,7 +33,8 @@ try {
   // 全局规则按真实量级写进去（注入总管 + 每个角色）
   writeFileSync(join(config.root, '规则.md'), '（测试用规则）\n' + '不要写成舞台提示，不要替别人说话，不要出现现代词汇，不要用排比句收尾，长段落拆短。\n'.repeat(8), 'utf8')
 
-  const env = { ...process.env, DEEPSEEK_BASE_URL: `http://127.0.0.1:${FAKE}`, DEEPSEEK_API_KEY: 'fake', DEEPSEEK_MODEL: 'fake-model', DEEPSEEK_REASONING_EFFORT: 'high' }
+  // 用主环境名 LLM_*（DEEPSEEK_* 只是旧名兼容）：否则真实 .env/环境里的 LLM_BASE_URL 会盖掉假地址，探针打到真实 API。
+  const env = { ...process.env, LLM_BASE_URL: `http://127.0.0.1:${FAKE}`, LLM_API_KEY: 'fake', LLM_MODEL: 'fake-model', LLM_REASONING_EFFORT: 'high' }
   fake = spawn(process.execPath, [join('node_modules', 'tsx', 'dist', 'cli.mjs'), join('scripts', 'probe-fake-llm.ts'), String(FAKE), CAP], { cwd: config.root, env, stdio: ['ignore', 'ignore', 'ignore'], windowsHide: true })
   await sleep(2500)
   host = spawn(process.execPath, [join('node_modules', 'tsx', 'dist', 'cli.mjs'), join('src', 'server.ts')], { cwd: config.root, env: { ...env, HOST_PORT: String(HOST) }, stdio: ['ignore', 'ignore', 'ignore'], windowsHide: true })

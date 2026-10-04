@@ -7,7 +7,7 @@ import { config } from '../src/config.ts'
 import { turnFromMessages } from '../src/host.ts'
 
 if (config.apiKey === '') {
-  console.log('未设置 DEEPSEEK_API_KEY，跳过在线自检')
+  console.log('未设置 API 密钥（界面「模型」或环境变量 LLM_API_KEY），跳过在线自检')
   process.exit(0)
 }
 
