@@ -73,7 +73,7 @@ export class GroupSession {
     this.scene = raw
     this.byName = new Map(this.characters.map(c => [c.name, c]))
     this.roster = this.characters.map(c => ({ name: c.name }))
-    // 人物速览 = 外观原文（不截断）：Jev 的 next_speaker 选项说明与 deepseek 各提示词的[可选角色]都用它。
+    // 人物速览 = 外观原文（不截断）：Jev 的 next_speaker 选项说明与完整总管各提示词的[可选角色]都用它。
     this.rosterLines = this.characters.map(c => `${c.name}｜${c.appearance}`)
   }
 

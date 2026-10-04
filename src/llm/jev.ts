@@ -45,7 +45,7 @@ function proxyDispatcher(url: string): ProxyAgent | undefined {
 
 /**
  * 发起一次 Jev 判断。任何失败（网络/超时/HTTP 非 2xx/响应缺 answers）都抛错，
- * 由调用方决定回退——快路径的失败必须静默退到 deepseek 总管，不打断剧情。
+ * 由调用方决定回退——快路径的失败必须静默退到完整总管，不打断剧情。
  */
 export async function jevDecide(opts: {
   llm: JevLlm

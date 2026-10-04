@@ -3,7 +3,7 @@
  * - assembleGroup：角色每轮输入组装（只读 角色.md/性格.md/人物关系.md + 状态账本 + 记忆注入 + 群设定 + 场景地图 + 最近36条）
  * - routeNextSpeaker：总管一次 tool-call，超时/失败→启发式降级
  */
-import { chatToolCall, type ToolSpec } from '../llm/deepseek.ts'
+import { chatToolCall, type ToolSpec } from '../llm/chat.ts'
 import { jevDecide } from '../llm/jev.ts'
 import { resolveLlm } from '../settings.ts'
 import { config } from '../config.ts'
@@ -444,7 +444,7 @@ export interface JevRouteResult {
  * 快路径：一次 Jev 调用同时回答"谁接话""三层场景名单是否要修""谁听不到这句发言"
  * "谁被转告了（额外记忆一段触发）""要不要记账（状态总门）"。
  * 判定全部抽象化——问"有没有办法知道/互动"，绝不列举手段，不做关键词匹配。
- * 任何失败（网络/超时/低置信/名单外）返回 undefined——调用方回退 deepseek 完整总管，
+ * 任何失败（网络/超时/低置信/名单外）返回 undefined——调用方回退完整总管单次调用，
  * 绝不让快路径本身成为新的等待或错判来源；缺答案的字段按"保持现状"处理（fail-open）。
  */
 export async function jevRoute(input: JevRouteInput): Promise<JevRouteResult | undefined> {
@@ -690,7 +690,7 @@ export async function jevRoute(input: JevRouteInput): Promise<JevRouteResult | u
     }
   } catch (e) {
     input.log?.({ error: String(e instanceof Error ? e.message : e) })
-    if (process.env.DSH_DEBUG === '1') console.error('[jevRoute] 快路径失败（回退 deepseek 总管）:', e)
+    if (process.env.DSH_DEBUG === '1') console.error('[jevRoute] 快路径失败（回退完整总管）:', e)
     return undefined
   }
 }
@@ -927,7 +927,7 @@ export interface BookkeeperInput {
   timeoutMs?: number
 }
 
-/** 慢路径记账：deepseek 单次 tool-call；失败抛错由调用方降级提示（不影响已完成的回复）。 */
+/** 慢路径记账：对话模型单次 tool-call；失败抛错由调用方降级提示（不影响已完成的回复）。 */
 export async function askBookkeeper(input: BookkeeperInput): Promise<Pick<RouteResult, 'ledgerUpdates' | 'appends' | 'presenceUpdates'>> {
   const prompt = [
     '你是群聊总管。剧情刚走完一条消息，请记账。',

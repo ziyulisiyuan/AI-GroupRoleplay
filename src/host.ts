@@ -3,7 +3,7 @@
  * 输入由 Host 组装（见 src/group/host.ts 的 assembleGroup），用完即弃；
  * "记忆"完全来自 剧情.jsonl 与角色文件的重放组装，不存在会话记忆。
  */
-import { streamChat, type ChatMessage } from './llm/deepseek.ts'
+import { streamChat, type ChatMessage } from './llm/chat.ts'
 import { resolveLlm } from './settings.ts'
 
 /** SPEC §4.2 末尾指令：输出的是"该角色此刻的反应"——通常有台词，但沉默与纯动作也是合法回应。 */

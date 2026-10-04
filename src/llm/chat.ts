@@ -1,7 +1,7 @@
 /**
- * LLM 调用层：官方 openai SDK（OpenAI 兼容协议；DeepSeek 只需换 baseURL）。
+ * LLM 调用层：官方 openai SDK（OpenAI 兼容协议，提供方自定 baseURL——DeepSeek/OpenRouter/自建网关同构）。
  * SDK 负责 SSE 解析与连接级重试；本项目只关心：
- * - reasoning_effort 直传（DeepSeek 扩展字段，SDK 会原样进请求体）
+ * - reasoning_effort 直传（思考模型的扩展字段，SDK 原样进请求体；不认识的提供方可能拒收）
  * - 思考内容（reasoning_content）不进剧情，只产出可见文本
  * - 工具调用：思考模式下 tool_choice 只能为 auto（[已验证]），返回后按期望函数校验 + 正文 JSON 兜底
  * 连接信息（baseUrl/apiKey/model/effort）由调用方每轮通过 resolveLlm() 解析传入，故前端改设置即时生效。
@@ -30,7 +30,7 @@ export interface LlmTarget {
 
 const clients = new Map<string, OpenAI>()
 function client(t: LlmTarget): OpenAI {
-  if (t.apiKey === '') throw new Error('未配置模型密钥：请在界面「模型」里添加提供方，或设置 DEEPSEEK_API_KEY')
+  if (t.apiKey === '') throw new Error('未配置模型密钥：请在界面「模型」里添加提供方，或设置环境变量 LLM_API_KEY')
   const key = `${t.baseUrl}|${t.apiKey}`
   let c = clients.get(key)
   if (c === undefined) {
@@ -118,5 +118,5 @@ export async function chatToolCall(target: LlmTarget, opts: {
     JSON.parse(candidate) // 非法 JSON 交由调用方降级
     return { name: opts.expectedFunction, arguments: candidate }
   }
-  throw new Error(`deepseek 未调用 ${opts.expectedFunction}`)
+  throw new Error(`模型未调用 ${opts.expectedFunction}`)
 }

@@ -163,7 +163,7 @@ a fallback full director (deepseek, §6.1c), and a correction window (§6.3).
 | Item | Choice |
 |---|---|
 | Runtime | Node.js ≥ 22.19, TypeScript, ESM, pnpm workspace (root + `web/`), tsx runs `.ts` directly |
-| Character LLM | OpenAI-compatible chat completions via the official `openai` SDK (`src/llm/deepseek.ts`); default `deepseek-flash` with `reasoning_effort: high` |
+| Character LLM | OpenAI-compatible chat completions via the official `openai` SDK (`src/llm/chat.ts`); default `deepseek-flash` with `reasoning_effort: high` |
 | Fast-path judge | TypeSafe System-One-protocol decision model (e.g. Jev via a relay), native `POST {baseUrl}/v1/systemone`, called through `undici` with optional proxy (`src/llm/jev.ts`) |
 | Server | hono + @hono/node-server; NDJSON event streams for conversation; port `HOST_PORT` (default 8787) |
 | Frontend | React 18 + Vite (`web/`), dev proxy `/api` → 127.0.0.1:8787, port 5173 `strictPort` |
@@ -171,13 +171,14 @@ a fallback full director (deepseek, §6.1c), and a correction window (§6.3).
 
 - Thinking-mode facts `[VERIFIED]`: `tool_choice` only accepts `auto`; a required function is
   enforced by strong prompt + function-name validation + a bare-JSON fallback parse of the message
-  body (`src/llm/deepseek.ts`). `reasoning_content` never enters the story. The OpenAI client is
+  body (`src/llm/chat.ts`). `reasoning_content` never enters the story. The OpenAI client is
   cached by `baseUrl|apiKey`, `maxRetries: 2`.
 - Tool argument tolerance: array-typed schema fields are wrapped through `asArray` when a model
   emits a single object instead of an array.
-- Environment keys (all optional): `HOST_PORT`, `DEEPSEEK_API_KEY`, `DEEPSEEK_MODEL`,
-  `DEEPSEEK_REASONING_EFFORT`, `DIRECTOR_TIMEOUT_MS` (default 30000), `JEV_TIMEOUT_MS`
-  (default 4000), `DEEPSEEK_MAX_TOKENS` (default 8192 — explicit per-generation token ceiling:
+- Environment keys (all optional): `HOST_PORT`, `LLM_API_KEY` (`DEEPSEEK_API_KEY` legacy alias),
+  `LLM_MODEL` (`DEEPSEEK_MODEL` alias), `LLM_REASONING_EFFORT` (`DEEPSEEK_REASONING_EFFORT` alias),
+  `DIRECTOR_TIMEOUT_MS` (default 30000), `JEV_TIMEOUT_MS`
+  (default 4000), `LLM_MAX_TOKENS` (`DEEPSEEK_MAX_TOKENS` alias; default 8192 — explicit per-generation token ceiling:
   without it the API default budget is consumed by deep thinking, producing "typing indicator but
   empty output"), `RELAY_DECAY` (default 0.8, §6.1a relay
   decay), `CONTEXT_WINDOW` (default 36, message window), `JEV_CONTEXT_WINDOW` (default 75,

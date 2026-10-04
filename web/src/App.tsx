@@ -499,9 +499,9 @@ function ModelsView(): React.ReactElement {
               <Field label="API 密钥" type="password" value={draft.apiKey}
                 placeholder={active === undefined ? 'sk-…' : '已配置——输入新值可替换'}
                 onChange={v => setDraft(d => ({ ...d, apiKey: v }))} />
-              <Field label="API 地址" value={draft.baseUrl} placeholder="https://api.deepseek.com"
+              <Field label="API 地址" value={draft.baseUrl} placeholder="https://api.example.com"
                 onChange={v => setDraft(d => ({ ...d, baseUrl: v }))} />
-              <Field label="模型 ID" value={draft.model} placeholder="deepseek-flash"
+              <Field label="模型 ID" value={draft.model} placeholder="如 gpt-4o-mini"
                 onChange={v => setDraft(d => ({ ...d, model: v }))} />
             </>
           )}

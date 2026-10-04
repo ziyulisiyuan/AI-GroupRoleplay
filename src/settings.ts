@@ -1,7 +1,7 @@
 /**
  * 应用设置（SPEC §3.1.3）：模型提供方列表，前端可增删改与启用。
  * 位置：工作区根目录 settings.yaml（机器字段 → yaml）。
- * 解析优先级：settings.yaml 的启用项 → .env / 环境变量（DEEPSEEK_*）→ 报错。
+ * 解析优先级：settings.yaml 的启用项 → .env / 环境变量（LLM_*，DEEPSEEK_* 旧名兼容）→ 报错。
  */
 import { existsSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
