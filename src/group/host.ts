@@ -3,7 +3,7 @@
  * - assembleGroup：角色每轮输入组装（只读 角色.md/性格.md/人物关系.md + 状态账本 + 记忆注入 + 群设定 + 场景地图 + 最近36条）
  * - routeNextSpeaker：总管一次 tool-call，超时/失败→启发式降级
  */
-import { chatToolCall, type ToolSpec } from '../llm/chat.ts'
+import { chatToolCall, type LlmTrace, type ToolSpec } from '../llm/chat.ts'
 import { jevDecide } from '../llm/jev.ts'
 import { resolveLlm } from '../settings.ts'
 import { config } from '../config.ts'
@@ -271,6 +271,8 @@ export interface RouteInput {
   /** §3.11：在场者及其感知情况（如"角色乙（失聪）"），供总管判断谁能知道 */
   presentNotes?: string[]
   directorTimeoutMs?: number
+  /** 原始材料侧路（模型调用.jsonl；只给人排查，不进提示词）。 */
+  trace?: LlmTrace
 }
 
 /**
@@ -317,6 +319,7 @@ export async function routeNextSpeaker(input: RouteInput): Promise<RouteResult> 
       ],
       tools: [ROUTE_TOOL],
       expectedFunction: 'route_and_remember',
+      trace: input.trace,
       signal: AbortSignal.timeout(input.directorTimeoutMs ?? 30000),
     })
     const args = JSON.parse(call.arguments) as {
@@ -925,6 +928,7 @@ export interface BookkeeperInput {
   recent: string
   tone: string
   timeoutMs?: number
+  trace?: LlmTrace
 }
 
 /** 慢路径记账：对话模型单次 tool-call；失败抛错由调用方降级提示（不影响已完成的回复）。 */
@@ -953,6 +957,7 @@ export async function askBookkeeper(input: BookkeeperInput): Promise<Pick<RouteR
     ],
     tools: [BOOKKEEP_TOOL],
     expectedFunction: 'record_round',
+    trace: input.trace,
     signal: AbortSignal.timeout(input.timeoutMs ?? 60000),
   })
   const args = JSON.parse(call.arguments) as Parameters<typeof parseBookkeeping>[0]
@@ -1025,6 +1030,7 @@ export interface CorrectionInput {
   recent: string
   text: string
   timeoutMs?: number
+  trace?: LlmTrace
 }
 
 /** 让总管在戏外回应用户的纠正，并给出要落实的修正项。 */
@@ -1053,6 +1059,7 @@ export async function askDirector(input: CorrectionInput): Promise<CorrectionRes
     ],
     tools: [CORRECTION_TOOL],
     expectedFunction: 'apply_corrections',
+    trace: input.trace,
     signal: AbortSignal.timeout(input.timeoutMs ?? 60000),
   })
   const args = JSON.parse(call.arguments) as {
@@ -1134,6 +1141,7 @@ export async function askSceneSummarizer(input: {
   recent: string
   tone: string
   timeoutMs?: number
+  trace?: LlmTrace
 }): Promise<string> {
   const prompt = [
     '有角色刚进入这个场景，他此前不在场、对这里刚发生的事一无所知。写出他此刻进门第一眼看到的现场实况——这将作为目击记录注入他的记忆。',
@@ -1167,6 +1175,7 @@ export async function askSceneSummarizer(input: {
     ],
     tools: [SCENE_TOOL],
     expectedFunction: 'record_scene',
+    trace: input.trace,
     signal: AbortSignal.timeout(input.timeoutMs ?? 60000),
   })
   const args = JSON.parse(call.arguments) as { scene_summary?: string }
@@ -1221,6 +1230,7 @@ export async function askOffStoryDiscovery(input: {
   scenes?: Array<{ name: string; description: string }>
   tone: string
   timeoutMs?: number
+  trace?: LlmTrace
   log?: (e: Record<string, unknown>) => void
 }): Promise<Array<{ summary: string; participants: string[] }> | undefined> {
   const prompt = [
@@ -1256,6 +1266,7 @@ export async function askOffStoryDiscovery(input: {
       ],
       tools: [OFFSTORY_TOOL],
       expectedFunction: 'record_offstory',
+      trace: input.trace,
       signal: AbortSignal.timeout(input.timeoutMs ?? 60000),
     })
     const args = JSON.parse(call.arguments) as { events?: unknown }
@@ -1308,6 +1319,7 @@ export async function askOffStoryPOV(input: {
   /** 该角色当前状态账本行（含人物关系变化）。 */
   ledgerLine: string
   timeoutMs?: number
+  trace?: LlmTrace
   log?: (e: Record<string, unknown>) => void
 }): Promise<string | undefined> {
   const prompt = [
@@ -1331,6 +1343,7 @@ export async function askOffStoryPOV(input: {
       ],
       tools: [OFFSTORY_POV_TOOL],
       expectedFunction: 'render_memory',
+      trace: input.trace,
       signal: AbortSignal.timeout(input.timeoutMs ?? 60000),
     })
     const args = JSON.parse(call.arguments) as { memory?: string }

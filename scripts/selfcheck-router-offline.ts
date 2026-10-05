@@ -1260,6 +1260,41 @@ try {
     ds.server.close()
   }
 
+  // ── 4n) 空回复不再隐形：判定.jsonl 留一行（called=true + finishReason），
+  //         模型调用.jsonl 留原始材料（output 为空也要留）
+  {
+    const ds = await mockDeepseek({ streamText: '' })
+    const jev = await mockJev({ answers: [
+      { // 主判定 → 甲（甲没说出一句话 → 空回复）
+        next_speaker: { type: 'choice', choice: '角色甲', confidence: 0.9, probabilities: {} },
+        present_角色甲: { type: 'noul', noul: 0.98 },
+        present_角色乙: { type: 'noul', noul: 0.9 },
+        present_角色丙: { type: 'noul', noul: 0.9 },
+        knows_角色甲: { type: 'noul', noul: 0.9 },
+        knows_角色乙: { type: 'noul', noul: 0.9 },
+        knows_角色丙: { type: 'noul', noul: 0.9 },
+        told_角色甲: { type: 'noul', noul: 0.05 },
+        told_角色乙: { type: 'noul', noul: 0.05 },
+        told_角色丙: { type: 'noul', noul: 0.05 },
+        state_dirty: { type: 'noul', noul: 0.1 },
+      },
+    ] })
+    rmSync(accDir, { recursive: true, force: true })
+    buildGroupFixture(accDir, { chars: TEST_CAST })
+    writeTestSettings(ds.port, jev.port)
+    const { GroupSession } = await import('../src/group/engine.ts')
+    const session = GroupSession.open(accName)
+    const infos: string[] = []
+    for await (const ev of session.speak('（空回复测试）')) if (ev.type === 'info') infos.push(ev.text ?? '')
+    assert.ok(infos.includes('（空回复）'), '空回复必须提示用户')
+    const judged = fsReadFileSync(join(accDir, '判定.jsonl'), 'utf8')
+    assert.ok(judged.includes('"phase":"空回复"'), '空回复必须落判定.jsonl（不再隐形）')
+    assert.ok(judged.includes('"called":true'), '空回复必须记录"模型确实被调过"')
+    const trace = fsReadFileSync(join(accDir, '模型调用.jsonl'), 'utf8')
+    assert.ok(trace.includes('"phase":"角色生成"'), '模型调用.jsonl 必须记录角色生成')
+    ds.server.close(); jev.server.close()
+  }
+
   console.log('快/慢双路径自检通过：Jev命中/位置判定(场景choice)/链接推导/知情名单(原文移植，含偷听者)/低置信与名单外→路由回退但位置知情不连坐(留痕) · 合并判定(知情+总门+转告+接力一次调用) · 额外记忆(一段触发/二段逐轮/逐字移植/带mid幂等/堆在末尾) · 记账门控(无变化零调用/回复脏恰一次) · 记账员无名册权(越权丢弃) · 规则注入边界(仅角色生成上下文；主判定/合并判定/记账/回退总管不含) · 客观注入(不问知情/转告/受众=现场记录/接入与单向感知不收/客观条目带mid活账本/管线照旧) · 状态记录开关(默认关：不问state_dirty/脏回复不记账/回退总管账本丢弃；群设定改true即时生效：判定与记账恢复) · 思维链(reasoning逐字落盘按mid键控/不进记忆不进任何提示词/删除消息一并清除) · 现场所见(进场检测/发言前等待) · 事件补全(离场锚点纯代码/发现一次合并/事件×参与者限知视角分别注入/首次进场不触发) · 接力判定（判给用户即结束/刚发言压0不可能连续发言/无硬上限） · 接力累计衰减（每判定乘0.8重新发言不重置/衰减最终判回用户/翻转与阻断留痕） · 回退=完整总管 · 未配置=完全兼容')
 } finally {
   rmSync(accDir, { recursive: true, force: true })

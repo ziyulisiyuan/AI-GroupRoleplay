@@ -20,6 +20,7 @@ import { resolveRouter } from '../settings.ts'
 import { LEDGER_KEYS, loadFiles, saveMemory, savePersonality, saveRelationships, saveStatus, type CharacterFiles } from './status.ts'
 import { backfillKnowledge, buildMemory, missingRounds, transplantRounds, witnessSummary } from './knowledge.ts'
 import { recordThinking, removeThinking, clearThinking } from './thinking.ts'
+import { appendModelTrace } from './trace.ts'
 import { rmSync } from 'node:fs'
 import { resolveCharacterName, type RoutableCharacter } from './router.ts'
 
@@ -311,6 +312,11 @@ export class GroupSession {
    * 同步执行——必须在下一跳发言组装前完成（"让他也说一下"后接力到他时，记忆必须已就位）。
    * 二段失败/零命中静默跳过：漏补只是维持现状（可手动补），错补却要手动撤。
    */
+  /** 模型调用原始材料的落盘口（模型调用.jsonl）——只给人排查，永不进任何模型输入。 */
+  private traceTo(phase: string): (e: import('../llm/chat.ts').LlmTraceEvent) => void {
+    return e => appendModelTrace(this.groupDir, phase, e)
+  }
+
   private async *grantExtraMemory(targets: ReadonlySet<string>, retoldText: string, teller: string, routerLlm: NonNullable<ReturnType<typeof resolveRouter>>): AsyncGenerator<SessionEvent> {
     for (const name of targets) {
       const files = this.filesFor(name)
@@ -366,7 +372,8 @@ export class GroupSession {
             replyText: w.replyText,
             recent: this.store.effectiveMessages().slice(-8).map(m => `${m.name}：${m.text}`).join('\n'),
             tone: this.settings.tone,
-            timeoutMs: Math.max(config.directorTimeoutMs, 60000),
+            timeoutMs: Math.max(config.heavyTimeoutMs, 60000),
+            trace: this.traceTo('记账'),
           })
           // 记账员只有状态账本写入权（§6.1b）：场景名册唯一写者 = Jev 每轮判定 / 总管代管 / 用户手动修正
           const notes = this.recordRouteChanges(book.ledgerUpdates)
@@ -437,7 +444,8 @@ export class GroupSession {
           ...(activeScene !== undefined ? { activeScene: { name: activeScene.name, description: activeScene.description } } : {}),
           recent: this.store.effectiveMessages().slice(-12).map(m => `${m.name}：${m.text}`).join('\n'),
           tone: this.settings.tone,
-          timeoutMs: Math.max(config.directorTimeoutMs, 60000),
+          timeoutMs: Math.max(config.heavyTimeoutMs, 60000),
+          trace: this.traceTo('现场所见'),
         })
         for (const name of targets) {
           const f = this.filesFor(name)
@@ -489,7 +497,8 @@ export class GroupSession {
         rosterNames: this.characterNames(),
         ...(this.scene.scene !== undefined ? { scenes: listScenes(this.groupDir) } : {}),
         tone: this.settings.tone,
-        timeoutMs: Math.max(config.directorTimeoutMs, 60000),
+        timeoutMs: Math.max(config.heavyTimeoutMs, 60000),
+        trace: this.traceTo('事件补全发现'),
         log: e => this.judgeLog({ phase: '事件补全发现', ...e }),
       })
       if (events === undefined || events.length === 0) return
@@ -504,7 +513,8 @@ export class GroupSession {
             participant: p,
             personality: f.personality.base,
             ledgerLine,
-            timeoutMs: Math.max(config.directorTimeoutMs, 60000),
+            timeoutMs: Math.max(config.heavyTimeoutMs, 60000),
+            trace: this.traceTo('离场经历渲染'),
             log: e => this.judgeLog({ phase: '离场经历渲染', event: ev.summary, ...e }),
           })
           return text === undefined ? undefined : { participant: p, text }
@@ -633,7 +643,7 @@ export class GroupSession {
     yield { type: 'speaker', name: last.name }
     let full = ''
     let thinking = ''
-    for await (const delta of turnFromMessages(system === '' ? messages : [{ role: 'system', content: system }, ...messages], { temperature: 1.0, onReasoning: t => { thinking += t } })) {
+    for await (const delta of turnFromMessages(system === '' ? messages : [{ role: 'system', content: system }, ...messages], { temperature: 1.0, onReasoning: t => { thinking += t }, trace: this.traceTo('重掷') })) {
       full += delta
       yield { type: 'delta', text: delta }
     }
@@ -715,6 +725,7 @@ export class GroupSession {
         presentNames: before.present,
         presentNotes: this.presentNotes(),
         directorTimeoutMs: config.directorTimeoutMs,
+        trace: this.traceTo('总管路由'),
       })
       if (route.picked === '') {
         yield { type: 'info', text: '路由失败：群里没有可用角色' }
@@ -1021,13 +1032,15 @@ export class GroupSession {
     })
     if (messages.length === 0) {
       // 视野内没有任何可说的话（如失聪者被兜底选中）：不调模型，按空回复处理
+      this.judgeLog({ phase: '空回复', speaker: name, called: false, note: '视野内无可说内容（未调用模型）' })
       yield { type: 'info', text: '（空回复）' }
       return { text: '' }
     }
     yield { type: 'speaker', name }
     let full = ''
     let thinking = ''
-    for await (const delta of turnFromMessages(system === '' ? messages : [{ role: 'system', content: system }, ...messages], { onReasoning: t => { thinking += t } })) {
+    let finishReason: string | undefined
+    for await (const delta of turnFromMessages(system === '' ? messages : [{ role: 'system', content: system }, ...messages], { onReasoning: t => { thinking += t }, onFinish: r => { finishReason = r }, trace: this.traceTo('角色生成') })) {
       full += delta
       yield { type: 'delta', text: delta }
     }
@@ -1070,6 +1083,9 @@ export class GroupSession {
       if (thinking.trim() !== '') {
         try { recordThinking(this.groupDir, msg.id, name, msg.round, thinking) } catch { /* 记录失败不影响剧情 */ }
       }
+    }
+    if (full.trim() === '') {
+      this.judgeLog({ phase: '空回复', speaker: name, called: true, reasoningChars: thinking.length, ...(finishReason === undefined ? {} : { finishReason }) })
     }
     yield { type: 'reply', name, text: full }
     return { text: full, ...(msgId === undefined ? {} : { msgId }), ...(judge === undefined ? {} : { judge }) }
@@ -1272,7 +1288,8 @@ export class GroupSession {
       settings: this.settings,
       recent,
       text: text.trim(),
-      timeoutMs: Math.max(config.directorTimeoutMs, 60000),
+      timeoutMs: Math.max(config.heavyTimeoutMs, 60000),
+      trace: this.traceTo('纠正窗口'),
     })
 
     const applied: string[] = []

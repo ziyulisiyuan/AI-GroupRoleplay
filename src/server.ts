@@ -408,6 +408,8 @@ function providerFrom(body: Record<string, unknown>, id: string): Provider {
     apiKey: String(body.apiKey ?? '').trim(),
     model: String(body.model ?? '').trim(),
     reasoningEffort: String(body.reasoningEffort ?? '').trim() || 'high',
+    // 输出上限：0/空 = 不发送该字段（上限交给提供方）
+    maxTokens: Math.max(0, Math.floor(Number(body.maxTokens ?? 0) || 0)),
   }
 }
 

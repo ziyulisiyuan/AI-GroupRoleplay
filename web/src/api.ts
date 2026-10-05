@@ -42,7 +42,7 @@ export interface Snapshot {
   pinned: boolean
 }
 export interface Draft { name: string; appearance: string; background: string; personality: string; relationships: string; scene?: string }
-export interface Provider { id: string; name: string; baseUrl: string; apiKey: string; model: string; reasoningEffort: string }
+export interface Provider { id: string; name: string; baseUrl: string; apiKey: string; model: string; reasoningEffort: string; maxTokens?: number }
 export interface ModelsInfo { providers: Provider[]; activeId: string; routerId: string; current: { baseUrl: string; apiKey: string; model: string; reasoningEffort: string; source: string } }
 /** SessionEvent 的孪生（engine.ts）。 */
 export type Ev =

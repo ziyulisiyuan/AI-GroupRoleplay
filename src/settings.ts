@@ -15,8 +15,10 @@ export interface Provider {
   baseUrl: string
   apiKey: string
   model: string
-  /** off | low | high | max */
+  /** off | low | high | max | minimal | medium */
   reasoningEffort: string
+  /** 输出上限（tokens）：>0 显式写死；0/缺省 = 完全不发该字段（上限交给提供方）。 */
+  maxTokens?: number
 }
 
 export interface AppSettings {
@@ -32,6 +34,13 @@ export const settingsPath = (root: string = config.root): string => join(root, S
 
 function str(v: unknown): string {
   return typeof v === 'string' ? v : v === undefined || v === null ? '' : String(v)
+}
+
+/** 可选的输出上限：非法/空 → undefined（= 不发送）；否则取非负整数。 */
+function optNum(v: unknown): number | undefined {
+  if (v === undefined || v === null || v === '') return undefined
+  const n = Number(v)
+  return Number.isFinite(n) ? Math.max(0, Math.floor(n)) : undefined
 }
 
 export function loadSettings(root: string = config.root): AppSettings {
@@ -53,6 +62,7 @@ export function loadSettings(root: string = config.root): AppSettings {
       apiKey,
       model,
       reasoningEffort: str(o.reasoningEffort) || 'high',
+      ...(optNum(o.maxTokens) === undefined ? {} : { maxTokens: optNum(o.maxTokens) }),
     }]
   })
   return { providers, activeId: str(raw.activeId), routerId: str(raw.routerId) }
@@ -85,6 +95,8 @@ export interface ResolvedLlm {
   apiKey: string
   model: string
   reasoningEffort: string
+  /** 输出上限：>0 写死；0/缺省 = 不发该字段（chat.ts 再回落 config.outputMaxTokens）。 */
+  maxTokens?: number
   /** 配置来源，便于自检与报错说明 */
   source: 'settings' | 'env'
 }
@@ -99,6 +111,7 @@ export function resolveLlm(root: string = config.root): ResolvedLlm {
       apiKey: active.apiKey,
       model: active.model,
       reasoningEffort: active.reasoningEffort,
+      ...(active.maxTokens === undefined ? {} : { maxTokens: active.maxTokens }),
       source: 'settings',
     }
   }
@@ -125,6 +138,7 @@ export function resolveRouter(root: string = config.root): ResolvedLlm | undefin
     apiKey: router.apiKey,
     model: router.model,
     reasoningEffort: router.reasoningEffort,
+    ...(router.maxTokens === undefined ? {} : { maxTokens: router.maxTokens }),
     source: 'settings',
   }
 }

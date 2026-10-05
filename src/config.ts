@@ -52,9 +52,11 @@ export const config = {
   contextWindow: Number(get('CONTEXT_WINDOW') ?? 36),
   /** Jev 快路径的对话窗口条数（Jev 没有输入上限、按输入计费且很便宜，给得比角色窗口宽）。 */
   jevContextWindow: Number(get('JEV_CONTEXT_WINDOW') ?? 75),
-  /** 单次生成的 token 上限：不显式设高时，API 默认额度会被深度思考分走，
-   *  出现"状态栏显示正在输出、最后却什么内容都没有"——思考烧完额度，可见输出为空。 */
-  outputMaxTokens: Number(get('LLM_MAX_TOKENS') ?? get('DEEPSEEK_MAX_TOKENS') ?? 8192),
+  /** 单次输出的 token 上限：>0 显式写死；**0 = 完全不发该字段**（上限交给提供方）。
+   *  提供方级 maxTokens 优先，缺省回落这里。 */
+  outputMaxTokens: Number(get('LLM_MAX_TOKENS') ?? get('DEEPSEEK_MAX_TOKENS') ?? 0),
+  /** 重工具调用（现场所见/事件补全/离场渲染/记账/纠正）的单次等待上限：思考久的模型要更宽的线。 */
+  heavyTimeoutMs: Number(get('HEAVY_TIMEOUT_MS') ?? 180000),
   /** 出站代理（Jev/中转用）：环境变量优先，.env 的 HTTPS_PROXY 兜底；空 = 直连。 */
   get proxy(): string {
     return process.env.HTTPS_PROXY ?? process.env.https_proxy ?? process.env.HTTP_PROXY ?? process.env.http_proxy

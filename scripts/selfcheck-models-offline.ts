@@ -34,7 +34,8 @@ const server = createServer((req: IncomingMessage, res: ServerResponse) => {
     }
     if (url.pathname === '/v1/chat/completions') {
       res.writeHead(200, { 'content-type': 'text/event-stream' })
-      res.write('data: {"choices":[{"delta":{"content":"ok"}}]}\n\n')
+      res.write('data: ' + JSON.stringify({ choices: [{ delta: { reasoning_content: '（思考）' } }] }) + '\n\n')
+      res.write('data: ' + JSON.stringify({ choices: [{ delta: { content: 'ok' }, finish_reason: 'stop' }] }) + '\n\n')
       res.write('data: [DONE]\n\n')
       res.end()
       return
@@ -78,6 +79,20 @@ try {
   assert.equal('reasoning_effort' in bodyOf(), false, 'off = 请求体不得含 reasoning_effort')
   for await (const _ of streamChat({ baseUrl: `${base}/v1`, apiKey: 'k', model: 'm', reasoningEffort: 'high' }, { messages: [{ role: 'user', content: 'hi' }] })) { /* 读干流 */ }
   assert.equal(bodyOf()['reasoning_effort'], 'high', '非 off 档位原样直传')
+
+  // 3b) 输出上限：0/缺省 = 完全不发该字段（上限交给提供方）；>0 才显式写死
+  for await (const _ of streamChat({ baseUrl: `${base}/v1`, apiKey: 'k', model: 'm', reasoningEffort: 'off', maxTokens: 0 }, { messages: [{ role: 'user', content: 'hi' }] })) { /* 读干流 */ }
+  assert.equal('max_tokens' in bodyOf(), false, 'maxTokens=0 = 不发送 max_tokens')
+  for await (const _ of streamChat({ baseUrl: `${base}/v1`, apiKey: 'k', model: 'm', reasoningEffort: 'off', maxTokens: 12345 }, { messages: [{ role: 'user', content: 'hi' }] })) { /* 读干流 */ }
+  assert.equal(bodyOf()['max_tokens'], 12345, 'maxTokens>0 显式写死')
+
+  // 3c) 原始材料侧路（模型调用.jsonl 的原料）：思考/正文/结束原因/耗时缺一不可
+  const traces: import('../src/llm/chat.ts').LlmTraceEvent[] = []
+  for await (const _ of streamChat({ baseUrl: `${base}/v1`, apiKey: 'k', model: 'm', reasoningEffort: 'off' }, { messages: [{ role: 'user', content: 'hi' }], trace: e => traces.push(e) })) { /* 读干流 */ }
+  assert.equal(traces[0]?.reasoning, '（思考）', 'trace 必须带思考原文')
+  assert.equal(traces[0]?.output, 'ok', 'trace 必须带可见正文')
+  assert.equal(traces[0]?.finishReason, 'stop', 'trace 必须带结束原因')
+  assert.ok((traces[0]?.elapsedMs ?? -1) >= 0, 'trace 必须带耗时')
 
   // 4) 密钥来源守卫：留空复用已存密钥，仅限"要查的地址 == 当前提供方存地址"；
   //    存储密钥绝不发往表单里任意填写的地址（局域网设备/恶意网页都可能构造该请求）。

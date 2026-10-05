@@ -390,7 +390,7 @@ function ModelsView(): React.ReactElement {
   const toast = useToast()
   const [info, setInfo] = useState<ModelsInfo | null>(null)
   const [openCustom, setOpenCustom] = useState(false)
-  const [draft, setDraft] = useState({ baseUrl: '', model: '', apiKey: '', reasoningEffort: 'high' })
+  const [draft, setDraft] = useState({ baseUrl: '', model: '', apiKey: '', reasoningEffort: 'high', maxTokens: '' })
   const [jevKey, setJevKey] = useState('')
   const [busy, setBusy] = useState(false)
   /** 拉取到的可选模型 ID（空数组 = 未拉取/无结果；弹窗据此渲染）。 */
@@ -425,6 +425,7 @@ function ModelsView(): React.ReactElement {
       model: active?.model ?? 'deepseek-flash',
       apiKey: '',
       reasoningEffort: active?.reasoningEffort ?? 'high',
+      maxTokens: active?.maxTokens !== undefined && active.maxTokens > 0 ? String(active.maxTokens) : '',
     })
     setModelList([])
     setOpenCustom(true)
@@ -444,6 +445,7 @@ function ModelsView(): React.ReactElement {
       if (active !== undefined) {
         await putJson(`/api/models/${enc(active.id)}`, {
           baseUrl: draft.baseUrl.trim(), model: draft.model.trim(), reasoningEffort: draft.reasoningEffort,
+          maxTokens: Math.max(0, Math.floor(Number(draft.maxTokens) || 0)),
           ...(draft.apiKey.trim() === '' ? {} : { apiKey: draft.apiKey.trim() }),
         })
         toast('已保存')
@@ -451,12 +453,13 @@ function ModelsView(): React.ReactElement {
         const created = await postJson<{ ok: boolean; id: string }>('/api/models', {
           name: '自定义', baseUrl: draft.baseUrl.trim(), model: draft.model.trim(),
           apiKey: draft.apiKey.trim(), reasoningEffort: draft.reasoningEffort,
+          maxTokens: Math.max(0, Math.floor(Number(draft.maxTokens) || 0)),
         })
         await postJson(`/api/models/${enc(created.id)}/activate`, {})
         toast('已保存并启用')
       }
       setOpenCustom(false)
-      setDraft({ baseUrl: '', model: '', apiKey: '', reasoningEffort: 'high' })
+      setDraft({ baseUrl: '', model: '', apiKey: '', reasoningEffort: 'high', maxTokens: '' })
       setModelList([])
       await load()
     } catch (e) {
@@ -558,6 +561,9 @@ function ModelsView(): React.ReactElement {
                   <button className="field-action" onClick={() => setEffortOpen(true)}>选择</button>
                 </div>
               )}
+              {/* 输出上限：留空/0 = 完全不发该字段（上限交给提供方）；填数字 = 显式写死 */}
+              <Field label="输出上限" type="number" value={draft.maxTokens} placeholder="留空 = 不设上限" 
+                onChange={v => setDraft(d => ({ ...d, maxTokens: v }))} />
             </>
           )}
         </Cells>

@@ -177,10 +177,12 @@ a fallback full director (deepseek, §6.1c), and a correction window (§6.3).
   emits a single object instead of an array.
 - Environment keys (all optional): `HOST_PORT`, `LLM_API_KEY` (`DEEPSEEK_API_KEY` legacy alias),
   `LLM_MODEL` (`DEEPSEEK_MODEL` alias), `LLM_REASONING_EFFORT` (`DEEPSEEK_REASONING_EFFORT` alias),
-  `DIRECTOR_TIMEOUT_MS` (default 30000), `JEV_TIMEOUT_MS`
-  (default 4000), `LLM_MAX_TOKENS` (`DEEPSEEK_MAX_TOKENS` alias; default 8192 — explicit per-generation token ceiling:
-  without it the API default budget is consumed by deep thinking, producing "typing indicator but
-  empty output"), `RELAY_DECAY` (default 0.8, §6.1a relay
+  `DIRECTOR_TIMEOUT_MS` (default 30000), `HEAVY_TIMEOUT_MS` (default 180000 — the single wait line for
+  the heavy background tool calls: scene snapshot / off-story discovery / POV render / bookkeeping /
+  correction), `JEV_TIMEOUT_MS`
+  (default 4000), `LLM_MAX_TOKENS` (`DEEPSEEK_MAX_TOKENS` alias; default **0 = the field is never sent**,
+  so the provider's own ceiling applies; a provider-level `maxTokens` overrides this, and 0 there also
+  means "do not send"), `RELAY_DECAY` (default 0.8, §6.1a relay
   decay), `CONTEXT_WINDOW` (default 36, message window), `JEV_CONTEXT_WINDOW` (default 75,
   dialogue window fed to the Jev fast path — Jev has no input cap and is priced by input only),
   `HTTPS_PROXY`/`HTTP_PROXY` (used by the Jev client for outbound calls; localhost endpoints are
@@ -210,6 +212,7 @@ a fallback full director (deepseek, §6.1c), and a correction window (§6.3).
       剧情.jsonl              # event log = single source of truth; msg lines are the current context
       判定.jsonl              # judgment/run log for humans only (§3.2a); never enters any context
       思维链.jsonl             # per-reply thinking chains for humans only (§3.2b); never enters any context
+      模型调用.jsonl           # raw model-call material for humans only (§3.2c); never enters any context
       角色/
         <角色名>/             # directory name = character dirName
           角色.md             # user asset: frontmatter name/appearance + background body (read-only)
@@ -254,7 +257,9 @@ candidate rounds, granted rounds), `总管路由` (fallback director result), `�
 or per-entry deepseek bookkeeping outcome), `现场所见` (scene-perception snapshot: targets and
 summary, or trigger note, or failure), `事件补全发现` / `离场经历渲染` / `事件补全` (§5.9:
 discovered events, per-participant render, injected memory; failures included), `纠正` (correction
-window applications). Failures are
+window applications), `空回复` (the reply carried no visible text: `called` = whether the model was
+invoked at all, the reasoning length, and `finishReason` — `length` means it was cut off by the
+output ceiling). Failures are
 logged with their reason. Served to the frontend via `GET /api/group/{name}/judgments` (§7.2).
 
 ### 3.2b 思维链.jsonl (thinking log; humans only)
@@ -269,6 +274,19 @@ thinking a previous generation produced belongs to the rewritten reply; an empty
 thinking clears the record); **removed with the message** on delete; **kept on text edits** (it
 documents what the model thought at generation time). Writing failures are swallowed — they never
 affect the turn.
+
+### 3.2c 模型调用.jsonl (raw model-call log; humans only)
+
+One line per model call — character generation **and** every background tool call (director /
+bookkeeper / scene snapshot / off-story discovery / POV render / correction):
+`{"ts","phase","reasoning","output","tool?","finishReason?","error?","elapsedMs"}`. `reasoning` is
+the model's thinking verbatim, `output` the visible content (kept even when a tool call was expected
+and not made — that is exactly the evidence for "模型未调用 X"), `tool` the arguments when one was
+made, `finishReason` `length` = cut off by the output ceiling. Fed by a side channel inside the LLM
+client (`LlmTrace` in `src/llm/chat.ts` → `src/group/trace.ts`); **no model ever reads it**, no
+endpoint exposes it, and it is not part of 剧情.jsonl / rebuild / ledgers / memory. First place to
+look when a reply is empty or a tool call fails. Rotates to `模型调用.jsonl.1` past 8 MB (one
+generation kept) so a phone's disk cannot be filled.
 
 ### 3.3 ledger payloads (applied by `applyLedgerEvent`; shared by live path and rebuild replay)
 
@@ -377,7 +395,7 @@ per-turn cost rather than losing rules; it is the only injected section without 
 activeId: <provider id for character generation + slow bookkeeping; empty = fall back to .env>
 routerId: <provider id for the fast-path judge; empty = fast path off>
 providers:
-  - { id, name, baseUrl, apiKey, model, reasoningEffort(off|low|high|max|minimal|medium) }
+  - { id, name, baseUrl, apiKey, model, reasoningEffort(off|low|high|max|minimal|medium), maxTokens(0/absent = never send) }
 ```
 
 Entries missing baseUrl/apiKey/model are ignored. `activeId` falling on a missing entry falls back
@@ -1104,7 +1122,7 @@ Convention [INV 11]: fixtures are temporary and always deleted. Offline checks n
 | `selfcheck:scaffold` | offline | group/character creation products load · updates keep user content · name validation · empty rules inject nothing |
 | `selfcheck:settings` | offline | rules zero-built-in round-trip · provider parsing/fallback · router provider resolution |
 | `selfcheck:presence` | offline | three-layer yaml round-trip (with `since`) · parse semantics (omitted=keep/empty=clear/unknown=语音) · perception keywords · visible_to snapshots |
-| `selfcheck:models` | offline | model discovery proxy (`GET {baseUrl}/models`: baseUrl normalization with/without `/v1`, Bearer auth, dedupe+sort, id-only filter) · failure reasons readable (401/403 key rejected, 404 no list endpoint, non-JSON, missing `data`, empty list) · reasoning effort `off` = the request body carries **no** `reasoning_effort`, other levels pass through verbatim · key-source guard: empty key reuses the stored one only for the active provider's own URL, any other URL demands a typed key |
+| `selfcheck:models` | offline | model discovery proxy (`GET {baseUrl}/models`: baseUrl normalization with/without `/v1`, Bearer auth, dedupe+sort, id-only filter) · failure reasons readable (401/403 key rejected, 404 no list endpoint, non-JSON, missing `data`, empty list) · reasoning effort `off` = the request body carries **no** `reasoning_effort`, other levels pass through verbatim · key-source guard: empty key reuses the stored one only for the active provider's own URL, any other URL demands a typed key · `maxTokens`: 0/absent = the body carries **no** `max_tokens`, >0 writes it verbatim · the trace side channel carries reasoning / visible output / `finishReason` / elapsed (the raw material behind 模型调用.jsonl) |
 | `selfcheck:engine` | offline | bad-line tolerance + id continuity · text-retract no-resurrection (restart/replay) · edit living-ledger (physical ledger-row rewrite, respects retracts) · deleted-message physical removal (no text left in log) + memory cleanup + id monotonicity · rename chains |
 | `selfcheck:router` | offline | Jev hit / three-layer derivation / knowledge audience (incl. overhearers) / `told` stage-1 + `state_dirty` parsing (missing = safe side) · low-confidence, out-of-roster → route-only fallback with raw answers logged · scene/knowledge salvage when route unusable · `jevExtraRounds` stage-2 thresholds / failure grants nothing · `missingRounds`/`transplantRounds` units (verbatim, mid, own-speech prefix) · end-to-end merged judgment (1 call/reply) · extra-memory grant (end-append order, ledger rows, idempotence on re-telling) · gate (zero deepseek calls when clean, exactly one when dirty) · bookkeeper has no roster authority (overreach discarded) · objective injection (knows/told not asked · audience = present by record · remote/overhear excluded · 客观 entry carries mid, living-ledger rewrite · pipeline unchanged) · status-record switch (off = state_dirty not asked, dirty reply records nothing, fallback director's ledger discarded · 群设定 flipped to true mid-session: judgment and recording resume immediately) · scene-perception snapshot (entrant detection, injection before entrant speaks via relay, manual-fix entries snapshotted too) · off-story experiences (absence anchor pure-code, discovery merged per entry, event×participant limited-POV renders injected to all participants, first-time entrants skipped) · judgment log (判定.jsonl rows with phases + raw answers + elapsed) · relay (user turn / cumulative decay: ×0 right after a speech — no consecutive output, that judgment does not advance the multiplier; `RELAY_DECAY` applied at every other judgment, cumulative across re-speeches; no hard cap, the undecaying user weight ends the chain; hard block hands the floor back to the user on just-spoke re-picks and all-zero distributions) · fallback = single full director · unconfigured = fast path off |
 | `selfcheck:scene` | offline | scene file layer (create / duplicate reject / description editable / name immutable / invalid name) · group creation builds the map + initial scene · character 初始场景 placement · ⊘ manual move skips scene_change (questions assert) and still moves · destination occupants present by record and hear the arrival line · followers placed, leavers fall to their location answer (其他 clears) · judged move (confidence-guarded) · strict no-move · objective injection (location/scene_change still asked, knows/told not · audience = active scene's present · other scenes excluded) · dialogue entrant lands post-snapshot (not in visible_to) with the entry kit injected · colocated-by-record characters are not scene-snapshot targets · split entry-kit triggers: user moves to residents → separated residents gain off-story entries (own POV) and no new snapshot, first-time residents get neither, followers get the snapshot only · discovery merged in one call carrying the separation-window dialogue · snapshot prompt carries the active scene's description only (other scenes excluded) · discovery prompt carries the scene map · each speaker's POV memory injected before he speaks · map full text + active scene injected into characters |

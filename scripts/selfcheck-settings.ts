@@ -47,7 +47,7 @@ try {
   assert.equal(resolveLlm(root).model, config.model)
   assert.equal(resolveRouter(root), undefined, '未配置路由专用时快路径关闭')
 
-  const p1: Provider = { id: 'p1', name: '（测试提供方一）', baseUrl: 'https://api.example.com', apiKey: 'sk-test-1', model: '（测试模型一）', reasoningEffort: 'high' }
+  const p1: Provider = { id: 'p1', name: '（测试提供方一）', baseUrl: 'https://api.example.com', apiKey: 'sk-test-1', model: '（测试模型一）', reasoningEffort: 'high', maxTokens: 12345 }
   const p2: Provider = { id: 'p2', name: '（测试提供方二）', baseUrl: 'https://api.example.com/v1', apiKey: 'sk-test-2', model: '（测试模型二）', reasoningEffort: 'low' }
   saveSettings({ providers: [p1, p2], activeId: 'p2', routerId: 'p1' }, root)
   assert.ok(readFileSync(join(root, SETTINGS_FILENAME), 'utf8').includes('（测试提供方一）'))
@@ -59,6 +59,7 @@ try {
   assert.equal(active.source, 'settings')
   assert.equal(active.model, '（测试模型二）', '启用项必须生效')
   assert.equal(active.reasoningEffort, 'low')
+  assert.equal(resolveRouter(root)?.maxTokens, 12345, '提供方级输出上限必须随配置往返（0/缺省 = 不发该字段）')
 
   // activeId 指向不存在 → 退回第一个
   saveSettings({ providers: [p1, p2], activeId: '不存在', routerId: '' }, root)

@@ -26,6 +26,8 @@ export interface LlmTarget {
   apiKey: string
   model: string
   reasoningEffort?: string
+  /** 输出上限（tokens）：>0 显式写死；0/缺省 = 完全不发该字段（上限交给提供方）。 */
+  maxTokens?: number
 }
 
 const clients = new Map<string, OpenAI>()
@@ -41,22 +43,41 @@ function client(t: LlmTarget): OpenAI {
 }
 
 type CreateArgs = Parameters<OpenAI['chat']['completions']['create']>[0] & Record<string, unknown>
-interface StreamChunk { choices?: Array<{ delta?: { content?: string; reasoning_content?: string; reasoning?: string } }> }
+interface StreamChunk { choices?: Array<{ delta?: { content?: string; reasoning_content?: string; reasoning?: string }; finish_reason?: string | null }> }
 interface NonStreamResponse {
   choices?: Array<{
+    finish_reason?: string | null
     message?: {
       content?: string | null
+      reasoning_content?: string | null
+      reasoning?: string | null
       tool_calls?: Array<{ function?: { name?: string; arguments?: string } }>
     }
   }>
 }
 
-function params(model: string, messages: ChatMessage[], extra: { reasoningEffort?: string; temperature?: number }): Record<string, unknown> {
+/** 一次模型调用的原始材料：只写进「模型调用.jsonl」供人排查，永不进任何提示词/剧情/记忆。 */
+export interface LlmTraceEvent {
+  /** 思考内容原文（reasoning_content / reasoning 的增量拼接）。 */
+  reasoning: string
+  /** 可见正文原文（失败时也带上——"没交卷"时要看的就是它）。 */
+  output: string
+  /** 工具调用参数（确实调了才有）。 */
+  tool?: { name: string; arguments: string }
+  /** 结束原因：length = 被输出上限截断；tool_calls / stop 等。 */
+  finishReason?: string
+  error?: string
+  elapsedMs: number
+}
+export type LlmTrace = (e: LlmTraceEvent) => void
+
+function params(model: string, messages: ChatMessage[], extra: { reasoningEffort?: string; temperature?: number; maxTokens?: number }): Record<string, unknown> {
+  // 输出上限：提供方级设置优先，缺省回落全局；0 = 完全不发该字段（把上限交给提供方）。
+  const cap = extra.maxTokens ?? config.outputMaxTokens
   return {
     model,
     messages,
-    // 显式上限：API 默认额度会被深度思考占用，思考烧完额度时可见输出为空（"正在输出却无内容"）
-    ...(config.outputMaxTokens > 0 ? { max_tokens: config.outputMaxTokens } : {}),
+    ...(cap > 0 ? { max_tokens: cap } : {}),
     // effort=off/空 = 完全不发该字段：不认它的提供方/模型不会因这个多余键被拒
     ...(extra.reasoningEffort === undefined || extra.reasoningEffort === '' || extra.reasoningEffort === 'off' ? {} : { reasoning_effort: extra.reasoningEffort }),
     ...(extra.temperature === undefined ? {} : { temperature: extra.temperature }),
@@ -70,20 +91,43 @@ export async function* streamChat(target: LlmTarget, opts: {
   /** 思维链侧路（只供人类查看的记录）：思考模型的 reasoning 增量原样回调——
    *  兼容 reasoning_content（DeepSeek）与 reasoning（个别中转）两种字段；缺省不采。 */
   onReasoning?: (delta: string) => void
+  /** 结束原因（缺省不采）：length = 被输出上限截断——"空回复"排查靠它。 */
+  onFinish?: (reason: string | undefined) => void
+  /** 原始材料侧路：只落 模型调用.jsonl（排查用），不参与任何判定。 */
+  trace?: LlmTrace
 }): AsyncGenerator<string> {
-  const stream = (await client(target).chat.completions.create(
-    {
-      ...params(target.model, opts.messages, { reasoningEffort: target.reasoningEffort, temperature: opts.temperature }),
-      stream: true,
-    } as CreateArgs,
-    { signal: opts.signal },
-  )) as unknown as AsyncIterable<StreamChunk>
-  for await (const chunk of stream) {
-    const delta = chunk.choices?.[0]?.delta
-    const rdelta = delta?.reasoning_content ?? delta?.reasoning
-    if (typeof rdelta === 'string' && rdelta !== '') opts.onReasoning?.(rdelta)
-    if (typeof delta?.content === 'string' && delta.content !== '') yield delta.content
+  const t0 = Date.now()
+  let reasoning = ''
+  let output = ''
+  let finish: string | undefined
+  let traced = false
+  const done = (extra: Partial<LlmTraceEvent> = {}): void => {
+    if (traced) return
+    traced = true
+    opts.trace?.({ reasoning, output, ...(finish === undefined ? {} : { finishReason: finish }), ...extra, elapsedMs: Date.now() - t0 })
   }
+  try {
+    const stream = (await client(target).chat.completions.create(
+      {
+        ...params(target.model, opts.messages, { reasoningEffort: target.reasoningEffort, temperature: opts.temperature, maxTokens: target.maxTokens }),
+        stream: true,
+      } as CreateArgs,
+      { signal: opts.signal },
+    )) as unknown as AsyncIterable<StreamChunk>
+    for await (const chunk of stream) {
+      const choice = chunk.choices?.[0]
+      const delta = choice?.delta
+      const rdelta = delta?.reasoning_content ?? delta?.reasoning
+      if (typeof rdelta === 'string' && rdelta !== '') { reasoning += rdelta; opts.onReasoning?.(rdelta) }
+      if (typeof delta?.content === 'string' && delta.content !== '') { output += delta.content; yield delta.content }
+      if (typeof choice?.finish_reason === 'string') finish = choice.finish_reason
+    }
+  } catch (e) {
+    done({ error: e instanceof Error ? e.message : String(e) })
+    throw e
+  }
+  opts.onFinish?.(finish)
+  done()
 }
 
 export interface ToolCallResult {
@@ -100,24 +144,51 @@ export async function chatToolCall(target: LlmTarget, opts: {
   expectedFunction: string
   temperature?: number
   signal?: AbortSignal
+  /** 原始材料侧路：只落 模型调用.jsonl（排查用），不参与任何判定。 */
+  trace?: LlmTrace
 }): Promise<ToolCallResult> {
-  const res = (await client(target).chat.completions.create(
-    {
-      ...params(target.model, opts.messages, { reasoningEffort: target.reasoningEffort, temperature: opts.temperature }),
-      tools: opts.tools,
-      tool_choice: 'auto',
-    } as CreateArgs,
-    { signal: opts.signal },
-  )) as unknown as NonStreamResponse
-  const message = res.choices?.[0]?.message
-  const call = message?.tool_calls?.find(c => c.function?.name === opts.expectedFunction)?.function
-  if (call !== undefined) return { name: call.name!, arguments: call.arguments ?? '{}' }
-
-  // 兜底：模型把参数直接写在正文里（含 ```json 围栏或裸 JSON 对象）
-  const candidate = (message?.content ?? '').trim().match(/\{[\s\S]*\}/)?.[0]
-  if (candidate !== undefined) {
-    JSON.parse(candidate) // 非法 JSON 交由调用方降级
-    return { name: opts.expectedFunction, arguments: candidate }
+  const t0 = Date.now()
+  let reasoning = ''
+  let output = ''
+  let finish: string | undefined
+  let traced = false
+  const done = (extra: Partial<LlmTraceEvent> = {}): void => {
+    if (traced) return
+    traced = true
+    opts.trace?.({ reasoning, output, ...(finish === undefined ? {} : { finishReason: finish }), ...extra, elapsedMs: Date.now() - t0 })
   }
-  throw new Error(`模型未调用 ${opts.expectedFunction}`)
+  try {
+    const res = (await client(target).chat.completions.create(
+      {
+        ...params(target.model, opts.messages, { reasoningEffort: target.reasoningEffort, temperature: opts.temperature, maxTokens: target.maxTokens }),
+        tools: opts.tools,
+        tool_choice: 'auto',
+      } as CreateArgs,
+      { signal: opts.signal },
+    )) as unknown as NonStreamResponse
+    const choice = res.choices?.[0]
+    const message = choice?.message
+    reasoning = message?.reasoning_content ?? message?.reasoning ?? ''
+    output = message?.content ?? ''
+    if (typeof choice?.finish_reason === 'string') finish = choice.finish_reason
+    const call = message?.tool_calls?.find(c => c.function?.name === opts.expectedFunction)?.function
+    if (call !== undefined) {
+      done({ tool: { name: call.name ?? opts.expectedFunction, arguments: call.arguments ?? '{}' } })
+      return { name: call.name!, arguments: call.arguments ?? '{}' }
+    }
+
+    // 兜底：模型把参数直接写在正文里（含 ```json 围栏或裸 JSON 对象）
+    const candidate = output.trim().match(/\{[\s\S]*\}/)?.[0]
+    if (candidate !== undefined) {
+      try { JSON.parse(candidate) } catch (e) { done({ error: e instanceof Error ? e.message : String(e) }); throw e } // 非法 JSON 交由调用方降级
+      done({ tool: { name: opts.expectedFunction, arguments: candidate } })
+      return { name: opts.expectedFunction, arguments: candidate }
+    }
+    const err = new Error(`模型未调用 ${opts.expectedFunction}`)
+    done({ error: err.message })
+    throw err
+  } catch (e) {
+    done({ error: e instanceof Error ? e.message : String(e) })
+    throw e
+  }
 }

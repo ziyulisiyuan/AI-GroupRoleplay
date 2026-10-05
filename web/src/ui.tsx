@@ -335,8 +335,8 @@ export function Field({ label, value, onChange, multiline = false, placeholder, 
   multiline?: boolean
   placeholder?: string
   rows?: number
-  /** 单行输入的类型（密钥用 password，不回显） */
-  type?: 'text' | 'password'
+  /** 单行输入的类型（密钥用 password，不回显；数字字段用 number 取数字键盘） */
+  type?: 'text' | 'password' | 'number'
   inputRef?: React.RefObject<HTMLTextAreaElement>
 }): React.ReactElement {
   return (

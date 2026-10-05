@@ -12,11 +12,19 @@ export function roleplayInstruction(name: string): string {
 }
 
 /** 以既定消息数组开一轮流式调用（连接信息每轮解析，前端改模型即时生效）。
- *  onReasoning = 思维链侧路（只供人类查看的记录，永不进入剧情/记忆）。 */
-export function turnFromMessages(messages: ChatMessage[], opts?: { temperature?: number; onReasoning?: (delta: string) => void }): AsyncGenerator<string> {
+ *  onReasoning = 思维链侧路（只供人类查看的记录，永不进入剧情/记忆）；
+ *  onFinish / trace = 结束原因与原始材料侧路（只落 模型调用.jsonl，排查用）。 */
+export function turnFromMessages(messages: ChatMessage[], opts?: {
+  temperature?: number
+  onReasoning?: (delta: string) => void
+  onFinish?: (reason: string | undefined) => void
+  trace?: import('./llm/chat.ts').LlmTrace
+}): AsyncGenerator<string> {
   return streamChat(resolveLlm(), {
     messages,
     ...(opts?.temperature === undefined ? {} : { temperature: opts.temperature }),
     ...(opts?.onReasoning === undefined ? {} : { onReasoning: opts.onReasoning }),
+    ...(opts?.onFinish === undefined ? {} : { onFinish: opts.onFinish }),
+    ...(opts?.trace === undefined ? {} : { trace: opts.trace }),
   })
 }
