@@ -230,6 +230,43 @@ export class GroupSession {
     return p === undefined ? undefined : join(this.groupDir, '角色', p.dirName)
   }
 
+  /** 手动把"当前场景"（用户所在）切到 target——与 ⊘ 手选同语义：用户移动、同行者留守原地，
+   *  目的地原住民成为现场，新进现场者照常触发入场包（§5.8）。平面群/未知场景抛错。 */
+  moveCurrentScene(target: string): { scene: string; present: string[] } {
+    this.reloadBooks()
+    const before = this.sceneAccess()
+    if (before.scene === undefined) throw new Error('这个群没有场景地图，无法切换场景')
+    const name = target.trim()
+    if (!listScenes(this.groupDir).some(s => s.name === name)) throw new Error(`场景不存在: ${name}`)
+    if (name !== before.scene) {
+      const locations: Record<string, string> = { ...(before.locations ?? {}) }
+      const present = this.characters.map(c => c.name).filter(n => locations[n] === name)
+      const next = this.normalizeScene({ scene: name, locations, present, remote: before.remote, overhear: before.overhear })
+      this.setScene(next, '手动切换场景')
+      this.maybeSnapshotEntrants(before, '手动切换场景')
+    }
+    return { scene: name, present: this.presentNames() }
+  }
+
+  /** 手动把某角色的位置改到 target（只动他一个人）。平面群/未知角色/未知场景抛错。 */
+  setCharacterLocation(name: string, target: string): { scene: string; present: string[] } {
+    this.reloadBooks()
+    const before = this.sceneAccess()
+    if (before.scene === undefined) throw new Error('这个群没有场景地图，无法调整位置')
+    if (!this.byName.has(name)) throw new Error(`未知角色: ${name}`)
+    const to = target.trim()
+    const offMap = to === '' || to === '其他' // 图外：位置表里没有键 = 其他（与判定层同一语义）
+    if (!offMap && !listScenes(this.groupDir).some(s => s.name === to)) throw new Error(`场景不存在: ${to}`)
+    const locations: Record<string, string> = { ...(before.locations ?? {}) }
+    if (offMap) delete locations[name]
+    else locations[name] = to
+    const present = this.characters.map(c => c.name).filter(n => locations[n] === before.scene)
+    const next = this.normalizeScene({ scene: before.scene, locations, present, remote: before.remote, overhear: before.overhear })
+    if (!this.sameScene(next, before)) this.setScene(next, '手动调整位置')
+    this.maybeSnapshotEntrants(before, '手动调整位置')
+    return { scene: before.scene, present: this.presentNames() }
+  }
+
   /** 前端初始渲染快照：消息 + 路由行 + 场景（当前场景、地图、各角色位置）。 */
   snapshot(): { name: string; era: string; world: string; tone: string; scene: string; scenes: Scene[]; locations: Record<string, string>; userName: string; present: string[]; remote: RemoteLink[]; overhear: RemoteLink[]; absent: string[]; characters: Array<{ name: string; dirName: string }>; messages: MsgLine[]; routes: RouteLine[]; statusRecord: boolean; pinned: boolean } {
     const routes = this.store.allLines.filter((l): l is RouteLine => l.type === 'route')
@@ -1284,6 +1321,7 @@ export class GroupSession {
       rosterLines: this.rosterLines,
       presentNotes: this.presentNotes(),
       locations: { ...(this.scene.locations ?? {}) },
+      ...(this.scene.scene !== undefined ? { scenes: listScenes(this.groupDir), activeScene: this.scene.scene } : {}),
       ledgers: this.ledgerLines(),
       settings: this.settings,
       recent,

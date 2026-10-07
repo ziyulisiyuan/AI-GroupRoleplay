@@ -5,12 +5,12 @@
  * 镜像契约（SPEC §7.5）：LEDGER_KEYS 七字段顺序与后端 status.ts 一字不差；
  * 场景只渲染现场勾选（接入/单向感知不显示），absent 不渲染。
  */
-import React, { useCallback, useEffect, useState } from 'react'
+import React, { useCallback, useEffect, useRef, useState } from 'react'
 import {
   avatarUrl, delJson, enc, getJson, postJson, putJson,
   type Draft, type JudgeRow, type MemoryEntry, type Snapshot,
 } from './api.ts'
-import { Avatar, AvatarPicker, Cell, Cells, CheckCell, Confirm, Field, Modal, NavBar, useToast } from './ui.tsx'
+import { Avatar, AvatarPicker, Cell, Cells, CheckCell, Confirm, Field, Modal, NavBar, useLongPress, useToast } from './ui.tsx'
 import type { Scene } from './api.ts'
 
 export const LEDGER_KEYS = ['生理状态', '心理状态', '外观状态', '位置状态', '性格演变', '姓名变化', '人物关系变化'] as const
@@ -408,6 +408,28 @@ function ScenesView({ group, snap, onChanged }: {
   const [newDesc, setNewDesc] = useState('')
   const [editing, setEditing] = useState<Scene | null>(null)
   const [editDesc, setEditDesc] = useState('')
+  const lpTarget = useRef<Scene | null>(null)
+  const suppressClick = useRef(false)
+  /** 长按 = 编辑描述（点按是切场景，别让长按结束后顺带切一次）。 */
+  const lp = useLongPress(() => {
+    const s = lpTarget.current
+    if (s === null) return
+    suppressClick.current = true
+    setEditing(s)
+    setEditDesc(s.description)
+  })
+
+  /** 点按场景 = 把"当前场景"切过去：用户移动、同行者留守，目的地原住民成为现场。 */
+  const setCurrent = async (s: Scene): Promise<void> => {
+    if (snap?.scene === s.name) { toast(`当前场景已经是 ${s.name}`); return }
+    try {
+      const r = await postJson<{ present: string[] }>(`/api/group/${enc(group)}/scene`, { scene: s.name })
+      toast(`当前场景 → ${s.name}${r.present.length > 0 ? `（现场：${r.present.join('、')}）` : '（现场无人）'}`)
+      await onChanged()
+    } catch (e) {
+      toast(e instanceof Error ? e.message : String(e))
+    }
+  }
 
   const load = useCallback(async (): Promise<void> => {
     try {
@@ -454,7 +476,9 @@ function ScenesView({ group, snap, onChanged }: {
         </button>
         {scenes.length === 0 && <div className="hint">（还没有场景）</div>}
         {scenes.map(s => (
-          <button key={s.name} className="cell" onClick={() => { setEditing(s); setEditDesc(s.description) }}>
+          <button key={s.name} className="cell" {...lp}
+            onTouchStart={e => { lpTarget.current = s; lp.onTouchStart(e) }}
+            onClick={() => { if (suppressClick.current) { suppressClick.current = false; return } void setCurrent(s) }}>
             <div className="cell-title">
               <div className="main">{s.name}{snap?.scene === s.name ? '（当前）' : ''}</div>
               {s.description !== '' && <div className="sub">{s.description}</div>}
@@ -462,6 +486,7 @@ function ScenesView({ group, snap, onChanged }: {
           </button>
         ))}
       </Cells>
+      <div className="hint">点按 = 把当前场景切过去 · 长按 = 编辑描述</div>
 
       <Modal open={adding} onClose={() => setAdding(false)} title="添加场景">
         <div className="field">
@@ -545,6 +570,7 @@ function CharProfileView({ group, dirName, scenes, locations, onChanged, onCreat
   const [initial, setInitial] = useState<Draft>(EMPTY_DRAFT)
   const [loaded, setLoaded] = useState(isNew)
   const [busy, setBusy] = useState(false)
+  const [locOpen, setLocOpen] = useState(false)
 
   useEffect(() => {
     if (isNew) { setLoaded(true); return }
@@ -584,6 +610,18 @@ function CharProfileView({ group, dirName, scenes, locations, onChanged, onCreat
     }
   }
 
+  /** 手动改这个角色的位置（引擎维护的实时位置，presence 行派生）。 */
+  const moveTo = async (scene: string): Promise<void> => {
+    try {
+      await putJson(`/api/group/${enc(group)}/location`, { character: draft.name, scene })
+      setLocOpen(false)
+      toast(`${draft.name} → ${scene}`)
+      await onChanged()
+    } catch (e) {
+      toast(e instanceof Error ? e.message : String(e))
+    }
+  }
+
   if (!loaded) return <div className="empty">加载中……</div>
   const currentLoc = locations[draft.name]
   return (
@@ -606,9 +644,22 @@ function CharProfileView({ group, dirName, scenes, locations, onChanged, onCreat
       )}
       {!isNew && scenes.length > 0 && (
         <Cells>
-          <Cell title="目前所在场景" sub={currentLoc ?? '其他'} />
+          <Cell title="目前所在场景" sub={currentLoc ?? '其他'} arrow onTap={() => setLocOpen(true)} />
         </Cells>
       )}
+      <Modal open={locOpen} onClose={() => setLocOpen(false)} title="移动到哪里">
+        <div className="pick-list">
+          {scenes.map(s => (
+            <button key={s.name} className={'pick-row' + (s.name === currentLoc ? ' on' : '')}
+              onClick={() => void moveTo(s.name)}>
+              {s.name}{s.name === currentLoc ? '（当前）' : ''}
+            </button>
+          ))}
+          <button className={'pick-row' + (currentLoc === undefined ? ' on' : '')} onClick={() => void moveTo('其他')}>
+            其他（图外）{currentLoc === undefined ? '（当前）' : ''}
+          </button>
+        </div>
+      </Modal>
       <button className="btn-primary" disabled={busy || !dirty || draft.name.trim() === ''} onClick={() => void save()}>
         {busy ? '保存中…' : isNew ? '创建' : '保存'}
       </button>

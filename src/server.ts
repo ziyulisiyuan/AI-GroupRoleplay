@@ -187,6 +187,26 @@ app.post('/api/group/:name/scenes', async c => {
   return c.json({ ok: true })
 })
 
+/** 手动把"当前场景"切到选中的场景（用户移动；同行者留守，目的地原住民成为现场）。 */
+app.post('/api/group/:name/scene', async c => {
+  const body = await c.req.json<Record<string, unknown>>().catch(() => ({}) as Record<string, unknown>)
+  try {
+    return c.json({ ok: true, ...getSession(c.req.param('name')).moveCurrentScene(String(body.scene ?? '')) })
+  } catch (e) {
+    return c.json({ error: e instanceof Error ? e.message : String(e) }, 400)
+  }
+})
+
+/** 手动调整某角色的位置（只动他一个人；位置表是唯一在场事实源）。 */
+app.put('/api/group/:name/location', async c => {
+  const body = await c.req.json<Record<string, unknown>>().catch(() => ({}) as Record<string, unknown>)
+  try {
+    return c.json({ ok: true, ...getSession(c.req.param('name')).setCharacterLocation(String(body.character ?? ''), String(body.scene ?? '')) })
+  } catch (e) {
+    return c.json({ error: e instanceof Error ? e.message : String(e) }, 400)
+  }
+})
+
 app.put('/api/group/:name/scenes/:scene', async c => {
   const dir = groupDir(c.req.param('name'))
   if (!existsSync(dir)) return c.json({ error: '群聊不存在' }, 400)

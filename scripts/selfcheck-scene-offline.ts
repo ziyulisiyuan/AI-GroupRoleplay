@@ -55,9 +55,9 @@ async function mockJev(script: { answers?: Record<string, unknown> | Array<Recor
   return { server, port, hits }
 }
 
-interface DeepseekHit { kind: 'route' | 'bookkeep' | 'scene' | 'offstory' | 'pov' | 'stream'; body: Record<string, unknown> }
+interface DeepseekHit { kind: 'route' | 'bookkeep' | 'scene' | 'offstory' | 'pov' | 'correction' | 'stream'; body: Record<string, unknown> }
 
-async function mockDeepseek(script: { streamText?: string; scene?: string; offstory?: Array<{ summary: string; participants: string[] }>; povMap?: Record<string, string>; pov?: string }): Promise<{ server: Server; port: number; hits: DeepseekHit[] }> {
+async function mockDeepseek(script: { streamText?: string; scene?: string; offstory?: Array<{ summary: string; participants: string[] }>; povMap?: Record<string, string>; pov?: string; correction?: { reply?: string; scene?: string; present?: string[] } }): Promise<{ server: Server; port: number; hits: DeepseekHit[] }> {
   const hits: DeepseekHit[] = []
   const server = createServer((req, res) => {
     let buf = ''
@@ -81,6 +81,16 @@ async function mockDeepseek(script: { streamText?: string; scene?: string; offst
         hits.push({ kind: 'offstory', body })
         res.setHeader('content-type', 'application/json')
         res.end(JSON.stringify({ choices: [{ message: { content: '', tool_calls: [{ function: { name: 'record_offstory', arguments: JSON.stringify({ events: script.offstory ?? [] }) } }] } }] }))
+        return
+      }
+      if (tools.includes('apply_corrections')) {
+        hits.push({ kind: 'correction', body })
+        const args = JSON.stringify({
+          reply: script.correction?.reply ?? '（已按你的要求改了）',
+          presence_updates: [{ scene: script.correction?.scene ?? '', present: script.correction?.present ?? [] }],
+        })
+        res.setHeader('content-type', 'application/json')
+        res.end(JSON.stringify({ choices: [{ message: { content: '', tool_calls: [{ function: { name: 'apply_corrections', arguments: args } }] } }] }))
         return
       }
       if (tools.includes('render_memory')) {
@@ -499,7 +509,50 @@ try {
     ds9.server.close(); jev9.server.close()
   }
 
-  console.log('地图机制自检通过：场景文件层(创建/重名/描述可改/名称不可改) · 建群即建图 · 初始场景落位 · ⊘手选跳过判定生效(不问scene_change/present_*) · 目的地者直接在场听见进门句 · 同行者/离开者按location落位 · 判定移动与极严苛不动 · 客观注入(不问知情转告/location照问/受众=当前场景现场者/他场景者不收) · 对话进场晚于快照且入场包照常 · 一直在场者不入入场包 · 场景全文+当前场景注入角色 · 离开去向=其他清位 · 跨场景通话(双向接入建立/接入者可被路由/位置不动/呼叫句可听) · 用户走向角色(触发拆分:原地居民无新增现场所见但有离场经历/发现恰一次合并/开口前记忆已注入) · 现场所见只携当前场景描述 · 事件发现携场景地图全文')
+  // ── 12) 手动切场景 / 手动调位置 / 纠正窗口换场景——三条路都必须真的改到位置表
+  {
+    const ds = await mockDeepseek({
+      streamText: '（测试回复）',
+      scene: '（测试现状描述。）',
+      correction: { reply: '（已把场景改过去）', scene: S2, present: ['角色丙'] },
+    })
+    const jev = await mockJev({ answers: [] })
+    rmSync(accDir, { recursive: true, force: true })
+    createGroup(accDir, { era: '（测试时代）', world: '（测试世界）', tone: '', scene: S1, statusRecord: false, pinned: false }, [
+      { name: S1, description: '（测试描述一）' },
+      { name: S2, description: '（测试描述二）' },
+    ])
+    makeChar(accDir, '角色甲', S1)
+    makeChar(accDir, '角色丙', S2)
+    writeTestSettings(ds.port, jev.port)
+    const s2 = GroupSession.open(accName)
+    assert.equal(s2.snapshot().scene, S1, '起点：当前场景=场景一')
+
+    // a) 手动切"当前场景"（聊天信息页点场景）：用户移动、留守者不动、目的地原住民成为现场
+    const moved = s2.moveCurrentScene(S2)
+    assert.equal(s2.snapshot().scene, S2, '手动切场景必须真的落表')
+    assert.deepEqual(moved.present.sort(), ['角色丙'], '目的地原住民成为现场；留守的甲不在')
+    assert.throws(() => s2.moveCurrentScene('不存在的场景'), /场景不存在/, '未知场景必须拒绝')
+
+    // b) 手动改某角色的位置（个人资料页点"目前所在场景"）：只动他一个；"其他"= 图外清位
+    s2.setCharacterLocation('角色甲', S2)
+    assert.deepEqual(s2.presentNames().sort(), ['角色甲', '角色丙'].sort(), '甲落位场景二后成为现场')
+    s2.setCharacterLocation('角色甲', '其他')
+    assert.deepEqual(s2.presentNames().sort(), ['角色丙'], '移到其他（图外）后不再是现场')
+    assert.throws(() => s2.setCharacterLocation('不存在的角色', S2), /未知角色/, '未知角色必须拒绝')
+
+    // c) 纠正窗口换场景：presence_updates.scene 必须被解析并真的落表（此前被静默丢弃）
+    s2.moveCurrentScene(S1)
+    assert.equal(s2.snapshot().scene, S1, '先回到场景一，确保下一步是"真的切换"')
+    const r = await s2.correct('把当前场景改到场景二去')
+    assert.equal(s2.snapshot().scene, S2, '纠正窗口的 scene 必须被解析并落表（此前被静默丢弃）')
+    assert.ok(r.applied.some(x => x.startsWith('场景 →')), '纠正必须报出场景变更')
+    const corBody = JSON.stringify(ds.hits.filter(h => h.kind === 'correction')[0]?.body)
+    assert.ok(corBody.includes('（测试描述一）') && corBody.includes('（测试描述二）'), '纠正提示词必须携带场景地图全文（否则模型无从选场景）')
+    ds.server.close(); jev.server.close()
+  }
+
+  console.log('地图机制自检通过：场景文件层(创建/重名/描述可改/名称不可改) · 建群即建图 · 初始场景落位 · ⊘手选跳过判定生效(不问scene_change/present_*) · 目的地者直接在场听见进门句 · 同行者/离开者按location落位 · 判定移动与极严苛不动 · 客观注入(不问知情转告/location照问/受众=当前场景现场者/他场景者不收) · 对话进场晚于快照且入场包照常 · 一直在场者不入入场包 · 场景全文+当前场景注入角色 · 离开去向=其他清位 · 跨场景通话(双向接入建立/接入者可被路由/位置不动/呼叫句可听) · 用户走向角色(触发拆分:原地居民无新增现场所见但有离场经历/发现恰一次合并/开口前记忆已注入) · 现场所见只携当前场景描述 · 事件发现携场景地图全文 · 手动切场景/手动调位置/纠正窗口换场景三条路都真的落表')
 } finally {
   rmSync(accDir, { recursive: true, force: true })
   if (hadSettings) writeFileSync(settingsFile, backup ?? '', 'utf8')

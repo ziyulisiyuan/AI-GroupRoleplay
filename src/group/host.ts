@@ -979,8 +979,14 @@ export const CORRECTION_TOOL: ToolSpec = {
         reply: { type: 'string', description: '说给用户听的话：确认你改了什么，或说明你为什么那样判断' },
         presence_updates: {
           type: 'array',
-          description: '修正当前场景人员（给出修正后的完整名单）',
-          items: { ...PRESENCE_ITEM_SCHEMA },
+          description: '修正场景与现场人员：要换场景就把 scene 填成场景地图里的场景名，并给出换完之后在现场的完整名单；不改场景就省略 scene（只给出修正后的现场名单）。',
+          items: {
+            ...PRESENCE_ITEM_SCHEMA,
+            properties: {
+              ...(PRESENCE_ITEM_SCHEMA.properties as Record<string, unknown>),
+              scene: { type: 'string', description: '要换成的场景名（必须取自场景地图）；不改场景就不要填' },
+            },
+          },
         },
         状态账本: {
           type: 'array',
@@ -1013,7 +1019,7 @@ export const CORRECTION_TOOL: ToolSpec = {
 
 export interface CorrectionResult {
   reply: string
-  presence: Array<{ present: string[]; remote?: RemoteLink[]; overhear?: RemoteLink[]; reason: string }>
+  presence: Array<{ scene?: string; present: string[]; remote?: RemoteLink[]; overhear?: RemoteLink[]; reason: string }>
   ledgerUpdates: RouteResult['ledgerUpdates']
   appends: RouteResult['appends']
   retracts: Array<{ character: string; mid?: number; text?: string }>
@@ -1024,6 +1030,10 @@ export interface CorrectionInput {
   presentNotes: string[]
   /** 地图群：各角色当前所在场景（判定层记录；缺键 = 其他）。 */
   locations?: Record<string, string>
+  /** 地图群：全部场景（名+描述）——纠正"换场景"必须以此为准，不得编造。缺省（平面群）不给。 */
+  scenes?: Array<{ name: string; description: string }>
+  /** 地图群：当前场景名（用户所在），供提示词标注。 */
+  activeScene?: string
   /** 各角色当前状态账本（整体快照修正的基准）。 */
   ledgers: string[]
   settings: GroupSettings
@@ -1042,6 +1052,9 @@ export async function askDirector(input: CorrectionInput): Promise<CorrectionRes
     `[当前场景人员]\n${input.presentNotes.join('、') || '（无）'}`,
     input.locations !== undefined && Object.keys(input.locations).length > 0
       ? `[人员位置（判定层记录，以此为准）]\n${Object.entries(input.locations).map(([k, v]) => `${k}=${v}`).join('、')}`
+      : '',
+    input.scenes !== undefined && input.scenes.length > 0
+      ? [`[场景地图（这个世界已有的全部场景；换场景只能用这里的名字，不得编造）]`, `当前场景：${input.activeScene ?? '（未定）'}`, ...input.scenes.map(s => `- ${s.name}：${s.description}`)].join('\n')
       : '',
     input.ledgers.length > 0 ? `[各角色当前状态账本（修正时整体快照：没变化的字段原样带回，用户要求改的字段写新值）]\n${input.ledgers.join('\n')}` : '',
     input.settings.tone !== '' ? `[群聊基调]\n${input.settings.tone}` : '',
@@ -1071,11 +1084,13 @@ export async function askDirector(input: CorrectionInput): Promise<CorrectionRes
   }
   return {
     reply: typeof args.reply === 'string' && args.reply.trim() !== '' ? args.reply.trim() : '（总管没有回应）',
-    presence: asArray<{ present?: unknown; remote?: unknown; overhear?: unknown; reason?: string }>(args.presence_updates).flatMap(p => {
+    presence: asArray<{ scene?: unknown; present?: unknown; remote?: unknown; overhear?: unknown; reason?: string }>(args.presence_updates).flatMap(p => {
       if (!Array.isArray(p.present)) return []
       const remote = parseRemoteList(p.remote)
       const overhear = parseRemoteList(p.overhear)
+      const scene = typeof p.scene === 'string' && p.scene.trim() !== '' ? p.scene.trim() : undefined
       return [{
+        ...(scene === undefined ? {} : { scene }),
         present: p.present.map(String).map(s => s.trim()).filter(s => s !== ''),
         ...(remote === undefined ? {} : { remote }),
         ...(overhear === undefined ? {} : { overhear }),
