@@ -1131,7 +1131,7 @@ export const SCENE_TOOL: ToolSpec = {
       properties: {
         scene_summary: {
           type: 'string',
-          description: '2~4 句白描，此刻亲眼所见的现场状况。只写可观察的：人物姿态/位置/伤势/衣着/表情动作，血迹/痕迹/器物，陈设与环境的当前状况。不回顾历史，不解释来龙去脉，不推断是谁做了什么，不写任何人的内心。禁止伏笔/隐喻/暗示/渲染/夸大/对比/评价，禁止"仿佛/似乎/显然/暗中"。现场无异样就只写"现场无异样"。',
+          description: '2~4 句白描，此刻亲眼所见的现场状况。只写可观察的。不回顾历史，不解释来龙去脉，不推断是谁做了什么，不写任何人的内心。禁止伏笔/隐喻/暗示/渲染/夸大/对比/评价，禁止"仿佛/似乎/显然/暗中"。现场无异样就只写"现场无异样"。',
         },
       },
       required: ['scene_summary'],
@@ -1173,11 +1173,11 @@ export async function askSceneSummarizer(input: {
     input.recent,
     input.tone !== '' ? `[群聊基调]\n${input.tone}` : '',
     '要求（违反任何一条都不合格）：',
-    '- 只写此刻可观察的现状：人物的姿态、位置、伤势、衣着、表情与动作；地上的血迹、痕迹、器物；陈设与环境的当前状况。',
+    '- 只写此刻空间内可观察的现状',
     ...(input.activeScene !== undefined
       ? ['- 场景描述是这个房间本来的陈设与布局，供你对照辨认；只写其中此刻实际可观察到的状况。']
       : []),
-    '- 不回顾历史，不解释来龙去脉，不推断是谁做了什么、怎么发生的（可见的客观证据可以陈述）。',
+    '- 不回顾历史，不解释来龙去脉，不推断是谁做了什么、怎么发生的。',
     '- 不写任何人的内心、情绪、动机——可见的表情与动作可以写。',
     '- 禁止伏笔、隐喻、暗示、渲染、夸大、对比、评价与文采；禁止"仿佛、似乎、显然、暗中"这类词。',
     '- 简练白描，2~4 句；现场无异样就只写"现场无异样"。',
@@ -1243,7 +1243,6 @@ export async function askOffStoryDiscovery(input: {
   rosterNames: string[]
   /** 地图（全部场景，名+描述全文）：事件骨架的地名锚。缺省（平面群）不给。 */
   scenes?: Array<{ name: string; description: string }>
-  tone: string
   timeoutMs?: number
   trace?: LlmTrace
   log?: (e: Record<string, unknown>) => void
@@ -1259,7 +1258,6 @@ export async function askOffStoryDiscovery(input: {
     ...input.windows.map(w => `[${w.character} 离场期间的对话]\n${w.dialogue}`),
     input.known.length > 0 ? '[已有的事件补全（不得重复、不得矛盾）]\n' + input.known.map(k => `- ${k}`).join('\n') : '',
     `[全部角色]\n${input.rosterNames.join('、')}`,
-    input.tone !== '' ? `[群聊基调]\n${input.tone}` : '',
     '要求（违反任何一条都不合格）：',
     '- 只补全对话中有依据的事：对他下的指令、与他的约定、对他的邀请、别人提到的关于他的打算——合理模拟这些事的履行经过。',
     '- 每件事一句话客观骨架（谁对谁做了什么/发生了什么）+ 全部参与者名单（含离场者本人）。',
@@ -1269,7 +1267,7 @@ export async function askOffStoryDiscovery(input: {
     '- 日常化：禁止编造重大事件（死亡/重伤/重大转折/新角色登场），对话毫无依据的事一律不补。',
     '- 不得与已有的事件补全重复或矛盾；没有可补全的就返回空数组。',
     '- 最多 4 件，每件最多 4 名参与者（超出取与剧情最相关的）。',
-    '- 禁止文笔、比喻、伏笔、场景渲染。',
+    '- 禁止文笔、比喻、伏笔、场景渲染，仅真实详细记录无任何心理描写的，无主观臆断的客观事件具体描述。',
     '调用 record_offstory 工具给出 events。',
   ].filter(s => s !== '').join('\n')
   const t0 = Date.now()
@@ -1309,11 +1307,11 @@ export const OFFSTORY_POV_TOOL: ToolSpec = {
   type: 'function',
   function: {
     name: 'render_memory',
-    description: '以某角色的限知视角，把事件骨架写成他将长期记住的记忆概括（2~3 句，事实与骨架完全一致）',
+    description: '以某角色的限知视角，把事件骨架写成他将长期记住的记忆概括',
     parameters: {
       type: 'object',
       properties: {
-        memory: { type: 'string', description: '2~3 句记忆概括，以"你"称呼该角色。只复述骨架中的事实，视角与态度按该角色的性格呈现；禁止比喻/隐喻/伏笔/具象化场景渲染/文采/夸大' },
+        memory: { type: 'string', description: '以"你"称呼该角色。以你的角度重述骨架中的事件，视角与态度按该角色的性格呈现；输出约束按照全局规则进行，如果全局规则出现与本要求中任意一条冲突的规则，则以本要求为基准' },
       },
       required: ['memory'],
     },
@@ -1333,20 +1331,23 @@ export async function askOffStoryPOV(input: {
   personality: string
   /** 该角色当前状态账本行（含人物关系变化）。 */
   ledgerLine: string
+  /** 全局规则（用户资产）：事件补全第二段单独被允许读它（其余后台 AI 不读）。 */
+  rules?: string
   timeoutMs?: number
   trace?: LlmTrace
   log?: (e: Record<string, unknown>) => void
 }): Promise<string | undefined> {
   const prompt = [
-    `以${input.participant}的限知视角，把下面这件事写成他将长期记住的记忆概括（2~3 句，以"你"称呼他）。`,
+    `以${input.participant}的限知视角，把下面这件事写成他将长期记住的记忆概括。`,
     `[事件骨架（事实以此为准，不得增删情节）]\n${input.event}`,
     `[${input.participant} 的初始性格]\n${input.personality || '（无）'}`,
     `[${input.participant} 当前状态账本]\n${input.ledgerLine || '（无）'}`,
+    ...(input.rules !== undefined && input.rules.trim() !== '' ? ['[全局规则（用户设定）]', input.rules] : []),
     '要求：',
-    '- 事实与骨架完全一致，不得增删情节、不得引入骨架外的新信息。',
-    '- 只写他能看到/听到/感到的部分——他不知道别人心里的想法，别人的内心只能通过可见的表现呈现。',
-    '- 视角与态度按他自己的性格与处境呈现：同一件事，不同角色的记忆版本应当不同。',
-    '- 禁止比喻/隐喻/伏笔/具象化场景渲染/文采/夸大；禁止评价性长段；2~3 句。',
+    '- 所展现出的客观事实与骨架完全一致（这里不包括该角色的主观想法），不得增删情节、不得引入骨架外的新信息。',
+    '- 只写ta能看到/听到/感到/内心的部分（限知视角）',
+    '- 视角与态度按ta自己的性格与处境呈现：同一件事，不同角色的记忆版本应当不同（此处做例，但不要被视为输出规范，仅作为理解辅助：客观角度甲熬药救了乙；甲的限知视角：你想熬毒药杀死乙，哄骗他喝下毒药，结果毒药歪打正着让乙的病痊愈了；乙的限知视角：你生了重病，甲无微不至的照顾你，甲给你端来了一碗药，温柔地让你喝下去，等你喝下去之后病真的好了。）',
+    '- 输出约束按照全局规则进行，如果全局规则出现与本要求中任意一条冲突的规则，则以本要求为基准。',
     '调用 render_memory 工具给出 memory。',
   ].join('\n')
   const t0 = Date.now()
