@@ -1341,7 +1341,7 @@ export async function askOffStoryPOV(input: {
     `以${input.participant}的限知视角，把下面这件事写成他将长期记住的记忆概括。`,
     `[事件骨架（事实以此为准，不得增删情节）]\n${input.event}`,
     `[${input.participant} 的初始性格]\n${input.personality || '（无）'}`,
-    `[${input.participant} 当前状态账本]\n${input.ledgerLine || '（无）'}`,
+    ...(input.ledgerLine !== '' ? [`[${input.participant} 当前状态账本]\n${input.ledgerLine}`] : []),
     ...(input.rules !== undefined && input.rules.trim() !== '' ? ['[全局规则（用户设定）]', input.rules] : []),
     '要求：',
     '- 所展现出的客观事实与骨架完全一致（这里不包括该角色的主观想法），不得增删情节、不得引入骨架外的新信息。',

@@ -477,7 +477,7 @@ export class GroupSession {
         const summary = await askSceneSummarizer({
           presentNotes: this.presentNotes(),
           locations: { ...(this.scene.locations ?? {}) },
-          ledgers: this.ledgerLines(),
+          ledgers: this.settings.statusRecord === true ? this.ledgerLines() : [],
           ...(activeScene !== undefined ? { activeScene: { name: activeScene.name, description: activeScene.description } } : {}),
           recent: this.store.effectiveMessages().slice(-12).map(m => `${m.name}：${m.text}`).join('\n'),
           tone: this.settings.tone,
@@ -543,7 +543,7 @@ export class GroupSession {
         ev.participants.map(async p => {
           const f = this.filesFor(p)
           if (f === undefined) return undefined
-          const ledgerLine = `${p}｜${Object.entries(f.status).map(([k, v]) => `${k}:${v}`).join('；')}`
+          const ledgerLine = this.settings.statusRecord === true ? `${p}｜${Object.entries(f.status).map(([k, v]) => `${k}:${v}`).join('；')}` : ''
           const text = await askOffStoryPOV({
             event: ev.summary,
             participant: p,
@@ -734,7 +734,7 @@ export class GroupSession {
         remote: before.remote,
         overhear: before.overhear,
         presentNotes: this.presentNotes(),
-        statusNotes: this.statusNotes(),
+        statusNotes: recordStatus ? this.statusNotes() : [],
         recent,
         userText: text,
         tone: this.settings.tone,
@@ -1100,7 +1100,7 @@ export class GroupSession {
             roster: speakable.map(n => ({ name: n })),
             rosterLines: this.rosterLinesFor(speakable),
             userName: this.userPersona.name,
-            statusNotes: this.statusNotes(),
+            statusNotes: this.settings.statusRecord === true ? this.statusNotes() : [],
             presentNotes: this.presentNotes(),
             present: this.presentNames(),
             linked: [...this.remoteLinks(), ...this.overhearLinks()].map(l => l.character),
@@ -1322,7 +1322,7 @@ export class GroupSession {
       presentNotes: this.presentNotes(),
       locations: { ...(this.scene.locations ?? {}) },
       ...(this.scene.scene !== undefined ? { scenes: listScenes(this.groupDir), activeScene: this.scene.scene } : {}),
-      ledgers: this.ledgerLines(),
+      ledgers: this.settings.statusRecord === true ? this.ledgerLines() : [],
       settings: this.settings,
       recent,
       text: text.trim(),
