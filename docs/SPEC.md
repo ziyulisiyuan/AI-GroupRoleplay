@@ -28,8 +28,8 @@
    take effect on the next turn without restarts.
 4. **[INV] A character knows only what its knowledge ledger contains.** The ledger is fed
    exclusively by (a) verbatim transplant of messages the fast path judged the character can
-   perceive, (b) retelling grants (§5.7), (c) the entry kit (§5.8 scene snapshot + §5.9 off-story
-   experiences), (d) explicit user operations, (e) objective injection (§4.6: user-declared
+   perceive, (b) retelling grants (§5.7), (c) the entry sequence (§5.8 scene snapshot at entry;
+   §5.9 off-story completion at return), (d) explicit user operations, (e) objective injection (§4.6: user-declared
    narrator-level facts, transplanted verbatim to the scene's present by record). Directors never
    write memory text.
 5. **[INV] Group isolation** at three layers: session, routing roster, storage paths.
@@ -47,7 +47,7 @@
    `source = 现场所见`) — no verbatim source exists for what a newly-arrived character *sees*; and
    off-story experiences (§5.9, `source = 离场经历`) — no verbatim source exists for what a
    character *lived through* while off-scene. Both are tightly constrained; §5.9 additionally
-   renders one version per participant so shared events never contradict across memories.
+   writes one version per participant from a shared fact layer so shared events never contradict across memories.
 9. **[INV] Prompt discipline:** system prompts and tool descriptions state principles and
    categories only. No concrete scene examples. `[WHY]` examples bias judgment.
 10. **[INV] The judgment log (判定.jsonl, §3.2a) never enters any character or director context.**
@@ -99,15 +99,16 @@ a fallback full director (deepseek, §6.1c), and a correction window (§6.3).
    director `presence_updates`) — **after** the snapshot: characters entering now hear the next
    message, not this one. Names are normalized
    via `resolveCharacterName` ("甲" matches "角色甲"); unmatched names are dropped.
-7. Entry-kit trigger (§5.8/§5.9), two pure-code sets inside one background kit: the
-   scene-perception snapshot targets the truly-arrived (flat: present-after minus
-   present-before; map: location changed into the active scene); off-story completion targets
-   **every character newly present** in the active scene (present-after minus present-before,
-   both modes) — the user moving to a character's scene is also a reunion, so a resident who
-   stayed put gets his separation window completed. First-time entrants have no absence window
-   and are skipped inside §5.9; continuous followers (present before and after) get the
-   snapshot but no off-story (no unconsumed window). The speakAs wait set is the union of both
-   sets.
+7. Entry/off-story triggers (pure code, after the scene corrections above so the same
+   before/after diff is final):
+   - scene-perception snapshot (§5.8): targets the truly-arrived (flat: present-after minus
+     present-before; map: location changed into the active scene); runs on the background queue.
+   - off-story pipeline (§5.9, story-driven only): with-the-user → not-with-the-user starts a
+     separation (judgment → brief writing); not-with-the-user → with-the-user starts a return
+     (completion). In one turn the separation is processed before the completion. Manual paths
+     (scene page / character page / correction window) never trigger it.
+   - the speakAs wait set = snapshot targets ∪ characters that may receive off-story memories;
+     a picked speaker in that set waits for the corresponding job before assembly.
 8. Append the `route` row and emit the route event. If the picked speaker has no speech rights
    (not in 现场 ∪ 接入 — e.g. single-direction overhearers), emit an info prompt and end the turn
    without calling the character model (the gated bookkeeper may still run on the user message).
@@ -178,7 +179,7 @@ a fallback full director (deepseek, §6.1c), and a correction window (§6.3).
 - Environment keys (all optional): `HOST_PORT`, `LLM_API_KEY` (`DEEPSEEK_API_KEY` legacy alias),
   `LLM_MODEL` (`DEEPSEEK_MODEL` alias), `LLM_REASONING_EFFORT` (`DEEPSEEK_REASONING_EFFORT` alias),
   `DIRECTOR_TIMEOUT_MS` (default 30000), `HEAVY_TIMEOUT_MS` (default 180000 — the single wait line for
-  the heavy background tool calls: scene snapshot / off-story discovery / POV render / bookkeeping /
+  the heavy background tool calls: scene snapshot / brief writing / off-story completion / bookkeeping /
   correction), `JEV_TIMEOUT_MS`
   (default 4000), `LLM_MAX_TOKENS` (`DEEPSEEK_MAX_TOKENS` alias; default **0 = the field is never sent**,
   so the provider's own ceiling applies; a provider-level `maxTokens` overrides this, and 0 there also
@@ -213,6 +214,8 @@ a fallback full director (deepseek, §6.1c), and a correction window (§6.3).
       判定.jsonl              # judgment/run log for humans only (§3.2a); never enters any context
       思维链.jsonl             # per-reply thinking chains for humans only (§3.2b); never enters any context
       模型调用.jsonl           # raw model-call material for humans only (§3.2c); never enters any context
+
+      任务书.jsonl            # off-story pipeline fact sheets (§5.9): one line per brief, 在用/已收; never injected as such
       角色/
         <角色名>/             # directory name = character dirName
           角色.md             # user asset: frontmatter name/appearance + background body (read-only)
@@ -255,9 +258,9 @@ answer including probabilities),
 `回复判定` (the merged post-reply call: audience, told, gate, relay), `额外记忆判定` (stage-2:
 candidate rounds, granted rounds), `总管路由` (fallback director result), `记账` (gate skip note
 or per-entry deepseek bookkeeping outcome), `现场所见` (scene-perception snapshot: targets and
-summary, or trigger note, or failure), `事件补全发现` / `离场经历渲染` / `事件补全` (§5.9:
-discovered events, per-participant render, injected memory; failures included), `纠正` (correction
-window applications), `空回复` (the reply carried no visible text: `called` = whether the model was
+summary, or trigger note, or failure), `任务书判定` (separation gate: windows, answer, threshold),
+`任务书描绘` (brief ids created), `离场补全` (slots, consumed briefs, dropped entries, memories;
+failures included), `纠正` (correction window applications), `空回复` (the reply carried no visible text: `called` = whether the model was
 invoked at all, the reasoning length, and `finishReason` — `length` means it was cut off by the
 output ceiling). Failures are
 logged with their reason. Served to the frontend via `GET /api/group/{name}/judgments` (§7.2).
@@ -278,7 +281,7 @@ affect the turn.
 ### 3.2c 模型调用.jsonl (raw model-call log; humans only)
 
 One line per model call — character generation **and** every background tool call (director /
-bookkeeper / scene snapshot / off-story discovery / POV render / correction):
+bookkeeper / scene snapshot / brief writing / off-story completion / correction):
 `{"ts","phase","reasoning","output","tool?","finishReason?","error?","elapsedMs"}`. `reasoning` is
 the model's thinking verbatim, `output` the visible content (kept even when a tool call was expected
 and not made — that is exactly the evidence for "模型未调用 X"), `tool` the arguments when one was
@@ -449,10 +452,10 @@ leaving (his location becomes his `location_<角色>` answer — a created scene
 dialogue does not say or the place is off-map), and (c) who can perceive the message. Characters
 colocated in the destination scene are there by record — they hear the arrival line, and they are
 **not** scene-snapshot targets (nothing there is new to see); only characters whose location
-changed are (§5.8). They are, however, off-story targets (§5.9): the user arriving is also a
-reunion, and their separation window is completed like any other's.
+changed are (§5.8). The user arriving is also a reunion: they are part of the return set
+(§5.9), so the completion pass may write them memories when a brief names them.
 
-**Flat groups** (no scenes): presence is the explicit list judged abstractly as before — the judge
+**Flat groups** (no scenes): presence is the explicit list judged abstractly — the judge
 asks whether someone has *any way* to perceive and whether the scene can *interact* in real time;
 means are never enumerated and never keyword-matched. Slow-director and correction-window
 `presence_updates` (with the optional `scene` field) correct both modes; the frontend only
@@ -545,8 +548,8 @@ A user-declared narrator-level fact, armed from the composer's ⋯ menu (POST bo
   consumer special-cases the label — beyond the two differences above it is an ordinary ledger
   entry everywhere.
 - Works with the fast path unavailable (declaration, not judgment — no Jev dependency).
-  Off-scene characters receive nothing here; §5.9's discovery prompt checks 【客观】-annotated
-  window lines against the events it completes.
+  Off-scene characters receive nothing here; §5.9's brief writing treats 【客观】-annotated
+  lines as narrator-level facts and may write them into `facts` directly.
 
 ---
 
@@ -639,7 +642,7 @@ injects it into every entrant's ledger (`source = 现场所见`, no `mid`, curre
 groups narrow the entrant set to characters whose **location changed** into the active scene —
 followers and dialogue-summoned entrants; characters colocated in the destination by record are
 not snapshot targets (nothing there is new to see — their off-story completion is §5.9's
-concern, via the newly-present set):
+concern, through the return set):
 
 - `askSceneSummarizer` (deepseek, `record_scene` tool) reads the present notes, the judge's
   location table, the **active scene's own name and description** (the room it is describing;
@@ -664,52 +667,65 @@ concern, via the newly-present set):
   placed them. Bookkeeper-driven scene corrections do not (they run after the turn and the next
   turn's diff covers them).
 
-### 5.9 Off-story experiences (事件补全 / 离场经历)
+### 5.9 Off-story pipeline (任务书 / 离场补全)
 
-The story runs on multiple threads: while a character is off-scene, things happen to him (orders
-given to others get fulfilled, appointments kept, relationships moved). Messages only carry the
-on-scene thread, so a returning character's memory ends at his last departure. When the entry kit
-fires, the off-story half targets **every character newly present** in the active scene
-(present-after minus present-before, both modes): a resident who stayed put while the user moved
-to his scene is included — the user arriving is also a reunion — and so is everyone the §5.8
-snapshot covers, while continuous followers (present before and after) are not, since they were
-never separated (this also stops their already-consumed windows from being re-fed to discovery).
-Re-entrants — characters whose last departure can be
-located in the presence history (`store.absenceStartId`, pure code; first-time entrants have no
-window and are skipped) — additionally get their off-screen life simulated and injected:
+Characters lead lives off-scene: orders given to others get fulfilled, appointments kept, relationships move.
+The pipeline freezes a **fact sheet (任务书)** at the moment of separation and turns it into off-story memories
+(`source = 离场经历`) when someone returns. It is **story-driven only**: manual scene switches, manual
+character-location moves and correction-window placements do not trigger it (they still drive §5.8).
 
-1. **Discovery** (`askOffStoryDiscovery`, `record_offstory` tool; one call per entry covering all
-   re-entrant entrants collectively): input = each entrant's absence-window dialogue (effective
-   messages after their departure id, capped at the last 40; objective-injection lines carry a
-   【客观】 prefix, and the prompt requires checking them against the events completed) +
-   **all existing `离场经历` entries**
-   (anti-repeat / anti-contradiction anchor) + the roster + the scene map (map groups: every
-   created scene's full description — skeleton place names must come from the map or the
-   dialogue, never invented). Output = up to 4 events, each a
-   one-sentence objective skeleton (`summary`) + full `participants` list (≤4). Hard constraints:
-   only extend what the dialogue gives grounds for (orders to him, promises, invitations,
-   relationships, others' stated intentions about him — reasonably simulate their fulfillment);
-   mundane only (no deaths, major turns, or new characters unless the dialogue directly supports
-   them); no literary style; empty array when nothing qualifies. Empty/failed discovery grants
-   nothing.
-2. **Per-participant limited-POV rendering** (`askOffStoryPOV`, `render_memory` tool; one call
-   per event × participant, in parallel): input = the event skeleton (verbatim — facts are pinned
-   to it, so participants of the same event never hold contradictory facts) + that participant's
-   own material (initial personality + current status ledger). Output = a 2–3 sentence
-   second-person memory from his limited perspective: only what he could perceive, attitude and
-   tone shaped by his own personality (the pleader's grateful memory and the begged person's
-   reluctant-compliant memory are two legal renderings of one skeleton). Hard constraints: no
-   adding/removing plot, no metaphor/foreshadowing/scene-setting/literary flourish/exaggeration.
-   Failed renders are skipped individually.
+**Separation (§2/§3).** One separation event = one batch of characters that went from with-the-user to
+not-with-the-user in the same turn (map groups: location no longer equals your active scene; flat groups:
+dropped from `present`). `triggerMid` = the highest message id at processing time (after the change, so the
+causing message is inside the window). For each leaver, the **window** is `[absenceStartId(c)+1, triggerMid]`;
+a leaver without `absenceStartId` (first appearance) is skipped, and a window already named by some brief's
+`windowKeys` is never processed again (books closed — this is bookkeeping against duplicate fact sheets, not
+a lock on context: every step may still read any原文). An unclaimed window (below threshold, failed call, or no `routerId`) stays open: later separations list it again with its processing state until a brief written at its own separation names its owner.
 
-Each rendered memory is injected into **its participant only** (`source = 离场经历`, no `mid`,
-current round) — including participants who are not entrants (the person who was sent on the
-errand remembers doing it even if he never entered the scene where it's discussed). Ledger rows
-first (§5.4); every injection logged to 判定.jsonl with its full text (drift is auditable).
-Everything runs in the background in parallel with the scene snapshot; `speakAs` waits for the
-whole entry kit before an entrant speaks.
+- **§2 判定** (`jevBriefGate`): one Jev `noul` question `briefs` per separation — "本次离场是否产出一本或多本任务书？产出=1，不产出=0" — threshold `JEV_THRESHOLDS.briefMin` (0.5), missing answer = 0. Below
+  threshold → nothing. Call failure/timeout, or no `routerId` configured → nothing, and the window stays for
+  the next separation.
+- **§3 描绘** (`askBriefWriter`, tool `record_brief`; one call per separation, several events become several
+  briefs in one writing): dialogue range `[max(enterMid, min window start - 1) + 1, triggerMid]`, where
+  `enterMid` is the message id immediately before the first presence row of the active scene's latest
+  continuous run (0 when there is none — flat groups and freshly-created scenes); when the log holds more than
+  100 messages (总量 > 100) only the range's newest 50 are given, otherwise all. Blocks, each labelled:
+  `[场景地图]` (all scenes, full descriptions), `[当前场景]` (name + description), `[角色档案]` (name,
+  appearance, background, initial personality, initial relationships, and the current status ledger **only
+  when 状态记录 is on** — otherwise the ledger field does not exist), `[位置]`, `[剧情原文]` (one line per
+  message: id, round, ts, speaker, the speaker's scene then, audience; line prefix `[客观注入]` for
+  objective-injection lines else `[剧情原文]`), `[窗口]`. 全局规则 is not injected. Output per brief:
+  `{title ≤20 chars, place (from the map or the dialogue), participants (model-named, anchored to the
+  roster; unbounded by who left), facts, sequence, perceives}`. The writing prompt is a pseudo-code ALGORITHM (INPUT / ASSERT / STEP / FORBIDDEN / CHECK / OUTPUT; procedure keywords in English, system labels in Chinese, **no examples** — examples act as anchors and narrow the model, see [INV 9]) and it states 准确优先，禁止为省字数做有损压缩; `[客观注入]` lines are narrator-level facts that already hold in the world and may be written into `facts` directly, while `[剧情原文]` lines are what actually happened in the scene.
+- **Storage** `groups/<群>/任务书.jsonl`, one line per brief (fixed key order): `id` (`b`+base36 timestamp,
+  unique per group), `nodeId` (one per judgment; several briefs of one separation share it), `judgeMid`,
+  `createdTs`, `status` (`在用` | `已收`), `windowKeys` (windows of this separation's leavers that the brief
+  names — participants decide which windows a brief serves), `title`, `place`, `participants`, `facts`,
+  `sequence`, `perceives`, plus `usedTs`/`usedBy` once consumed. A failed writing grants nothing (windows
+  stay for the next separation).
 
----
+**Return (§4).** One return event = one batch of characters that went from not-with to with-the-user. One call
+per event (`askOffStoryCompletion`, tool `write_offstory_memory`). Candidates (槽位) = participants of **every
+brief still `在用`**, deduplicated against existing characters; a participant who did not return is written
+too, because one event's memories are written as a set. Blocks: `[本次任务书]` (every in-use brief in full,
+node-labelled), `[场景地图]`, `[位置]`, `[剧情原文]` (two kinds: the return range — full when 总量 ≤100,
+newest 50 messages when >100 — plus one segment per brief: the 21 messages ending at its `judgeMid`, a
+same-nodeId group appears once), `[槽位]`. Output: `{facts, consumedBriefs, memories[{character,text}]}`. The completion prompt has the same pseudo-code form: STEP 1 builds a per-character 视角模型 (that character's `perceives` entries plus the lines he could perceive — independent of personality, appearance, emotions, motives and relationships; it only answers what he can perceive), STEP 2 filters the objective layer through it, STEP 3 writes the memory in second person "你" (length unbounded), STEP 4 does the bookkeeping; style is constrained only by a FORBIDDEN list shared with §3 (turns, foreshadowing, metaphor/symbol/analogy, scenery, narration, omniscient intrusion, hype, suspense, literary devices, contrastive syntax, colloquialisms, …), never positively directed.
+
+Code-enforced rules: only in-use brief ids survive in `consumedBriefs`; with none named nothing is written;
+a memory whose character is not in 槽位, or not in a consumed brief's participants, is dropped, as are
+duplicate (character,text) pairs; named briefs become `已收` with `usedTs`/`usedBy` even when no memory
+survived. Each surviving memory: ledger row first (`section=knowledge, op=append, source=离场经历`, no `mid`)
+then the character's `记忆.jsonl`; one info event per character (delivered when a waiter speaks, otherwise
+the result is visible after refresh). Failures grant nothing and un-named briefs stay on the table.
+
+**Waiting, logs, lifecycle.** The pipeline runs on the background queue with separation first and completion
+after (§1.3); when a character that may receive memories is picked to speak, `speakAs` waits for the job
+("（X 回忆离场期间的事……）") — nobody speaks before remembering. 判定.jsonl phases (§3.2a): `任务书判定`,
+`任务书描绘`, `离场补全`. 清空记录 retires every in-use brief (`status=已收`, `usedBy=清空记录`); the file is
+an operational archive — `rebuild` never touches it, and no AI ever reads a `已收` brief. User edits/deletions rewrite the log itself, so a brief segment always reads the current log: messages that no longer exist simply do not appear. Manual UI paths do
+not trigger the pipeline. Without `routerId` the gate cannot run: no 任务书 is written and windows wait until
+a fast-path provider is configured.
 
 ## 6. LLM protocols
 
@@ -797,7 +813,7 @@ distribution is missing (or every candidate weights to 0) and Jev re-picks the j
 the turn ends and the floor returns to the user — "no consecutive output" is an engine rule, not a
 probability outcome. Flips and blocks are logged to 判定.jsonl (`接力加权`).
 
-Thresholds (`JEV_THRESHOLDS`): `{ confidenceMin: 0.45, perceiveMin: 0.7, interactMin: 0.7,
+Thresholds (`JEV_THRESHOLDS`): `{ confidenceMin: 0.45, perceiveMin: 0.7, interactMin: 0.7, interactMax: 0.3, presentKnowsMin: 0.23, gateKeep: 0.5, unlinkedKnowsMin: 0.65, toldMin: 0.5, extraRoundMin: 0.39, briefMin: 0.5 }` (§5.9).
 interactMax: 0.3, presentKnowsMin: 0.23, gateKeep: 0.5, unlinkedKnowsMin: 0.65, toldMin: 0.5,
 extraRoundMin: 0.39 }`.
 
@@ -873,7 +889,7 @@ enters the story.
 scene notes, the judge's location table, **the scene map (every created scene + which one is
 active; map groups)** and the user's text. `presence_updates` carries an optional `scene` — the
 scene to move to, which must be a name from the map — plus the post-move on-site list, so "change
-the scene" is a first-class correction (it used to be silently dropped in parsing). Output applied
+the scene" is a first-class correction. Output applied
 in order: presence corrections (scene + list) → knowledge retracts
 → ledger snapshots → knowledge appends. `applied[]` summarizes what actually landed. Archived as
 a `director` row; never enters any character input.
@@ -924,7 +940,7 @@ stale-entry heal (§5.3).
 | `GET\|PUT /api/group/{name}/character/{dir}/ledger` | status ledger read / whole-snapshot user update |
 | `GET\|POST /api/group/{name}/scenes` · `PUT .../scenes/{scene}` | scene map: list / create (name immutable once created, no delete) / edit description |
 | `GET\|POST /api/group/{name}/director` | correction window history / speak |
-| `POST /api/group/{name}/scene` · `PUT /api/group/{name}/location` | manual position control (no model call): switch the **current scene** (the user moves, companions stay put, destination occupants become present, entrants still get the entry kit — the ⊘ semantics without a message) · set one character's location (`scene` = a created scene name, or `其他`/empty = off-map). Presence rows record the reason (`手动切换场景` / `手动调整位置`) |
+| `POST /api/group/{name}/scene` · `PUT /api/group/{name}/location` | manual position control (no model call): switch the **current scene** (the user moves, companions stay put, destination occupants become present; new entrants still get the scene-perception snapshot, and the off-story pipeline is **not** triggered — §5.9) · set one character's location (`scene` = a created scene name, or `其他`/empty = off-map). Presence rows record the reason (`手动切换场景` / `手动调整位置`) |
 | `GET\|PUT /api/rules` | global rules list (`{rules:[{id,name,enabled,text}]}`; PUT saves the whole list, name/enabled are frontend labels) |
 | `GET\|POST /api/models` · `PUT\|DELETE /api/models/{id}` · `POST /api/models/{id}/activate` · `PUT /api/models/router` | provider management; deleting the active provider falls back to the first; the router endpoint sets/clears the fast-path provider (deleting that provider clears it too) |
 | `POST /api/models/discover` | body `{baseUrl, apiKey?}` (`apiKey` empty = reuse the active provider's stored key, **only when `baseUrl` matches that provider's stored URL** — a stored key is never sent to a caller-supplied other address; mismatch requires a typed key, so the non-echoing key field needs no re-typing when editing the provider) → `{models:[string]}`: the **server** (never the browser — CORS, and the key must not reach page scope) calls the provider's `GET {baseUrl}/models` so the model-ID field can offer a picker; failures → the provider's own reason as an error |
@@ -943,10 +959,10 @@ queued; `CLI_TURN_MARKER=1` prints `[[TURN_DONE]]` after each turn for automated
 Sessions are per-group; routing rosters are per-group and normalized against the local roster;
 all storage paths resolve inside the group directory.
 
-### 7.5 Frontend redesign contract
+### 7.5 Frontend contract
 
-The current frontend (`web/`) is a **minimal utility UI, deliberately undesigned**. A redesign
-replaces the frontend only; the backend is a separate, already-specified surface.
+The frontend (`web/`) consumes the HTTP API; it is a separate, already-specified surface and
+never changes the backend from styling work.
 
 **File map.**
 
@@ -967,11 +983,11 @@ rename without the frontend twin breaks the UI silently):
 - `Snapshot` interface ↔ `engine.snapshot()` return shape.
 - The `LEDGER_KEYS` constant duplicated at the bottom of App.tsx ↔ `LEDGER_KEYS` in
   `src/group/status.ts` (seven Chinese field names, exact order).
-- Source labels (`亲历`, `客观`, `额外得知`, `现场所见`, `用户指定`, `推断`, `他人告知`), presence layer
+- Source labels (`亲历`, `客观`, `额外得知`, `现场所见`, `离场经历`, `用户指定`, `推断`, `他人告知`), presence layer
   names (`现场`/`接入`/`单向感知`), and perceive values (`语音`/`视听`) are displayed verbatim —
   never translate or alias them.
 
-**Decisions to preserve across any redesign**:
+**Decisions to preserve across frontend changes**:
 
 - The chat column shows **only messages and streaming text**. Route/ledger/info events surface
   as a single transient status line above the input box (updated in place, never accumulated)
@@ -1114,6 +1130,8 @@ Replays ledger rows per character (names resolved through the name chain):
 | 角色.md | never touched |
 | 在场.yaml | replay of the last presence row, names chained, filtered to existing characters |
 
+| 任务书.jsonl | untouched — the off-story pipeline's own archive (OPERATIONAL, §5.9); not derived from 剧情.jsonl |
+
 ---
 
 ## 10. Test matrix
@@ -1131,8 +1149,9 @@ Convention [INV 11]: fixtures are temporary and always deleted. Offline checks n
 | `selfcheck:presence` | offline | three-layer yaml round-trip (with `since`) · parse semantics (omitted=keep/empty=clear/unknown=语音) · perception keywords · visible_to snapshots |
 | `selfcheck:models` | offline | model discovery proxy (`GET {baseUrl}/models`: baseUrl normalization with/without `/v1`, Bearer auth, dedupe+sort, id-only filter) · failure reasons readable (401/403 key rejected, 404 no list endpoint, non-JSON, missing `data`, empty list) · reasoning effort `off` = the request body carries **no** `reasoning_effort`, other levels pass through verbatim · key-source guard: empty key reuses the stored one only for the active provider's own URL, any other URL demands a typed key · `maxTokens`: 0/absent = the body carries **no** `max_tokens`, >0 writes it verbatim · the trace side channel carries reasoning / visible output / `finishReason` / elapsed (the raw material behind 模型调用.jsonl) |
 | `selfcheck:engine` | offline | bad-line tolerance + id continuity · text-retract no-resurrection (restart/replay) · edit living-ledger (physical ledger-row rewrite, respects retracts) · deleted-message physical removal (no text left in log) + memory cleanup + id monotonicity · rename chains |
-| `selfcheck:router` | offline | Jev hit / three-layer derivation / knowledge audience (incl. overhearers) / `told` stage-1 + `state_dirty` parsing (missing = safe side) · low-confidence, out-of-roster → route-only fallback with raw answers logged · scene/knowledge salvage when route unusable · `jevExtraRounds` stage-2 thresholds / failure grants nothing · `missingRounds`/`transplantRounds` units (verbatim, mid, own-speech prefix) · end-to-end merged judgment (1 call/reply) · extra-memory grant (end-append order, ledger rows, idempotence on re-telling) · gate (zero deepseek calls when clean, exactly one when dirty) · bookkeeper has no roster authority (overreach discarded) · objective injection (knows/told not asked · audience = present by record · remote/overhear excluded · 客观 entry carries mid, living-ledger rewrite · pipeline unchanged) · status-record switch (off = state_dirty not asked, dirty reply records nothing, fallback director's ledger discarded · 群设定 flipped to true mid-session: judgment and recording resume immediately) · scene-perception snapshot (entrant detection, injection before entrant speaks via relay, manual-fix entries snapshotted too) · off-story experiences (absence anchor pure-code, discovery merged per entry, event×participant limited-POV renders injected to all participants, first-time entrants skipped) · judgment log (判定.jsonl rows with phases + raw answers + elapsed) · relay (user turn / cumulative decay: ×0 right after a speech — no consecutive output, that judgment does not advance the multiplier; `RELAY_DECAY` applied at every other judgment, cumulative across re-speeches; no hard cap, the undecaying user weight ends the chain; hard block hands the floor back to the user on just-spoke re-picks and all-zero distributions) · fallback = single full director · unconfigured = fast path off |
-| `selfcheck:scene` | offline | scene file layer (create / duplicate reject / description editable / name immutable / invalid name) · group creation builds the map + initial scene · character 初始场景 placement · ⊘ manual move skips scene_change (questions assert) and still moves · destination occupants present by record and hear the arrival line · followers placed, leavers fall to their location answer (其他 clears) · judged move (confidence-guarded) · strict no-move · objective injection (location/scene_change still asked, knows/told not · audience = active scene's present · other scenes excluded) · dialogue entrant lands post-snapshot (not in visible_to) with the entry kit injected · colocated-by-record characters are not scene-snapshot targets · split entry-kit triggers: user moves to residents → separated residents gain off-story entries (own POV) and no new snapshot, first-time residents get neither, followers get the snapshot only · discovery merged in one call carrying the separation-window dialogue · snapshot prompt carries the active scene's description only (other scenes excluded) · discovery prompt carries the scene map · each speaker's POV memory injected before he speaks · map full text + active scene injected into characters · manual scene switch / character-location move / correction-window scene change all land in the location table (the correction prompt carries the scene map) |
+| `selfcheck:router` | offline | Jev hit / three-layer derivation / knowledge audience (incl. overhearers) / `told` stage-1 + `state_dirty` parsing (missing = safe side) · low-confidence, out-of-roster → route-only fallback with raw answers logged · scene/knowledge salvage when route unusable · `jevExtraRounds` stage-2 thresholds / failure grants nothing · `missingRounds`/`transplantRounds` units (verbatim, mid, own-speech prefix) · end-to-end merged judgment (1 call/reply) · extra-memory grant (end-append order, ledger rows, idempotence on re-telling) · gate (zero deepseek calls when clean, exactly one when dirty) · bookkeeper has no roster authority (overreach discarded) · objective injection (knows/told not asked · audience = present by record · remote/overhear excluded · 客观 entry carries mid, living-ledger rewrite · pipeline unchanged) · status-record switch (off = state_dirty not asked, dirty reply records nothing, `route_and_remember` schema omits the ledger field, fallback director's ledger discarded · flips resume immediately) · scene-perception snapshot (entrant detection, injection before entrant speaks via relay) · manual paths snapshot only (off-story pipeline not triggered) · judgment log (判定.jsonl rows with phases + raw answers + elapsed) · relay (user turn / cumulative decay: ×0 right after a speech — no consecutive output, that judgment does not advance the multiplier; `RELAY_DECAY` applied at every other judgment, cumulative across re-speeches; no hard cap, the undecaying user weight ends the chain; hard block hands the floor back to the user on just-spoke re-picks and all-zero distributions) · fallback = single full director · unconfigured = fast path off |
+| `selfcheck:scene` | offline | scene file layer (create / duplicate reject / description editable / name immutable / invalid name) · group creation builds the map + initial scene · character 初始场景 placement · ⊘ manual move skips scene_change (questions assert) and still moves · destination occupants present by record and hear the arrival line · followers placed, leavers fall to their location answer (其他 clears) · judged move (confidence-guarded) · strict no-move · objective injection (location/scene_change still asked, knows/told not · audience = active scene's present · other scenes excluded) · dialogue entrant lands post-snapshot (not in visible_to) with the scene snapshot injected · colocated-by-record characters are not scene-snapshot targets · scene snapshot carries the active scene's description only (other scenes excluded) · map full text + active scene injected into characters · user walking back to residents: no new snapshot and no off-story memory without an in-use brief (§5.9) · manual scene switch / character-location move / correction-window scene change all land in the location table |
+| `selfcheck:briefs` | offline | off-story pipeline (任务书 §5.9): window keys / `enterMid` / context budgets incl. the §5.6 example and per-node dedupe · separation gate (noul, `briefMin`, no `routerId` = no brief) · brief persistence (fields, `在用`, `windowKeys`) · return completion (slot candidates, wrong-character drop, consumed briefs retired with `usedTs`/`usedBy`, wait-before-speak, consumed briefs never re-enter a request body) · status-record gating (tool schema and dossier ledger field) · manual moves do not trigger |
 | `acceptance-*` (m1–m5, isolation, models, context-edit, presence, director) | online | end-to-end behaviors per milestone; re-run after any fast-path or memory change |
 
 `DSH_DEBUG=1` prints director/judge failure causes.
@@ -1155,11 +1174,14 @@ Convention [INV 11]: fixtures are temporary and always deleted. Offline checks n
 | relay chains can burn tokens | no hard cap by design: ×0 forbids immediate repeats, each speaker's cumulative multiplier decays `RELAY_DECAY` per judgment (re-speaking never resets it) while the user's never decays; chains end on the user pick, low confidence, relay failure, or an empty reply; background bookkeeping does not block |
 | user edits/deletes/rerolls physically rewrite 剧情.jsonl — the original wording is unrecoverable | accepted by design: the log is the current context snapshot (user decision); 状态.yaml / 记忆.jsonl keep their own accounting, and archived dialogs (director rows) are untouched |
 | a retelling grant assumes the narration is truthful — a lie grants the true rounds | accepted: verbatim-transplant philosophy; correction window / memory panel can retract |
+
+| the off-story pipeline needs the fast path: without `routerId` no 任务书 is written (windows stay) | accepted: the gate is a Jev `noul` (§5.9); configure the router provider or the window waits for a later separation |
+| 任务书 windows are claimed by the briefs that name them; unnamed leavers get neither memory nor window attribution | accepted: anchoring follows the participants list (§5.9); fragments stay together because one event's memories are written as a set |
 | the status gate is one Jev judgment; a false "clean" skips deepseek bookkeeping for that message | missing answer = gate opens; fallback path unaffected (inline bookkeeping); the correction window can still write ledgers |
 
 ---
 
-## 12. Android self-contained app (`android/`, additive)
+## 12. Android self-contained app (`android/`)
 
 The whole stack — engine, HTTP host, frontend — also runs **on the phone**, with no PC involved.
 Nothing in `src/group/*` changes: the app runs the same bundled `server.ts` against an app-private
@@ -1207,9 +1229,9 @@ renames the versioned libraries and rewrites the `DT_NEEDED`/`DT_SONAME` strings
 checking 16 KB page alignment. `build-android.mjs` builds the frontend, bundles the backend and
 zips the payload with `tar -a` (forward-slash entry names).
 
-**Server-side additions (§2/§7).** `server.ts` gains two additive lines and one environment
-gate: `registerStatic(app)` (only active when `ROOT/dist` exists; unknown GETs fall back to
-`index.html`) and `hostname: process.env.HOST_BIND` (`unset` = all interfaces, the PC shape; the app sets
+**Server wiring (§2/§7).** `server.ts` calls `registerStatic(app)` (registered only when
+`ROOT/dist` exists; unknown GETs fall back to `index.html`) and binds
+`hostname: process.env.HOST_BIND` (`unset` = all interfaces, the PC shape; the app sets
 `127.0.0.1` so the server is not exposed to the LAN).
 
 **Known limitations.** The APK ships `arm64-v8a` only; `minSdk 30`; the back key backgrounds the
