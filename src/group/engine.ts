@@ -14,7 +14,7 @@ import { hasGroupSettings, loadCharacters, loadGroupSettings, loadUserPersona, t
 import { loadRules } from './rules.ts'
 import { canWitness, loadScene, perceives, saveScene, type RemoteLink, type SceneAccess } from './presence.ts'
 import { listScenes, type Scene } from './scene.ts'
-import { askDirector, askOffStoryDiscovery, askOffStoryPOV, askSceneSummarizer, assembleGroup, askBookkeeper, jevAfterReply, jevExtraRounds, jevRoute, knowsThreshold, routeNextSpeaker, type JevAfterReplyResult, type RouteResult } from './host.ts'
+import { askBriefWriter, askDirector, askOffStoryCompletion, askSceneSummarizer, assembleGroup, askBookkeeper, jevAfterReply, jevBriefGate, jevExtraRounds, jevRoute, knowsThreshold, routeNextSpeaker, type JevAfterReplyResult, type RouteResult } from './host.ts'
 import { turnFromMessages } from '../host.ts'
 import { resolveRouter } from '../settings.ts'
 import { LEDGER_KEYS, loadFiles, saveMemory, savePersonality, saveRelationships, saveStatus, type CharacterFiles } from './status.ts'
@@ -23,6 +23,22 @@ import { recordThinking, removeThinking, clearThinking } from './thinking.ts'
 import { appendModelTrace } from './trace.ts'
 import { rmSync } from 'node:fs'
 import { resolveCharacterName, type RoutableCharacter } from './router.ts'
+import {
+  briefDialogue,
+  claimedWindowKeys,
+  completionDialogue,
+  consumeBriefs,
+  inUseBriefs,
+  loadBriefs,
+  messageSceneIndex,
+  nextBriefId,
+  nextNodeId,
+  retireInUseBriefs,
+  saveBriefs,
+  sceneEnterMid,
+  windowKey,
+  type Brief,
+} from './briefs.ts'
 
 export type SessionEvent =
   | { type: 'speaker'; name: string }
@@ -46,9 +62,11 @@ export class GroupSession {
   private readonly books = new Map<string, CharacterFiles>()
   /** 后台任务队列（慢路径记账）：串行执行；新一轮发言前先清空队列，避免与新一轮的文件写入交错。 */
   private bg: Promise<void> = Promise.resolve()
-  /** 本轮进行中的"入场包"（§5.8 现场所见 + §5.9 事件补全）：接力判到名单内的人发言时，
-   *  speakAs 组装前必须等它完成——先带着记忆开口。 */
+  /** 本轮进行中的"现场所见"（§5.8）：接力判到进场者发言时，speakAs 组装前必须等它完成。 */
   private sceneSnapshot?: { targets: Set<string>; done: Promise<void> }
+  /** 本轮进行中的离场管线（任务书 §2/§3 → 离场补全 §4）：等待集里的人开口前必须先等它完成
+   *  （先想起离场经历，再开口）；done 结算本次补全要发的 info 文案。 */
+  private offstoryWait?: { targets: Set<string>; done: Promise<string[]> }
   private readonly roster: RoutableCharacter[]
   private readonly rosterLines: string[]
 
@@ -502,105 +520,258 @@ export class GroupSession {
     })()
   }
 
-  /**
-   * 事件补全（§5.9）：为回归者（有离场窗口的进场者）补全离场期间的经历。
-   * 两段式：发现（一次调用，多事件×各参与者客观骨架）→ 限知视角渲染（每个事件×参与者一次，
-   * 事实锚死在骨架上、视角按参与者自身性格走）。同一份事件的不同参与者的记忆事实一致、视角各异。
-   * 非 enterant 的参与者（如受命办事后未入场者）同样获得自己的视角记忆。失败不注入。
-   */
-  private async runOffStory(targets: Set<string>): Promise<void> {
-    try {
-      const windows: Array<{ character: string; dialogue: string }> = []
-      let hasObjective = false
-      for (const name of targets) {
-        const start = this.store.absenceStartId(name)
-        if (start === undefined) continue // 首次进场：无离场窗口，人生前史不由系统虚构
-        const window = this.store.effectiveMessages().filter(m => m.id > start).slice(-40)
-        if (window.some(m => m.objective === true)) hasObjective = true
-        const dialogue = window.map(m => `${m.objective === true ? '【客观】' : ''}${m.name}：${m.text}`).join('\n')
-        if (dialogue.trim() === '') continue
-        windows.push({ character: name, dialogue })
-      }
-      if (windows.length === 0) return
-      const known: string[] = []
-      for (const c of this.characters) {
-        const f = this.filesFor(c.name)
-        for (const e of f?.memory ?? []) if (e.source === '离场经历') known.push(e.text)
-      }
-      const events = await askOffStoryDiscovery({
-        windows,
-        ...(hasObjective ? { objectiveAnnotated: true } : {}),
-        known,
-        rosterNames: this.characterNames(),
-        ...(this.scene.scene !== undefined ? { scenes: listScenes(this.groupDir) } : {}),
-        timeoutMs: Math.max(config.heavyTimeoutMs, 60000),
-        trace: this.traceTo('事件补全发现'),
-        log: e => this.judgeLog({ phase: '事件补全发现', ...e }),
-      })
-      if (events === undefined || events.length === 0) return
-      // 渲染：每个（事件 × 参与者）一份限知视角，事实锚死在骨架上；并行
-      const renders = await Promise.all(events.flatMap(ev =>
-        ev.participants.map(async p => {
-          const f = this.filesFor(p)
-          if (f === undefined) return undefined
-          const ledgerLine = this.settings.statusRecord === true ? `${p}｜${Object.entries(f.status).map(([k, v]) => `${k}:${v}`).join('；')}` : ''
-          const text = await askOffStoryPOV({
-            event: ev.summary,
-            participant: p,
-            personality: f.personality.base,
-            ledgerLine,
-            rules: this.rules,
-            timeoutMs: Math.max(config.heavyTimeoutMs, 60000),
-            trace: this.traceTo('离场经历渲染'),
-            log: e => this.judgeLog({ phase: '离场经历渲染', event: ev.summary, ...e }),
-          })
-          return text === undefined ? undefined : { participant: p, text }
-        })))
-      const seen = new Set<string>()
-      for (const r of renders) {
-        if (r === undefined) continue
-        const key = `${r.participant}|${r.text}`
-        if (seen.has(key)) continue
-        seen.add(key)
-        const f = this.filesFor(r.participant)
-        if (f === undefined) continue
-        const entry = { source: '离场经历', round: this.store.round, text: r.text }
-        f.memory.push(entry)
-        this.store.appendLedgerLine(r.participant, 'knowledge', 'append', JSON.stringify(entry))
-        this.persistFiles(r.participant)
-        this.judgeLog({ phase: '事件补全', participant: r.participant, memory: r.text })
-      }
-    } catch (e) {
-      this.judgeLog({ phase: '事件补全', error: String(e instanceof Error ? e.message : e) })
-      if (process.env.DSH_DEBUG === '1') console.error('[offstory] 事件补全失败（不注入）:', e)
+
+  /** "和你在一起" = 现场（地图群：位置等于当前场景；平面群：present 名单）；接入/单向感知不算。 */
+  private withUserNames(scene: SceneAccess): Set<string> {
+    if (scene.scene !== undefined) {
+      const loc = scene.locations ?? {}
+      return new Set(this.characters.map(c => c.name).filter(n => loc[n] === scene.scene))
     }
+    return new Set(scene.present.filter(n => this.byName.has(n)))
   }
 
   /**
-   * 入场包（§5.8 + §5.9）：现场所见（真正进门者）与事件补全（离场经历，按参与者限知视角）
-   * **并行**执行；注入全部落盘后 done 才结算——接力判到名单内的人发言时 speakAs 会先等整个包完成。
-   * 等待集 = 两份触发集的并集（所有将被注入记忆的人，先有记忆再开口）。
+   * 本次判定的窗口（§1.5/§1.6/§2.5）：[起点+1, 触发句]。
+   * - claimable = 本次分离的离开者（§1.1 changed）的窗口：新任务书可以把它收进 windowKeys；
+   * - 其余当前不在用户场景、窗口仍未被占住的角色：窗口留在桌上继续参与后续判定（"留给下一次分离"），
+   *   但不会被本批任务书 claim（P2：windowKeys 只取 participants 里本次离开者的窗口）。
+   * 第一次出现的人（取不到 absenceStartId）不带；已被任务书 windowKeys 占住的窗口不再参与（备忘录）。
    */
-  private beginEntryKit(sceneEntrants: string[], offStoryTargets: string[]): { targets: Set<string>; done: Promise<void> } {
-    const targets = new Set([...sceneEntrants, ...offStoryTargets])
-    const done = (async (): Promise<void> => {
-      await Promise.all([
-        sceneEntrants.length > 0 ? this.runSceneSnapshot(new Set(sceneEntrants)) : Promise.resolve(undefined),
-        this.runOffStory(new Set(offStoryTargets)),
-      ])
-    })()
-    return { targets, done }
+  private separationWindows(changed: readonly string[], triggerMid: number, afterWith: ReadonlySet<string>): Array<{ character: string; startId: number; endId: number; key: string; coveredBy: string[]; claimable: boolean }> {
+    const briefs = loadBriefs(this.groupDir)
+    const claimed = claimedWindowKeys(briefs)
+    const out: Array<{ character: string; startId: number; endId: number; key: string; coveredBy: string[]; claimable: boolean }> = []
+    const add = (n: string, claimable: boolean): void => {
+      const start = this.store.absenceStartId(n)
+      if (start === undefined) return // 第一次出现的人：没有离开窗口
+      const key = windowKey(n, start)
+      if (claimed.has(key)) return // 这段已被任务书占住：不再重复处理（防重复留底，不是锁上下文）
+      if (out.some(w => w.key === key)) return
+      out.push({ character: n, startId: start + 1, endId: triggerMid, key, coveredBy: [], claimable })
+    }
+    for (const n of changed) add(n, true)
+    for (const c of this.characters) if (!afterWith.has(c.name)) add(c.name, false)
+    return out
+  }
+
+  /** 窗口行文本（§2.5/§3.4 [窗口] 共用）。 */
+  private windowLines(windows: ReadonlyArray<{ character: string; startId: number; endId: number; coveredBy: string[] }>): string {
+    return windows.map(w => `- ${w.character}：第${w.startId}句–第${w.endId}句；状态：${w.coveredBy.length > 0 ? `已在 ${w.coveredBy.join('、')} 名下` : '未处理'}`).join('\n')
+  }
+
+  /** 剧情原文逐条（§3.3）：消息号、轮次、时间、说话人、内容、说话人当时的场景、这条谁能听见。 */
+  private dialogueLines(messages: readonly MsgLine[]): string {
+    const env = messageSceneIndex(this.store.allLines)
+    return messages.map(m => {
+      const row = env.get(m.id)
+      const where = row === undefined ? '（无场景记录）'
+        : row.scene !== undefined
+          ? (m.name === this.userPersona.name ? row.scene : (row.locations?.[m.name] ?? '其他'))
+          : (row.present.includes(m.name) ? '现场' : '不在场')
+      const hear = m.visible_to === 'all' ? 'all' : m.visible_to.join('、')
+      const mark = m.objective === true ? '[客观注入]' : '[剧情原文]'
+      return `${mark} #${m.id}｜第${m.round}轮｜${m.ts}｜${m.name}｜场景：${where}｜可见：${hear}｜${m.text}`
+    }).join('\n')
+  }
+
+  /** §2/§3：分离事件 → Jev 判定 → 过了才描绘 → 任务书落盘（后台执行；失败不写、窗口留待下次）。 */
+  private async writeBriefsForSeparation(changed: readonly string[], triggerMid: number, oldScene: SceneAccess, afterWith: ReadonlySet<string>): Promise<void> {
+    const windows = this.separationWindows(changed, triggerMid, afterWith)
+    if (windows.length === 0) {
+      this.judgeLog({ phase: '任务书判定', note: '本次分离的窗口均不可处理（首次出现/已被任务书占住）' })
+      return
+    }
+    const llm = resolveRouter()
+    if (llm === undefined) {
+      this.judgeLog({ phase: '任务书判定', note: '未配置快路径（Jev）：本次不写任务书，窗口留待下次', windows: windows.map(w => w.character) })
+      return
+    }
+    const isMap = oldScene.scene !== undefined
+    const scenes = listScenes(this.groupDir)
+    const sceneNow = this.scene.scene ?? ''
+    const userSceneNote = isMap ? `你：${sceneNow || '（未定）'}` : `现场：${this.presentNames().join('、') || '（无）'}`
+    const flatPresence = `接入：${this.remoteLinks().map(l => l.character).join('、') || '（无）'}；单向感知：${this.overhearLinks().map(l => l.character).join('、') || '（无）'}`
+    const gate = await jevBriefGate({
+      llm,
+      ...(isMap ? { scenes, locations: { ...(this.scene.locations ?? {}) } } : {}),
+      activeScene: sceneNow,
+      userSceneNote,
+      ...(isMap ? {} : { presenceLine: flatPresence }),
+      windows: windows.map(w => ({ character: w.character, startId: w.startId, endId: w.endId, coveredBy: w.coveredBy })),
+      timeoutMs: config.jevTimeoutMs,
+      log: e => this.judgeLog({ phase: '任务书判定', ...e }),
+    })
+    if (gate !== true) return // false = 不写；undefined = 失败——都留待下一次分离
+    // §3 描绘：对话范围 = [max(进入当前场景那一刻, 各自的离开起点) + 1, 触发句]
+    const enterMid = isMap ? sceneEnterMid(this.store.allLines, oldScene.scene ?? '') : 0
+    const rangeStart = Math.min(enterMid, ...windows.map(w => w.startId - 1)) + 1
+    const messages = briefDialogue(this.store.effectiveMessages(), rangeStart, triggerMid, this.store.messages.length)
+    const recordStatus = this.settings.statusRecord === true
+    const characters = this.characters.map(c => {
+      const f = this.filesFor(c.name)
+      return {
+        name: c.name,
+        appearance: c.appearance,
+        background: c.body,
+        personality: f?.personality.base ?? '',
+        relationships: f?.relationships.base ?? '',
+        ...(recordStatus && f !== undefined ? { ledger: f.status } : {}),
+      }
+    })
+    const drafts = await askBriefWriter({
+      ...(isMap ? { scenes } : {}),
+      activeScene: sceneNow,
+      characters,
+      userSceneNote,
+      ...(isMap ? { locations: { ...(this.scene.locations ?? {}) } } : { presenceLine: flatPresence }),
+      dialogue: this.dialogueLines(messages),
+      windows: this.windowLines(windows),
+      timeoutMs: Math.max(config.heavyTimeoutMs, 60000),
+      trace: this.traceTo('任务书描绘'),
+    })
+    if (drafts === undefined || drafts.length === 0) {
+      this.judgeLog({ phase: '任务书描绘', note: '本次没有产出任务书（失败或空）', windows: windows.map(w => w.character) })
+      return
+    }
+    const existing = loadBriefs(this.groupDir)
+    const takenId = new Set(existing.map(b => b.id))
+    const nodeId = nextNodeId(new Set(existing.map(b => b.nodeId)))
+    const createdTs = new Date().toISOString()
+    const changedKeys = new Map(windows.filter(w => w.claimable).map(w => [w.character, w.key]))
+    const created: Brief[] = drafts.map(d => {
+      const id = nextBriefId(takenId)
+      takenId.add(id)
+      return {
+        id,
+        nodeId,
+        judgeMid: triggerMid,
+        createdTs,
+        status: '在用' as const,
+        windowKeys: d.participants.flatMap(p => { const k = changedKeys.get(p); return k === undefined ? [] : [k] }),
+        title: d.title,
+        place: d.place,
+        participants: d.participants,
+        facts: d.facts,
+        sequence: d.sequence,
+        perceives: d.perceives,
+      }
+    })
+    saveBriefs(this.groupDir, [...existing, ...created])
+    this.judgeLog({ phase: '任务书描绘', windows: windows.map(w => w.character), nodeId, briefs: created.map(b => b.id), titles: created.map(b => b.title) })
+  }
+
+  /** §4：回来事件 → 用桌上在用的任务书写记忆 → 收账。返回要补发的 info 文案。 */
+  private async completeOffStoryForReturn(returned: readonly string[], triggerMid: number): Promise<string[]> {
+    const notes: string[] = []
+    const inUse = inUseBriefs(loadBriefs(this.groupDir))
+    if (inUse.length === 0) {
+      this.judgeLog({ phase: '离场补全', note: '桌上没有在用的任务书，本次不写记忆', returned: [...returned] })
+      return notes
+    }
+    const slots = [...new Set(inUse.flatMap(b => b.participants))].filter(n => this.byName.has(n))
+    if (slots.length === 0) {
+      this.judgeLog({ phase: '离场补全', note: '在用任务书没有点名任何现存角色，本次不写记忆', briefs: inUse.map(b => b.id) })
+      return notes
+    }
+    const startIds = returned.flatMap(n => { const s = this.store.absenceStartId(n); return s === undefined ? [] : [s + 1] })
+    const bounded = this.store.effectiveMessages().filter(m => m.id <= triggerMid) // 回来那一刻为止：本轮回复尚未落盘也不算进来
+    const ctx = completionDialogue(bounded, startIds, inUse, this.store.messages.length)
+    const isMap = this.scene.scene !== undefined
+    const scenes = listScenes(this.groupDir)
+    const sceneNow = this.scene.scene ?? ''
+    const userSceneNote = isMap ? `你：${sceneNow || '（未定）'}` : `现场：${this.presentNames().join('、') || '（无）'}`
+    const draft = await askOffStoryCompletion({
+      briefs: inUse,
+      ...(isMap ? { scenes, locations: { ...(this.scene.locations ?? {}) } } : {}),
+      activeScene: sceneNow,
+      userSceneNote,
+      ...(isMap ? {} : { presenceLine: `接入：${this.remoteLinks().map(l => l.character).join('、') || '（无）'}；单向感知：${this.overhearLinks().map(l => l.character).join('、') || '（无）'}` }),
+      returnedDialogue: this.dialogueLines(ctx.returnedRange),
+      segments: ctx.segments.map(s => ({ nodeId: s.nodeId, text: this.dialogueLines(s.messages) })),
+      slots,
+      timeoutMs: Math.max(config.heavyTimeoutMs, 60000),
+      trace: this.traceTo('离场补全'),
+    })
+    if (draft === undefined) {
+      this.judgeLog({ phase: '离场补全', error: '调用失败（本次不写，任务书继续留在桌上）', briefs: inUse.map(b => b.id) })
+      return notes
+    }
+    const byId = new Map(inUse.map(b => [b.id, b]))
+    const consumed = [...new Set(draft.consumedBriefs)].filter(id => byId.has(id))
+    const allowed = new Set(consumed.flatMap(id => byId.get(id)?.participants ?? []))
+    const kept: Array<{ character: string; text: string }> = []
+    const seen = new Set<string>()
+    let dropped = 0
+    for (const m of draft.memories) {
+      if (!slots.includes(m.character) || !allowed.has(m.character)) { dropped++; continue }
+      const key = `${m.character}|${m.text}`
+      if (seen.has(key)) { dropped++; continue }
+      seen.add(key)
+      kept.push(m)
+    }
+    // §4.7 收账：点名的任务书一律变"已收"（即使没有任何记忆落盘——模型判定这本已经用完）
+    const usedTs = new Date().toISOString()
+    const usedBy = `o${Date.now().toString(36)}`
+    if (consumed.length > 0) consumeBriefs(this.groupDir, new Set(consumed), usedTs, usedBy)
+    if (kept.length === 0) {
+      this.judgeLog({ phase: '离场补全', briefs: inUse.map(b => b.id), consumed, dropped, facts: draft.facts, note: consumed.length === 0 ? '模型没有点名任何任务书，本次不写记忆' : '没有可落盘的记忆' })
+      return notes
+    }
+    for (const m of kept) {
+      const f = this.filesFor(m.character)
+      if (f === undefined) continue
+      const entry = { source: '离场经历', round: this.store.round, text: m.text }
+      f.memory.push(entry)
+      this.store.appendLedgerLine(m.character, 'knowledge', 'append', JSON.stringify(entry))
+      this.persistFiles(m.character)
+      this.judgeLog({ phase: '离场补全', participant: m.character, memory: m.text })
+    }
+    const perChar = new Map<string, number>()
+    for (const m of kept) perChar.set(m.character, (perChar.get(m.character) ?? 0) + 1)
+    for (const [name, count] of perChar) notes.push(`（${name} 的离场经历已记入记忆${count > 1 ? `（${count} 条）` : ''}）`)
+    this.judgeLog({ phase: '离场补全', briefs: inUse.map(b => b.id), consumed, usedBy, dropped, slots, facts: draft.facts })
+    return notes
   }
 
   /**
-   * 入场包触发（纯代码差集，不花 Jev），两份触发集语义不同、拆开发放：
-   * - 现场所见（§5.8）= 真正进门的人：地图群下位置发生了变化的新现场者（随行/被叫进来），
-   *   一直在目的地的人没有"第一眼"；无地图群 = present 差集。
-   * - 事件补全（§5.9）= 本轮新出现在现场的所有人（after.present − before.present）：
-   *   "角色走向用户"与"用户走向角色"都是重逢——用户移到某角色的场景时，一直等在那里的
-   *   原住民同样补离场经历；首次进场者由 runOffStory 内部按 absenceStartId 跳过（不虚构前史）。
-   *   全程未分开的随行者不在此集（与用户之间没有离场窗口）。
-   * 说话回合与用户手动修正都走这里；接力判到名单内的人发言时，speakAs 组装前会先等注入完成。
+   * 离场管线触发（只认剧情驱动的场景变化）：分离的人先办（§2/§3），回来的人后办（§4）——
+   * 同一轮两者都有时先办分离、再办回来（§1.3）。任务书留在桌上，等有人回来时收。
+   * 等待集 = 可能拿到记忆的人（桌上在用的任务书参与者 ∪ 本次回来者）：他们开口前先等这段后台工作。
+   */
+  private triggerOffStory(before: SceneAccess): void {
+    const after = this.sceneAccess()
+    const beforeWith = this.withUserNames(before)
+    const afterWith = this.withUserNames(after)
+    const changed = [...beforeWith].filter(n => !afterWith.has(n))
+    const returned = [...afterWith].filter(n => !beforeWith.has(n))
+    if (changed.length === 0 && returned.length === 0) return
+    const triggerMid = this.store.effectiveMessages().at(-1)?.id ?? 0
+    const targets = returned.length === 0
+      ? new Set<string>()
+      : new Set([...inUseBriefs(loadBriefs(this.groupDir)).flatMap(b => b.participants), ...returned])
+    let settle!: (v: string[]) => void
+    const done = new Promise<string[]>(res => { settle = res })
+    this.enqueueBg(async () => {
+      const notes: string[] = []
+      try {
+        if (changed.length > 0) await this.writeBriefsForSeparation(changed, triggerMid, before, afterWith)
+        if (returned.length > 0) notes.push(...await this.completeOffStoryForReturn(returned, triggerMid))
+      } catch (e) {
+        this.judgeLog({ phase: '离场补全', error: String(e instanceof Error ? e.message : e) })
+        if (process.env.DSH_DEBUG === '1') console.error('[briefs] 离场管线失败（不写/维持现状）:', e)
+      } finally {
+        settle(notes)
+      }
+    })
+    this.offstoryWait = { targets, done }
+    if (changed.length > 0) this.judgeLog({ phase: '任务书判定', note: `本轮场景变化——后台离场管线：分离 ${changed.join('、')}` })
+    if (returned.length > 0) this.judgeLog({ phase: '离场补全', note: `本轮场景变化——后台离场管线：回来 ${returned.join('、')}` })
+  }
+
+  /**
+   * 现场所见触发（§5.8，纯代码差集，不花 Jev）：真正进门的人 = 地图群下位置发生了变化的新现场者
+   * （随行/被叫进来/手动挪入）；平面群 = present 差集。手动路径同样触发（进门就该看见）。
+   * 接力判到进场者发言时，speakAs 组装前会先等注入完成。
    */
   maybeSnapshotEntrants(before: SceneAccess, note = '新进现场'): void {
     const after = this.sceneAccess()
@@ -609,15 +780,11 @@ export class GroupSession {
     const presentNow = after.present.filter(n => this.byName.has(n))
     const sceneEntrants = presentNow.filter(n =>
       after.scene === undefined ? !before.present.includes(n) : afterLoc[n] !== beforeLoc[n])
-    const newlyPresent = presentNow.filter(n => !before.present.includes(n))
-    if (sceneEntrants.length === 0 && newlyPresent.length === 0) return
-    const job = this.beginEntryKit(sceneEntrants, newlyPresent)
+    if (sceneEntrants.length === 0) return
+    const job = { targets: new Set(sceneEntrants), done: this.runSceneSnapshot(new Set(sceneEntrants)).then(() => undefined) }
     this.sceneSnapshot = job
     this.enqueueBg(() => job.done.then(() => undefined))
-    this.judgeLog({
-      phase: '现场所见',
-      note: `${note}——后台生成入场包：现场所见 ${sceneEntrants.join('、') || '（无）'}；离场经历 ${newlyPresent.join('、') || '（无）'}`,
-    })
+    this.judgeLog({ phase: '现场所见', note: `${note}——后台生成现场所见：${sceneEntrants.join('、')}` })
   }
 
   /**
@@ -699,6 +866,9 @@ export class GroupSession {
   async *speak(text: string, manualScene?: string, objective = false): AsyncGenerator<SessionEvent> {
     await this.drainBg() // 上一轮的后台记账先完成，避免与新一轮写入交错
     this.reloadBooks()
+    // 新一轮：上一轮的等待句柄作废（后台任务已 drain 清空，不会再有新的注入）
+    this.sceneSnapshot = undefined
+    this.offstoryWait = undefined
     if (this.characters.length === 0) {
       yield { type: 'info', text: '这个群还没有角色——先在左侧「＋ 新建角色」建一个再说话' }
       return
@@ -761,6 +931,7 @@ export class GroupSession {
         tone: this.settings.tone,
         presentNames: before.present,
         presentNotes: this.presentNotes(),
+        statusRecord: recordStatus,
         directorTimeoutMs: config.directorTimeoutMs,
         trace: this.traceTo('总管路由'),
       })
@@ -909,10 +1080,12 @@ export class GroupSession {
       }
     }
 
-    // ── 入场包（§5.8/§5.9）：本轮有新进现场者 → 后台生成现状快照与离场经历注入其记忆；
-    // 地图群下只认"位置发生了变化"的新现场者（一直在目的地的人不算进场）；接力判到进场者
+    // ── 现场所见（§5.8）：本轮有新进现场者 → 后台生成现状快照注入其记忆；接力判到进场者
     // 发言时，speakAs 组装前会先等注入完成。
     this.maybeSnapshotEntrants(before, '新进现场')
+    // ── 离场管线（任务书 §2/§3 → 离场补全 §4）：只认剧情驱动的场景分离/重逢；先办分离、再办回来。
+    //    手动切场景/手动挪人/纠正窗口不接这条线（用户口径：手动调整不产生任务书）。
+    this.triggerOffStory(before)
 
     yield { type: 'route', picked, reason, fallback: route?.fallback ?? false }
     this.store.appendRoute(picked, reason, route?.fallback ?? false)
@@ -1048,6 +1221,15 @@ export class GroupSession {
     if (snap !== undefined && snap.targets.has(name)) {
       yield { type: 'info', text: `（${name} 环顾四周……）` }
       await snap.done
+      if (this.sceneSnapshot === snap) this.sceneSnapshot = undefined // 句柄一次性：避免后续轮次重复提示
+    }
+    // 离场管线（任务书）：本轮要拿记忆的人开口前先等落盘（先想起，再开口）；info 文案随之补发。
+    const off = this.offstoryWait
+    if (off !== undefined && off.targets.has(name)) {
+      yield { type: 'info', text: `（${name} 回忆离场期间的事……）` }
+      const notes = await off.done
+      if (this.offstoryWait === off) this.offstoryWait = undefined
+      for (const t of notes) yield { type: 'info', text: t }
     }
     const persona = this.byName.get(name)
     const files = this.filesFor(name)
@@ -1345,7 +1527,7 @@ export class GroupSession {
       this.setScene(next, p.reason)
       applied.push(`场景 → ${sceneSummary(next)}`)
     }
-    // 纠正窗口带人进场同样触发入场包（§5.8）：进门就该看见；回归者补离场经历
+    // 手动路径只触发现场所见（§5.8）：进门就该看见；离场管线不因手动调整触发
     this.maybeSnapshotEntrants(before, '纠正窗口进场')
     for (const r of result.retracts) {
       const n = this.retractKnowledge(r.character, r)
@@ -1401,7 +1583,9 @@ export class GroupSession {
     }
     this.books.clear()
     try { clearThinking(this.groupDir) } catch { /* 清理失败不影响 */ }
-    this.judgeLog({ phase: '清空记录', note: '已清空聊天与状态账本（operational 行与判定日志保留）' })
+    // 在用任务书整体退休：旧剧情已被清掉，不能让它们日后再写成记忆（已收留档仍可查）
+    const retired = retireInUseBriefs(this.groupDir, new Date().toISOString(), '清空记录')
+    this.judgeLog({ phase: '清空记录', note: `已清空聊天与状态账本（operational 行与判定日志保留）${retired > 0 ? `；在用任务书 ${retired} 本退休（已收）` : ''}` })
   }
 
   /** 删除整个群聊（聊天信息页「删除」）：移除群目录下全部数据。仅端点层调用；调用方负责丢弃会话缓存。 */

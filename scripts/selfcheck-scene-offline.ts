@@ -12,8 +12,8 @@
  * 6) 场景全文注入角色（assembleGroup）。
  * 7) 离开者去向=其他：位置清空（图外）。
  * 8) 跨场景通话：perceive+interact 双高 → 双向接入（语音）→ 接入者可被路由接话，位置不动。
- * 9) 用户走向角色（触发拆分）：位置未变的目的地原住民不拿现场所见，但按各自视角补离场经历；
- *    首次见面者（无分离窗口）两头皆无；随行者只拿现场所见；事件发现携带场景地图全文。
+ * 9) 用户走向角色：只办回来侧（此刻桌上没有在用任务书 → 不凭空写记忆）；
+ *    原地居民不拿现场所见；离场管线（任务书）的完整行为见 selfcheck:briefs。
  * settings.yaml 若存在则备份、结束恢复（测试注入 routerId/activeId 指向本地 mock）。
  */
 import assert from 'node:assert/strict'
@@ -36,28 +36,40 @@ writeFileSync(settingsFile + '.selfcheck-bak', backup ?? '', 'utf8')
 const S1 = '场景一'
 const S2 = '场景二'
 
-async function mockJev(script: { answers?: Record<string, unknown> | Array<Record<string, unknown>> }): Promise<{ server: Server; port: number; hits: Array<Record<string, unknown>> }> {
+async function mockJev(script: { answers?: Record<string, unknown> | Array<Record<string, unknown>> }): Promise<{ server: Server; port: number; hits: Array<Record<string, unknown>>; gates: Array<Record<string, unknown>> }> {
   const hits: Array<Record<string, unknown>> = []
+  /** 任务书判定（briefs 门）单独记录：不消耗脚本答案、不计入主判定命中数（旧断言保持原义）。 */
+  const gates: Array<Record<string, unknown>> = []
+  let scripted = 0
   const server = createServer((req, res) => {
     let buf = ''
     req.on('data', (c: Buffer) => { buf += c })
     req.on('end', () => {
       const answers: Record<string, unknown> | undefined = Array.isArray(script.answers)
-        ? script.answers[Math.min(hits.length, script.answers.length - 1)]
+        ? script.answers[Math.min(scripted, script.answers.length - 1)]
         : script.answers
-      hits.push({ url: req.url, body: JSON.parse(buf) })
+      const body = JSON.parse(buf) as Record<string, unknown>
+      const questions = (body.questions ?? {}) as Record<string, unknown>
+      if (Object.prototype.hasOwnProperty.call(questions, 'briefs')) {
+        gates.push({ url: req.url, body })
+        res.setHeader('content-type', 'application/json')
+        res.end(JSON.stringify({ model: 'jev-test', answers: { briefs: { type: 'noul', noul: 0 } } }))
+        return
+      }
+      scripted++
+      hits.push({ url: req.url, body })
       res.setHeader('content-type', 'application/json')
       res.end(JSON.stringify({ model: 'jev-test', answers: answers ?? {} }))
     })
   })
   await new Promise<void>(r => server.listen(0, '127.0.0.1', r))
   const port = (server.address() as { port: number }).port
-  return { server, port, hits }
+  return { server, port, hits, gates }
 }
 
-interface DeepseekHit { kind: 'route' | 'bookkeep' | 'scene' | 'offstory' | 'pov' | 'correction' | 'stream'; body: Record<string, unknown> }
+interface DeepseekHit { kind: 'route' | 'bookkeep' | 'scene' | 'brief' | 'memory' | 'offstory' | 'pov' | 'correction' | 'stream'; body: Record<string, unknown> }
 
-async function mockDeepseek(script: { streamText?: string; scene?: string; offstory?: Array<{ summary: string; participants: string[] }>; povMap?: Record<string, string>; pov?: string; correction?: { reply?: string; scene?: string; present?: string[] } }): Promise<{ server: Server; port: number; hits: DeepseekHit[] }> {
+async function mockDeepseek(script: { streamText?: string; scene?: string; briefs?: Array<Record<string, unknown>>; memory?: { facts?: string[]; consumedBriefs?: string[]; memories?: Array<{ character: string; text: string }> }; offstory?: Array<{ summary: string; participants: string[] }>; povMap?: Record<string, string>; pov?: string; correction?: { reply?: string; scene?: string; present?: string[] } }): Promise<{ server: Server; port: number; hits: DeepseekHit[] }> {
   const hits: DeepseekHit[] = []
   const server = createServer((req, res) => {
     let buf = ''
@@ -77,10 +89,10 @@ async function mockDeepseek(script: { streamText?: string; scene?: string; offst
         res.end(JSON.stringify({ choices: [{ message: { content: '', tool_calls: [{ function: { name: 'record_round', arguments: '{}' } }] } }] }))
         return
       }
-      if (tools.includes('record_offstory')) {
-        hits.push({ kind: 'offstory', body })
+      if (tools.includes('record_brief')) {
+        hits.push({ kind: 'brief', body })
         res.setHeader('content-type', 'application/json')
-        res.end(JSON.stringify({ choices: [{ message: { content: '', tool_calls: [{ function: { name: 'record_offstory', arguments: JSON.stringify({ events: script.offstory ?? [] }) } }] } }] }))
+        res.end(JSON.stringify({ choices: [{ message: { content: '', tool_calls: [{ function: { name: 'record_brief', arguments: JSON.stringify({ briefs: script.briefs ?? [] }) } }] } }] }))
         return
       }
       if (tools.includes('apply_corrections')) {
@@ -93,11 +105,11 @@ async function mockDeepseek(script: { streamText?: string; scene?: string; offst
         res.end(JSON.stringify({ choices: [{ message: { content: '', tool_calls: [{ function: { name: 'apply_corrections', arguments: args } }] } }] }))
         return
       }
-      if (tools.includes('render_memory')) {
-        hits.push({ kind: 'pov', body })
-        const who = /以(.+?)的限知视角/.exec(buf)?.[1] ?? ''
+      if (tools.includes('write_offstory_memory')) {
+        hits.push({ kind: 'memory', body })
+        const args = JSON.stringify({ facts: script.memory?.facts ?? [], consumedBriefs: script.memory?.consumedBriefs ?? [], memories: script.memory?.memories ?? [] })
         res.setHeader('content-type', 'application/json')
-        res.end(JSON.stringify({ choices: [{ message: { content: '', tool_calls: [{ function: { name: 'render_memory', arguments: JSON.stringify({ memory: script.povMap?.[who] ?? script.pov ?? '（视角记忆）' }) } }] } }] }))
+        res.end(JSON.stringify({ choices: [{ message: { content: '', tool_calls: [{ function: { name: 'write_offstory_memory', arguments: args } }] } }] }))
         return
       }
       hits.push({ kind: 'stream', body })
@@ -476,8 +488,6 @@ try {
       },
     ] })
     writeTestSettings(ds9.port, jev9.port)
-    const memCountOf = (name: string, marker: string): number => memOf(name).split(marker).length - 1
-    const snapBefore = { 甲: memCountOf('角色甲', '现场所见'), 丙: memCountOf('角色丙', '现场所见') }
     const ev9: Array<{ type: string; text?: string; picked?: string }> = []
     for await (const ev of session.speak('（测试发言·重逢）', S2)) {
       ev9.push(ev.type === 'route' ? { type: ev.type, picked: ev.picked } : { type: ev.type, ...('text' in ev ? { text: ev.text } : {}) })
@@ -486,26 +496,16 @@ try {
     assert.deepEqual(session.presentNames().sort(), ['角色甲', '角色丙'].sort(), '甲丙原位在目的地（位置未变）')
     assert.deepEqual(ev9.filter(e => e.type === 'route').map(e => e.picked), ['角色丙', '角色甲'], '快路径路由丙 + 接力甲（无回退）')
     assert.ok(ev9.every(e => e.type !== 'info' || !(e.text ?? '').includes('降级')), '路由不得走启发式降级')
-    assert.ok(ev9.filter(e => e.type === 'info' && (e.text ?? '').includes('环顾四周')).length >= 2, '丙与甲开口前都先等入场包（提示出现）')
-    for (let i = 0; i < 40; i++) {
-      if (memOf('角色甲').includes('离场经历') && memOf('角色丙').includes('离场经历')) break
-      await sleep(250)
-    }
-    assert.ok(memOf('角色甲').includes('离场经历') && memOf('角色甲').includes('你托付的事已经办妥'), '分离过的目的地原住民（甲）获得甲视角的离场经历')
-    assert.ok(memOf('角色丙').includes('离场经历') && memOf('角色丙').includes('替甲办妥'), '分离过的目的地原住民（丙）获得丙视角的离场经历')
-    assert.equal(memCountOf('角色甲', '现场所见'), snapBefore.甲, '原地居民（甲）不新增现场所见条目（位置未变，无进门）')
-    assert.equal(memCountOf('角色丙', '现场所见'), snapBefore.丙, '原地居民（丙）不新增现场所见条目（位置未变，无进门）')
+    // 回来者（甲丙）开口前先等离场管线（先想起再开口）；桌上没有在用任务书 → 零记忆落盘
+    assert.equal(ev9.filter(e => e.type === 'info' && (e.text ?? '').includes('回忆离场期间的事')).length, 1, '回来者开口前等离场管线（句柄一次性，提示一次）')
+    assert.equal(ev9.filter(e => e.type === 'info' && (e.text ?? '').includes('离场经历已记入记忆')).length, 0, '没有在用任务书 → 零记忆')
     assert.equal(ds9.hits.filter(h => h.kind === 'scene').length, 0, '无人进门：现场所见调用为零')
-    assert.equal(ds9.hits.filter(h => h.kind === 'offstory').length, 1, '事件发现恰一次（全部新现者合并进一次调用）')
-    const offBody9 = JSON.stringify(ds9.hits.filter(h => h.kind === 'offstory')[0]?.body)
-    assert.ok(offBody9.includes('（测试发言·离开）'), '发现调用必须携带分离窗口的对话')
-    assert.ok(offBody9.includes('（测试描述一）') && offBody9.includes('（测试描述二）'), '事件发现必须携带场景地图全文（事件骨架的地名锚）')
-    assert.equal(ds9.hits.filter(h => h.kind === 'pov').length, 2, '每个（事件×参与者）各渲染一次')
-    // 两段生成（丙→甲）各自按"你扮演「X」"定位，断言开口前各自视角记忆已在上下文里
+    assert.equal(ds9.hits.filter(h => h.kind === 'brief').length, 0, '本次没有分离 → 不写任务书')
+    assert.equal(ds9.hits.filter(h => h.kind === 'memory').length, 0, '桌上没有在用任务书 → 不调离场补全')
+    assert.ok(!memOf('角色甲').includes('离场经历') && !memOf('角色丙').includes('离场经历'), '无任务书不得凭空写离场经历')
     const genOf = (who: string): Record<string, unknown> | undefined =>
       ds9.hits.filter(h => h.kind === 'stream' && JSON.stringify(h.body).includes(`你扮演「${who}」`)).at(-1)?.body
-    assert.ok(JSON.stringify(genOf('角色丙') ?? {}).includes('替甲办妥'), '丙开口前视角记忆已注入其上下文（先有记忆再开口）')
-    assert.ok(JSON.stringify(genOf('角色甲') ?? {}).includes('你托付的事已经办妥'), '甲开口前视角记忆已注入其上下文（先有记忆再开口）')
+    assert.ok(genOf('角色丙') !== undefined && genOf('角色甲') !== undefined, '丙与甲都真的被调用生成')
     ds9.server.close(); jev9.server.close()
   }
 
@@ -552,7 +552,7 @@ try {
     ds.server.close(); jev.server.close()
   }
 
-  console.log('地图机制自检通过：场景文件层(创建/重名/描述可改/名称不可改) · 建群即建图 · 初始场景落位 · ⊘手选跳过判定生效(不问scene_change/present_*) · 目的地者直接在场听见进门句 · 同行者/离开者按location落位 · 判定移动与极严苛不动 · 客观注入(不问知情转告/location照问/受众=当前场景现场者/他场景者不收) · 对话进场晚于快照且入场包照常 · 一直在场者不入入场包 · 场景全文+当前场景注入角色 · 离开去向=其他清位 · 跨场景通话(双向接入建立/接入者可被路由/位置不动/呼叫句可听) · 用户走向角色(触发拆分:原地居民无新增现场所见但有离场经历/发现恰一次合并/开口前记忆已注入) · 现场所见只携当前场景描述 · 事件发现携场景地图全文 · 手动切场景/手动调位置/纠正窗口换场景三条路都真的落表')
+  console.log('地图机制自检通过：场景文件层(创建/重名/描述可改/名称不可改) · 建群即建图 · 初始场景落位 · ⊘手选跳过判定生效(不问scene_change/present_*) · 目的地者直接在场听见进门句 · 同行者/离开者按location落位 · 判定移动与极严苛不动 · 客观注入(不问知情转告/location照问/受众=当前场景现场者/他场景者不收) · 对话进场晚于快照且入场包照常 · 一直在场者不入入场包 · 场景全文+当前场景注入角色 · 离开去向=其他清位 · 跨场景通话(双向接入建立/接入者可被路由/位置不动/呼叫句可听) · 用户走向角色(只办回来侧:原地居民无新增现场所见/无在用任务书不凭空写记忆/开口前空等一次) · 现场所见只携当前场景描述 · 事件发现携场景地图全文 · 手动切场景/手动调位置/纠正窗口换场景三条路都真的落表')
 } finally {
   rmSync(accDir, { recursive: true, force: true })
   if (hadSettings) writeFileSync(settingsFile, backup ?? '', 'utf8')

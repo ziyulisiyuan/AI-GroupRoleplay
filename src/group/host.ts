@@ -11,8 +11,10 @@ import type { CharacterPersona, GroupSettings, UserPersona } from './persona.ts'
 import { detectMention, dicePick, resolveCharacterName, type RoutableCharacter } from './router.ts'
 import type { MsgLine } from '../store.ts'
 import { roleplayInstruction } from '../host.ts'
-import { ledgerPrompt, personalityPrompt, relationshipsPrompt, pickLedgerFields, type CharacterFiles } from './status.ts'
+import { LEDGER_KEYS, ledgerPrompt, personalityPrompt, relationshipsPrompt, pickLedgerFields, type CharacterFiles } from './status.ts'
 import { parseRemoteList, type RemoteLink } from './presence.ts'
+ import type { Brief, BriefDraft } from './briefs.ts'
+ import { parsePerceives, parseSequence, strArray } from './briefs.ts'
 
 /** assembleGroup 的可选输入（避免位置参数越堆越长）。 */
 export interface AssembleInput {
@@ -191,32 +193,41 @@ const LEDGER_ITEM_SCHEMA = {
   required: ['character'],
 } as Record<string, unknown>
 
-export const ROUTE_TOOL: ToolSpec = {
-  type: 'function',
-  function: {
-    name: 'route_and_remember',
-    description: '决定下一位发言的角色，并记录本轮剧情造成的状态/知情/性格变化',
-    parameters: {
-      type: 'object',
-      properties: {
-        next_speaker: { type: 'string', description: '角色名，必须来自可选名单' },
-        reason: { type: 'string', description: '≤20字' },
-        状态账本: {
-          type: 'array',
-          description: '对发生状态变化的角色，输出其**完整最新状态账本**（整体快照，不是增量）：输入里给了各角色当前账本，没变化的字段原样带回，变化的字段写新值；没有角色发生变化就不要填。',
-          items: { ...LEDGER_ITEM_SCHEMA },
+/** route_and_remember 的工具 schema（SPEC §6.1c）：状态记录关闭时不提供状态账本字段（SPEC §7）。 */
+export function routeTool(includeStatus: boolean): ToolSpec {
+  return {
+    type: 'function',
+    function: {
+      name: 'route_and_remember',
+      description: '决定下一位发言的角色，并记录本轮剧情造成的状态/知情/性格变化',
+      parameters: {
+        type: 'object',
+        properties: {
+          next_speaker: { type: 'string', description: '角色名，必须来自可选名单' },
+          reason: { type: 'string', description: '≤20字' },
+          ...(includeStatus
+            ? {
+                状态账本: {
+                  type: 'array',
+                  description: '对发生状态变化的角色，输出其**完整最新状态账本**（整体快照，不是增量）：输入里给了各角色当前账本，没变化的字段原样带回，变化的字段写新值；没有角色发生变化就不要填。',
+                  items: { ...LEDGER_ITEM_SCHEMA },
+                },
+              }
+            : {}),
+          presence_updates: {
+            type: 'array',
+            description: '代管维护"当前场景人员"（硬约束：决定谁能在这里发言、谁会被自动登记这里发生的事）。**极其严苛，两条铁律**：名单里不在场的角色，只有对话**明确描写他进场/出现/被叫到现场**才能加入；名单里在场的角色，只有对话**明确描写他失去意识或离开**才能移出。"他住在这里""他可能在附近""他是这里的人"这类推测一律不算。有明确描写才给出修正后的完整名单；没有就不要填此字段。',
+            items: { ...PRESENCE_ITEM_SCHEMA },
+          },
         },
-        presence_updates: {
-          type: 'array',
-          description: '代管维护"当前场景人员"（硬约束：决定谁能在这里发言、谁会被自动登记这里发生的事）。**极其严苛，两条铁律**：名单里不在场的角色，只有对话**明确描写他进场/出现/被叫到现场**才能加入；名单里在场的角色，只有对话**明确描写他失去意识或离开**才能移出。"他住在这里""他可能在附近""他是这里的人"这类推测一律不算。有明确描写才给出修正后的完整名单；没有就不要填此字段。',
-          items: { ...PRESENCE_ITEM_SCHEMA },
-        },
+        required: ['next_speaker', 'reason'],
       },
-      required: ['next_speaker', 'reason'],
     },
-  },
+  }
 }
 
+/** 默认（状态记录开启）形态；引擎按群设定取 routeTool(recordStatus)。 */
+export const ROUTE_TOOL: ToolSpec = routeTool(true)
 export interface RouteResult {
   picked: string
   reason: string
@@ -270,6 +281,8 @@ export interface RouteInput {
   presentNames?: string[]
   /** §3.11：在场者及其感知情况（如"角色乙（失聪）"），供总管判断谁能知道 */
   presentNotes?: string[]
+  /** 状态记录开关（群设定）：false = 本工具 schema 不提供状态账本字段（SPEC §7）。 */
+  statusRecord?: boolean
   directorTimeoutMs?: number
   /** 原始材料侧路（模型调用.jsonl；只给人排查，不进提示词）。 */
   trace?: LlmTrace
@@ -317,7 +330,7 @@ export async function routeNextSpeaker(input: RouteInput): Promise<RouteResult> 
         { role: 'system', content: '你是群聊叙事总管。' },
         { role: 'user', content: prompt },
       ],
-      tools: [ROUTE_TOOL],
+      tools: [routeTool(input.statusRecord !== false)],
       expectedFunction: 'route_and_remember',
       trace: input.trace,
       signal: AbortSignal.timeout(input.directorTimeoutMs ?? 30000),
@@ -376,8 +389,9 @@ function asArray<T>(value: unknown): T[] {
  *   明确否定（<0.23）才排除他。
  * unlinkedKnowsMin：知情判定的场外门槛——不在现场、也没有接入/单向感知链路的角色，必须过更高的把握
  *   才写进 visible_to。写进去就撤不掉（消息出生快照没有改写路径），所以别让单次概率尖峰把场外无关角色拉进名单。
+ * briefMin：任务书判定（离场管线 §2/§11.3）——本次离场是否留底任务书；默认 0.5。
  */
-export const JEV_THRESHOLDS = { confidenceMin: 0.45, perceiveMin: 0.7, interactMin: 0.7, interactMax: 0.3, presentKnowsMin: 0.23, gateKeep: 0.5, unlinkedKnowsMin: 0.65, toldMin: 0.5, extraRoundMin: 0.39 }
+export const JEV_THRESHOLDS = { confidenceMin: 0.45, perceiveMin: 0.7, interactMin: 0.7, interactMax: 0.3, presentKnowsMin: 0.23, gateKeep: 0.5, unlinkedKnowsMin: 0.65, toldMin: 0.5, extraRoundMin: 0.39, briefMin: 0.5 }
 
 /** 知情判定门槛分三档：现场者用 presentKnowsMin（人在跟前，只有接近明确否定才排除）；
  *  有感知链路者（接入/单向感知）用 gateKeep；两者都不是的场外角色用 unlinkedKnowsMin。 */
@@ -1199,176 +1213,430 @@ export async function askSceneSummarizer(input: {
   return summary
 }
 
-// ---------- 事件补全（§5.9）：离场期间的经历史上模拟，按参与者限知视角分别渲染 ----------
+// ---------- 任务书（离场管线 §2/§3）：分离时判定 + 描绘 ----------
 
-/** 事件发现工具：只产出客观骨架与参与者名单——事实在此定稿，视角渲染不得增删情节。 */
-export const OFFSTORY_TOOL: ToolSpec = {
+/** record_brief：一本 = 一件事 + 参与名单 + 客观事实与顺序 + 每个参与者的限知感知。 */
+/** 文风禁令（§3 的 facts/title 与 §4 的 memories[*].text 共用；只做限制，不做正面文风引导）。 */
+const STYLE_FORBIDDEN = [
+  '转折、波澜、转机',
+  '伏笔',
+  '隐喻、暗喻、比喻',
+  '象征',
+  '类比',
+  '景色描写',
+  '旁白',
+  '与故事脉络无直接关系的细节',
+  '上帝视角侵入',
+  '自行颅内高潮',
+  '悬念',
+  '勾起读者兴趣、悬念',
+  '文学性',
+  '不是……而是……及任何等价结构',
+  '任何形式的对比句式',
+  '同一段落反复使用同一词汇',
+  '意象堆砌',
+  '实数词',
+  '口语化',
+  'ABAC式成语',
+]
+
+export const BRIEF_TOOL: ToolSpec = {
   type: 'function',
   function: {
-    name: 'record_offstory',
-    description: '列出离场角色在离场期间卷入的事件（每件事一句话客观骨架 + 全部参与者名单）。只延伸对话中有依据的事，禁止编造重大事件，禁止文笔',
+    name: 'record_brief',
+    description: '生成客观事实底稿（任务书）：一本 = 一件事 + 参与名单 + facts + sequence + perceives。',
     parameters: {
       type: 'object',
       properties: {
-        events: {
+        briefs: {
           type: 'array',
-          description: '事件清单；没有可补全的就返回空数组。最多 4 件，每件最多 4 名参与者',
+          description: '零本或多本任务书；没有可留底的事件时为 []。',
           items: {
             type: 'object',
             properties: {
-              summary: { type: 'string', description: '一句话客观骨架：谁对谁做了什么/发生了什么。禁止比喻、渲染、评价' },
-              participants: { type: 'array', items: { type: 'string' }, description: '全部参与者名单（含离场者本人）' },
+              title: { type: 'string', description: '事件名；≤20 字。' },
+              place: { type: 'string', description: '事发地点；MUST IN [场景地图] OR [剧情原文]。' },
+              participants: { type: 'array', items: { type: 'string' }, description: '参与名单；MUST IN [角色档案]；只收该事件真正涉及的角色。' },
+              facts: { type: 'array', items: { type: 'string' }, description: '客观事实；一条一句；准确优先，禁止有损压缩；禁止心理、评价、因果推断与文风修饰。' },
+              sequence: {
+                type: 'array',
+                description: 'facts 的先后顺序；引用 facts 下标；无法确定时不填。',
+                items: { type: 'object', properties: { i: { type: 'number' }, then: { type: 'number' } }, required: ['i', 'then'] },
+              },
+              perceives: {
+                type: 'array',
+                description: '每个参与者能感知到的条目（看到 / 听到 / 被当场告知）；与性格外貌内心无关；每条 MUST 可回溯到 facts 中的某条。',
+                items: { type: 'object', properties: { character: { type: 'string' }, saw: { type: 'array', items: { type: 'string' } } }, required: ['character', 'saw'] },
+              },
             },
-            required: ['summary', 'participants'],
+            required: ['title', 'place', 'participants', 'facts'],
           },
         },
       },
-      required: ['events'],
+      required: ['briefs'],
     },
   },
 }
 
-/**
- * 事件发现（事件补全第一段）：从各回归者的离场窗口对话中，提取并合理补全他们离场期间卷入的事件。
- * 只延伸对话中有依据的事（对他的指令/约定/邀请/关系/他人提到的打算）；日常化；与已有事件补全
- * 不得重复或矛盾；没有可补全的就返回空数组。失败抛错由调用方降级（不注入 = 维持现状）。
- */
-export async function askOffStoryDiscovery(input: {
-  /** 每个回归者：名字 + 离场窗口对话（截尾；客观注入行带【客观】前缀）。 */
-  windows: Array<{ character: string; dialogue: string }>
-  /** 窗口对话中出现客观注入行时为 true：提示词开头追加客观对照要求。 */
-  objectiveAnnotated?: boolean
-  /** 已有的离场经历条目（防重复/防矛盾锚）。 */
-  known: string[]
-  rosterNames: string[]
-  /** 地图（全部场景，名+描述全文）：事件骨架的地名锚。缺省（平面群）不给。 */
+export interface BriefWriterCharacter {
+  name: string
+  appearance: string
+  background: string
+  personality: string
+  relationships: string
+  /** 当前状态账本（状态记录关闭时整体不提供——连字段都不存在）。 */
+  ledger?: Record<string, string>
+}
+
+export interface BriefWriterInput {
+  /** 地图（全部场景，名+描述全文）；平面群缺省。 */
   scenes?: Array<{ name: string; description: string }>
+  activeScene: string
+  characters: BriefWriterCharacter[]
+  /** 你在哪（一行，如「你：场景二」）。 */
+  userSceneNote: string
+  /** 每个角色此刻在哪个场景（地图群）；缺省 = 平面群用 presenceLine。 */
+  locations?: Record<string, string>
+  /** 平面群的场景人员一行（现场/接入/单向感知）。 */
+  presenceLine?: string
+  /** 剧情原文（已逐条格式化，行首带 [客观注入]/[剧情原文]）。 */
+  dialogue: string
+  /** 本次分离的窗口行（已格式化）。 */
+  windows: string
   timeoutMs?: number
   trace?: LlmTrace
-  log?: (e: Record<string, unknown>) => void
-}): Promise<Array<{ summary: string; participants: string[] }> | undefined> {
+}
+
+/** 任务书描绘（§3）：一次分离一次调用，按事件拆本。失败返回 undefined（不写、窗口留待下次）。 */
+export async function askBriefWriter(input: BriefWriterInput): Promise<BriefDraft[] | undefined> {
+  const sceneBlock = input.scenes !== undefined && input.scenes.length > 0
+    ? ['[场景地图]', `当前场景：${input.activeScene || '（未定）'}`, ...input.scenes.map(s => `- ${s.name}：${s.description}`)]
+    : []
+  const active = input.scenes?.find(s => s.name === input.activeScene)
+  const currentSceneBlock = active !== undefined ? ['[当前场景]', `${active.name}：${active.description}`] : []
+  const dossier = input.characters.flatMap(c => {
+    const lines = [
+      `- ${c.name}`,
+      `  外貌：${c.appearance.trim() !== '' ? c.appearance : '（无）'}`,
+      `  背景：${c.background.trim() !== '' ? c.background : '（无）'}`,
+      `  性格：${c.personality.trim() !== '' ? c.personality : '（无）'}`,
+      `  人物关系：${c.relationships.trim() !== '' ? c.relationships : '（无）'}`,
+    ]
+    if (c.ledger !== undefined) lines.push(`  状态账本：${LEDGER_KEYS.map(k => `${k}:"${c.ledger?.[k]?.trim() || '无'}"`).join('；')}`)
+    return lines
+  })
+  const position = input.locations !== undefined
+    ? Object.entries(input.locations).map(([k, v]) => `${k}：${v}`)
+    : (input.presenceLine === undefined || input.presenceLine === '' ? [] : [input.presenceLine])
   const prompt = [
-    '有角色要回到场景。他离场期间，剧情仍在多线推进——对话中对他下的指令、与他的约定、别人提到关于他的打算，都可能在离场期间发生或履行。请提取并合理补全这些事件，供注入回归者与参与者的记忆。',
-    ...(input.objectiveAnnotated === true
-      ? ['对话窗口中带【客观】标注的行，是以叙事者身份写下、已对世界生效的客观事实。重点关注：逐一对照该角色需要补全的事件，检查客观事实是否要求调整事件的骨架、参与者或经过——需要调整的必须调整，与客观事实相矛盾的补全一律不合格。']
-      : []),
+    'ALGORITHM OffStoryBriefGeneration',
+    '',
+    'INPUT:',
+    '  [场景地图]    全部场景：名称 + 完整描述',
+    '  [当前场景]    名称 + 描述',
+    '  [角色档案]    名字 / 外貌 / 背景 / 性格 / 人物关系 / 以及档案中实际给出的其余字段',
+    '  [位置]',
+    '  [剧情原文]    逐条；行首为 [客观注入] 或 [剧情原文]',
+    '  [窗口]        本次分离的离开窗口：角色 / 起点 / 终点 / 处理状态',
+    '',
+    ...sceneBlock,
+    ...currentSceneBlock,
+    '[角色档案]',
+    ...dossier,
+    '[位置]',
+    input.userSceneNote,
+    ...position,
+    '[剧情原文]',
+    input.dialogue.trim() === '' ? '（无）' : input.dialogue,
+    '[窗口]',
+    input.windows.trim() === '' ? '（无）' : input.windows,
+    '',
+    'ASSERT 本步产物 = 客观事实底稿：后续"离场记忆"的唯一事实来源',
+    'ASSERT facts 只能来自 [剧情原文] 与 [场景地图]',
+    'ASSERT [客观注入] = 叙事者级已生效事实，可直接写入 facts',
+    'ASSERT [剧情原文] = 场景内实际发生的内容',
+    'ASSERT 准确优先，禁止为省字数做有损压缩',
+    '',
+    'STEP 1 事件拆分',
+    '  从 [剧情原文] 与 [客观注入] 识别零个或多个独立事件；每个事件 = 一件事 + 参与名单',
+    '  ASSERT place MUST IN [场景地图] OR [剧情原文]',
+    '  ASSERT participants MUST IN [角色档案]',
+    '  ASSERT participants 只收该事件真正涉及的角色；同批离开不构成参与',
+    '',
+    'STEP 2 事实与顺序',
+    '  FOR EACH 事件:',
+    '    facts := 原文可直接确认的客观事实；一条一句',
+    '    ASSERT facts NOT CONTAINS 心理 / 评价 / 因果推断 / 原文未支持的内容',
+    '    sequence := facts 的先后顺序，引用 facts 下标；无法确定则不填',
+    '  END FOR',
+    '',
+    'STEP 3 限知感知',
+    '  FOR EACH 事件:',
+    '    FOR EACH 角色 IN participants:',
+    '      perceives(角色) := 该角色在此事件中能感知到的条目（看到 / 听到 / 被当场告知）',
+    '      ASSERT perceives(角色) 与 性格 / 外貌 / 情绪 / 动机 / 关系 / 内心 无关',
+    '      ASSERT perceives(角色) 中每条 MUST 可回溯到 facts 中的某条',
+    '    END FOR',
+    '  END FOR',
+    '',
+    'FORBIDDEN（仅约束 facts 与 title；不做正面文风引导）:',
+    ...STYLE_FORBIDDEN.map(f => `  ${f}`),
+    '',
+    'CHECK:',
+    '  title ≤20 字',
+    '  place ∈ [场景地图] ∪ [剧情原文]',
+    '  participants ⊆ [角色档案]',
+    '  sequence 仅引用 facts 下标',
+    '  perceives 仅含可回溯到 facts 的条目',
+    '  无事件可留底 → briefs = []',
+    '',
+    'OUTPUT:',
+    '  仅调用 record_brief',
+    '  不输出散文',
+  ].join('\n')
+  const call = await chatToolCall(resolveLlm(), {
+    messages: [
+      { role: 'system', content: 'ROLE: 任务书生成。按 ALGORITHM 执行，仅提交 record_brief 工具调用。' },
+      { role: 'user', content: prompt },
+    ],
+    tools: [BRIEF_TOOL],
+    expectedFunction: 'record_brief',
+    trace: input.trace,
+    signal: AbortSignal.timeout(input.timeoutMs ?? 60000),
+  })
+  const args = JSON.parse(call.arguments) as { briefs?: unknown }
+  const raw: unknown[] = args.briefs === undefined || args.briefs === null ? [] : (Array.isArray(args.briefs) ? args.briefs : [args.briefs])
+  const roster = new Set(input.characters.map(c => c.name))
+  return raw.flatMap(x => {
+    const o = (x ?? {}) as Record<string, unknown>
+    const title = typeof o.title === 'string' ? o.title.trim() : ''
+    if (title === '') return []
+    const participants = [...new Set(strArray(o.participants).filter(n => roster.has(n)))]
+    return [{
+      title,
+      place: typeof o.place === 'string' ? o.place.trim() : '',
+      participants,
+      facts: strArray(o.facts),
+      sequence: parseSequence(o.sequence),
+      perceives: parsePerceives(o.perceives).filter(p => roster.has(p.character)),
+    }]
+  })
+}
+
+export interface BriefGateWindow {
+  character: string
+  startId: number
+  endId: number
+  /** 已在这几本任务书名下（备忘录；新窗口通常为空）。 */
+  coveredBy: string[]
+}
+
+export interface BriefGateInput {
+  llm: { baseUrl: string; apiKey: string; model: string }
+  scenes?: Array<{ name: string; description: string }>
+  activeScene: string
+  userSceneNote: string
+  locations?: Record<string, string>
+  presenceLine?: string
+  windows: BriefGateWindow[]
+  timeoutMs?: number
+  log?: (entry: Record<string, unknown>) => void
+}
+
+/** 任务书判定（§2）：一次分离一道 noul。true=写任务书；false=不写；undefined=失败（窗口留待下次）。 */
+export async function jevBriefGate(input: BriefGateInput): Promise<boolean | undefined> {
+  const state = [
+    '判断：这次角色离开是否需要留底任务书（供他们回来时补全离场经历）。',
     ...(input.scenes !== undefined && input.scenes.length > 0
-      ? ['[场景地图（这个世界的全部地点）]', ...input.scenes.map(s => `- ${s.name}：${s.description}`)]
-      : ''),
-    ...input.windows.map(w => `[${w.character} 离场期间的对话]\n${w.dialogue}`),
-    input.known.length > 0 ? '[已有的事件补全（不得重复、不得矛盾）]\n' + input.known.map(k => `- ${k}`).join('\n') : '',
-    `[全部角色]\n${input.rosterNames.join('、')}`,
-    '要求（违反任何一条都不合格）：',
-    '- 只补全对话中有依据的事：对他下的指令、与他的约定、对他的邀请、别人提到的关于他的打算——合理模拟这些事的履行经过。',
-    '- 每件事一句话客观骨架（谁对谁做了什么/发生了什么）+ 全部参与者名单（含离场者本人）。',
-    ...(input.scenes !== undefined && input.scenes.length > 0
-      ? ['- 骨架里提到的地点，只能取自场景地图或对话原文；不得发明地图上不存在的地点。']
+      ? ['[场景地图]', `当前场景：${input.activeScene || '（未定）'}`, ...input.scenes.map(s => `- ${s.name}：${s.description}`)]
       : []),
-    '- 日常化：禁止编造重大事件（死亡/重伤/重大转折/新角色登场），对话毫无依据的事一律不补。',
-    '- 不得与已有的事件补全重复或矛盾；没有可补全的就返回空数组。',
-    '- 最多 4 件，每件最多 4 名参与者（超出取与剧情最相关的）。',
-    '- 禁止文笔、比喻、伏笔、场景渲染，仅真实详细记录无任何心理描写的，无主观臆断的客观事件具体描述。',
-    '调用 record_offstory 工具给出 events。',
+    '[位置]',
+    input.userSceneNote,
+    ...(input.locations !== undefined
+      ? Object.entries(input.locations).map(([k, v]) => `${k}：${v}`)
+      : (input.presenceLine === undefined || input.presenceLine === '' ? [] : [input.presenceLine])),
+    '[窗口]',
+    ...input.windows.map(w => `- ${w.character}：第${w.startId}句–第${w.endId}句；状态：${w.coveredBy.length > 0 ? `已在 ${w.coveredBy.join('、')} 名下` : '未处理'}`),
   ].filter(s => s !== '').join('\n')
   const t0 = Date.now()
   try {
-    const call = await chatToolCall(resolveLlm(), {
-      messages: [
-        { role: 'system', content: '你是这个群聊的剧情补全员，只负责从既有依据中客观提取与合理延伸离场期间的事件骨架。' },
-        { role: 'user', content: prompt },
-      ],
-      tools: [OFFSTORY_TOOL],
-      expectedFunction: 'record_offstory',
-      trace: input.trace,
-      signal: AbortSignal.timeout(input.timeoutMs ?? 60000),
+    const answers = await jevDecide({
+      llm: input.llm,
+      state,
+      questions: { briefs: { type: 'noul', instructions: '本次离场是否产出一本或多本任务书？产出=1，不产出=0。' } },
+      timeoutMs: input.timeoutMs,
     })
-    const args = JSON.parse(call.arguments) as { events?: unknown }
-    const names = new Set(input.rosterNames)
-    const events = (Array.isArray(args.events) ? args.events : [args.events])
-      .map((e): { summary: string; participants: string[] } | undefined => {
-        const o = (e ?? {}) as Record<string, unknown>
-        const summary = typeof o.summary === 'string' ? o.summary.trim() : ''
-        const participants = (Array.isArray(o.participants) ? o.participants : [])
-          .map(p => String(p).trim()).filter(p => names.has(p))
-        return summary === '' || participants.length === 0 ? undefined : { summary, participants }
-      })
-      .filter((e): e is { summary: string; participants: string[] } => e !== undefined)
-      .slice(0, 4)
-    input.log?.({ events, elapsedMs: Date.now() - t0 })
-    return events
+    const a = answers['briefs']
+    const answer = a?.type === 'noul' ? a.noul : 0
+    const passed = answer >= JEV_THRESHOLDS.briefMin
+    input.log?.({ windows: input.windows.map(w => w.character), answer, threshold: JEV_THRESHOLDS.briefMin, passed, elapsedMs: Date.now() - t0 })
+    return passed
   } catch (e) {
-    input.log?.({ error: String(e instanceof Error ? e.message : e), elapsedMs: Date.now() - t0 })
+    input.log?.({ windows: input.windows.map(w => w.character), error: String(e instanceof Error ? e.message : e), elapsedMs: Date.now() - t0 })
     return undefined
   }
 }
 
-/** 限知视角渲染工具：事实以骨架为准，视角按参与者自身材料走。 */
-export const OFFSTORY_POV_TOOL: ToolSpec = {
+// ---------- 离场补全（§4）：按桌上在用的任务书写记忆 ----------
+
+export type CompletionBrief = Pick<Brief, 'id' | 'nodeId' | 'judgeMid' | 'title' | 'place' | 'participants' | 'facts' | 'sequence' | 'perceives'>
+
+export const OFFSTORY_MEMORY_TOOL: ToolSpec = {
   type: 'function',
   function: {
-    name: 'render_memory',
-    description: '以某角色的限知视角，把事件骨架写成他将长期记住的记忆概括',
+    name: 'write_offstory_memory',
+    description: '按任务书写离场记忆：给出实际采用的事实记录、收走的任务书编号、每个角色的离场记忆。',
     parameters: {
       type: 'object',
       properties: {
-        memory: { type: 'string', description: '以"你"称呼该角色。以你的角度重述骨架中的事件，视角与态度按该角色的性格呈现；输出约束按照全局规则进行，如果全局规则出现与本要求中任意一条冲突的规则，则以本要求为基准' },
+        facts: { type: 'array', items: { type: 'string' }, description: '本次实际采用的事实记录；与所收任务书一致或更窄。' },
+        consumedBriefs: { type: 'array', items: { type: 'string' }, description: '本次收走的任务书编号；MUST IN [本次任务书]；为空时不写任何记忆。' },
+        memories: {
+          type: 'array',
+          description: '每个槽位角色一条；character MUST IN [槽位] 且在所收任务书的 participants 中。',
+          items: {
+            type: 'object',
+            properties: { character: { type: 'string', description: '角色名。' }, text: { type: 'string', description: '该角色的离场记忆；人称"你"；只写其视角模型内的内容。' } },
+            required: ['character', 'text'],
+          },
+        },
       },
-      required: ['memory'],
+      required: ['facts', 'consumedBriefs', 'memories'],
     },
   },
 }
 
-/**
- * 限知视角渲染（事件补全第二段）：同一事件骨架，每个参与者各渲染一份自己的版本——
- * 事实不矛盾（锚死在骨架上），视角与态度按参与者自身性格与处境走（哀求者的感激 与 被求者的
- * 不情愿表面配合，是同一件事的两份合法记忆）。失败抛错由调用方降级（该份不注入）。
- */
-export async function askOffStoryPOV(input: {
-  /** 一句话客观骨架（事件发现的原样输出）。 */
-  event: string
-  participant: string
-  /** 该角色的初始性格（用户资产）。 */
-  personality: string
-  /** 该角色当前状态账本行（含人物关系变化）。 */
-  ledgerLine: string
-  /** 全局规则（用户资产）：事件补全第二段单独被允许读它（其余后台 AI 不读）。 */
-  rules?: string
+export interface OffStoryCompletionInput {
+  briefs: CompletionBrief[]
+  scenes?: Array<{ name: string; description: string }>
+  activeScene: string
+  userSceneNote: string
+  locations?: Record<string, string>
+  presenceLine?: string
+  /** 回来范围（已格式化，行首带标识）。 */
+  returnedDialogue: string
+  /** 每本任务书各自的一段（同节点只出现一次；已格式化）。 */
+  segments: Array<{ nodeId: string; text: string }>
+  /** 要写记忆的角色名单。 */
+  slots: string[]
   timeoutMs?: number
   trace?: LlmTrace
-  log?: (e: Record<string, unknown>) => void
-}): Promise<string | undefined> {
+}
+
+export interface OffStoryCompletionDraft {
+  facts: string[]
+  consumedBriefs: string[]
+  memories: Array<{ character: string; text: string }>
+}
+
+function briefBlock(b: CompletionBrief): string {
+  const facts = b.facts.map((f, i) => `  ${i + 1}. ${f}`).join('\n')
+  const sequence = b.sequence.map(s => `第${s.i}条之后发生第${s.then}条`).join('；')
+  const perceives = b.perceives.map(p => `${p.character}：${p.saw.join('；') || '（无）'}`).join('\n  ')
+  return [
+    `【${b.id}｜节点 ${b.nodeId}｜判定于第${b.judgeMid}句】`,
+    `标题：${b.title}`,
+    b.place === '' ? '' : `地点：${b.place}`,
+    `参与者：${b.participants.join('、') || '（无）'}`,
+    '事实：',
+    facts === '' ? '（无）' : facts,
+    sequence === '' ? '' : `顺序：${sequence}`,
+    perceives === '' ? '' : `感知：\n  ${perceives}`,
+  ].filter(s => s !== '').join('\n')
+}
+
+/** 离场补全（§4）：一次回来一次调用；代码只做强制校验与落盘，取舍由模型按任务书定。失败返回 undefined。 */
+export async function askOffStoryCompletion(input: OffStoryCompletionInput): Promise<OffStoryCompletionDraft | undefined> {
+  const sceneBlock = input.scenes !== undefined && input.scenes.length > 0
+    ? ['[场景地图]', `当前场景：${input.activeScene || '（未定）'}`, ...input.scenes.map(s => `- ${s.name}：${s.description}`)]
+    : []
+  const position = input.locations !== undefined
+    ? Object.entries(input.locations).map(([k, v]) => `${k}：${v}`)
+    : (input.presenceLine === undefined || input.presenceLine === '' ? [] : [input.presenceLine])
   const prompt = [
-    `以${input.participant}的限知视角，把下面这件事写成他将长期记住的记忆概括。`,
-    `[事件骨架（事实以此为准，不得增删情节）]\n${input.event}`,
-    `[${input.participant} 的初始性格]\n${input.personality || '（无）'}`,
-    ...(input.ledgerLine !== '' ? [`[${input.participant} 当前状态账本]\n${input.ledgerLine}`] : []),
-    ...(input.rules !== undefined && input.rules.trim() !== '' ? ['[全局规则（用户设定）]', input.rules] : []),
-    '要求：',
-    '- 所展现出的客观事实与骨架完全一致（这里不包括该角色的主观想法），不得增删情节、不得引入骨架外的新信息。',
-    '- 只写ta能看到/听到/感到/内心的部分（限知视角）',
-    '- 视角与态度按ta自己的性格与处境呈现：同一件事，不同角色的记忆版本应当不同（此处做例，但不要被视为输出规范，仅作为理解辅助：客观角度甲熬药救了乙；甲的限知视角：你想熬毒药杀死乙，哄骗他喝下毒药，结果毒药歪打正着让乙的病痊愈了；乙的限知视角：你生了重病，甲无微不至的照顾你，甲给你端来了一碗药，温柔地让你喝下去，等你喝下去之后病真的好了。）',
-    '- 输出约束按照全局规则进行，如果全局规则出现与本要求中任意一条冲突的规则，则以本要求为基准。',
-    '调用 render_memory 工具给出 memory。',
+    'ALGORITHM OffStoryMemoryGeneration',
+    '',
+    'INPUT:',
+    '  [本次任务书]  一本或多本在用任务书：id / nodeId / judgeMid / title / place / participants / facts / sequence / perceives',
+    '  [场景地图]',
+    '  [位置]',
+    '  [剧情原文]    回来范围 + 每本任务书各自的一段',
+    '  [槽位]        需要写记忆的角色名单',
+    '',
+    '[本次任务书]',
+    input.briefs.length === 0 ? '（无）' : input.briefs.map(briefBlock).join('\n\n'),
+    ...sceneBlock,
+    '[位置]',
+    input.userSceneNote,
+    ...position,
+    '[剧情原文]',
+    input.returnedDialogue.trim() === '' ? '（回来范围无对话）' : input.returnedDialogue,
+    ...input.segments.map(seg => `【任务书段·节点 ${seg.nodeId}】\n${seg.text}`),
+    '[槽位]',
+    input.slots.length === 0 ? '（无）' : input.slots.join('\n'),
+    '',
+    'ASSERT 客观事实层 := [本次任务书] 中全部事实；它是唯一真实层',
+    'ASSERT 角色记忆 != 客观事实层',
+    '',
+    'STEP 1 视角模型',
+    '  FOR EACH 角色 IN [槽位]:',
+    '    视角模型(角色) := [本次任务书].perceives 中属于该角色的条目',
+    '                       ∪ [剧情原文] 中该角色当时能感知到的行（看到 / 听到 / 被当场告知）',
+    '    ASSERT 视角模型 不使用 性格 / 外貌 / 情绪 / 动机 / 关系 / 内心',
+    '    ASSERT 视角模型 只回答：该角色能否感知到该内容',
+    '  END FOR',
+    '',
+    'STEP 2 筛选',
+    '  FOR EACH 角色 IN [槽位]:',
+    '    可接收内容(角色) := 客观事实层 中 符合 视角模型(角色) 的部分',
+    '  END FOR',
+    '',
+    'STEP 3 生成',
+    '  FOR EACH 角色 IN [槽位]:',
+    '    memories.append({',
+    '      character: 角色,',
+    '      text: 以"你"称呼该角色，把 可接收内容(角色) 写成该角色的离场记忆',
+    '    })',
+    '  END FOR',
+    '  长度: 不限',
+    '  事实: 与所用任务书一致或更窄；不得增删任务书里的事实',
+    '',
+    'STEP 4 收账',
+    '  consumedBriefs := 本次采用的任务书 id；MUST IN [本次任务书]',
+    '  ASSERT consumedBriefs 为空 → memories = []',
+    '  ASSERT memories[*].character MUST IN [槽位]',
+    '                            AND IN consumedBriefs 对应任务书的 participants',
+    '  facts := 本次实际采用的事实记录',
+    '',
+    'FORBIDDEN（仅约束 memories[*].text；不做正面文风引导）:',
+    ...STYLE_FORBIDDEN.map(f => `  ${f}`),
+    '',
+    'CHECK:',
+    '  不得包含 视角模型(角色) 之外的信息（他看不到的、别人私下的、别人视角专有的）',
+    '  不得把客观事实层写成全知叙述',
+    '  不得出现本工序的步骤名、检查过程、解释、道歉、修改痕迹',
+    '  同一事实在不同角色的记忆中不得互相矛盾',
+    '',
+    'OUTPUT:',
+    '  仅调用 write_offstory_memory',
+    '  不输出散文',
   ].join('\n')
-  const t0 = Date.now()
-  try {
-    const call = await chatToolCall(resolveLlm(), {
-      messages: [
-        { role: 'system', content: '你是这个群聊的记忆书写员，只负责把给定事件按指定角色的限知视角写成简练记忆。' },
-        { role: 'user', content: prompt },
-      ],
-      tools: [OFFSTORY_POV_TOOL],
-      expectedFunction: 'render_memory',
-      trace: input.trace,
-      signal: AbortSignal.timeout(input.timeoutMs ?? 60000),
-    })
-    const args = JSON.parse(call.arguments) as { memory?: string }
-    const memory = typeof args.memory === 'string' ? args.memory.trim() : ''
-    if (memory === '') throw new Error('视角记忆为空')
-    input.log?.({ participant: input.participant, memory, elapsedMs: Date.now() - t0 })
-    return memory
-  } catch (e) {
-    input.log?.({ participant: input.participant, error: String(e instanceof Error ? e.message : e), elapsedMs: Date.now() - t0 })
-    return undefined
-  }
+  const call = await chatToolCall(resolveLlm(), {
+    messages: [
+      { role: 'system', content: 'ROLE: 离场记忆生成。按 ALGORITHM 执行，仅提交 write_offstory_memory 工具调用。' },
+      { role: 'user', content: prompt },
+    ],
+    tools: [OFFSTORY_MEMORY_TOOL],
+    expectedFunction: 'write_offstory_memory',
+    trace: input.trace,
+    signal: AbortSignal.timeout(input.timeoutMs ?? 60000),
+  })
+  const args = JSON.parse(call.arguments) as { facts?: unknown; consumedBriefs?: unknown; memories?: unknown }
+  const memories = (Array.isArray(args.memories) ? args.memories : []).flatMap(x => {
+    const o = (x ?? {}) as Record<string, unknown>
+    const character = typeof o.character === 'string' ? o.character.trim() : ''
+    const text = typeof o.text === 'string' ? o.text.trim() : ''
+    return character === '' || text === '' ? [] : [{ character, text }]
+  })
+  return { facts: strArray(args.facts), consumedBriefs: strArray(args.consumedBriefs), memories }
 }

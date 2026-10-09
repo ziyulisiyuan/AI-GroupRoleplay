@@ -40,31 +40,48 @@ const rulesListBackup = hadRulesList ? fsReadFileSync(rulesListFile, 'utf8') : u
 if (hadRulesList) rmSync(rulesListFile, { force: true })
 
 /** mock Jev：answers（固定）或 answersSeq（按第 N 次请求取，超出重复最后一个）；可注入故障（500 / 慢响应）。 */
-async function mockJev(script: { answers?: Record<string, unknown> | Array<Record<string, unknown>>; fail?: boolean; slowMs?: number }): Promise<{ server: Server; port: number; hits: Array<Record<string, unknown>> }> {
+async function mockJev(script: { answers?: Record<string, unknown> | Array<Record<string, unknown>>; fail?: boolean; slowMs?: number }): Promise<{ server: Server; port: number; hits: Array<Record<string, unknown>>; gates: Array<Record<string, unknown>> }> {
   const hits: Array<Record<string, unknown>> = []
+  /** 任务书判定（briefs 门）单独记录：不消耗脚本答案、不计入主判定命中数（旧断言保持原义）。 */
+  const gates: Array<Record<string, unknown>> = []
+  let scripted = 0
   const server = createServer((req, res) => {
     let buf = ''
     req.on('data', (c: Buffer) => { buf += c })
     req.on('end', () => {
+      const body = JSON.parse(buf) as Record<string, unknown>
+      const questions = (body.questions ?? {}) as Record<string, unknown>
+      const isGate = Object.prototype.hasOwnProperty.call(questions, 'briefs')
       const answers: Record<string, unknown> | undefined = Array.isArray(script.answers)
-        ? script.answers[Math.min(hits.length, script.answers.length - 1)]
+        ? script.answers[Math.min(scripted, script.answers.length - 1)]
         : script.answers
-      hits.push({ url: req.url, body: JSON.parse(buf) })
       if (script.slowMs !== undefined) {
+        if (isGate) gates.push({ url: req.url, body }); else { scripted++; hits.push({ url: req.url, body }) }
         setTimeout(() => { res.statusCode = 500; res.end() }, script.slowMs)
         return
       }
-      if (script.fail === true) { res.statusCode = 500; res.end(); return }
+      if (script.fail === true) {
+        if (isGate) gates.push({ url: req.url, body }); else { scripted++; hits.push({ url: req.url, body }) }
+        res.statusCode = 500; res.end(); return
+      }
+      if (isGate) {
+        gates.push({ url: req.url, body })
+        res.setHeader('content-type', 'application/json')
+        res.end(JSON.stringify({ model: 'jev-test', answers: { briefs: { type: 'noul', noul: 0 } } }))
+        return
+      }
+      scripted++
+      hits.push({ url: req.url, body })
       res.setHeader('content-type', 'application/json')
       res.end(JSON.stringify({ model: 'jev-test', answers: answers ?? {} }))
     })
   })
   await new Promise<void>(r => server.listen(0, '127.0.0.1', r))
   const port = (server.address() as { port: number }).port
-  return { server, port, hits }
+  return { server, port, hits, gates }
 }
 
-interface DeepseekHit { kind: 'route' | 'bookkeep' | 'scene' | 'offstory' | 'pov' | 'stream'; body: Record<string, unknown> }
+interface DeepseekHit { kind: 'route' | 'bookkeep' | 'scene' | 'brief' | 'memory' | 'offstory' | 'pov' | 'stream'; body: Record<string, unknown> }
 
 /** mock deepseek：route/record_round/record_scene/record_offstory/render_memory tool-call 与角色 SSE 流（可带 reasoning_content 增量）。 */
 async function mockDeepseek(script: {
@@ -770,54 +787,41 @@ try {
     ds.server.close(); jev.server.close()
   }
 
-  // ── 4g) 事件补全：回归者入场 → 事件发现 + 各参与者限知视角分别注入；首次进场不触发发现
+  // ── 4g) 手动路径只出"现场所见"：手动挪人/手动回归不触发离场管线（用户口径：手动调整不产生任务书）
   {
     const ds = await mockDeepseek({
       scene: '（屋里灯光昏黄。）',
-      offstory: [{ summary: '乙和丙替甲办妥了一件托付', participants: ['角色甲', '角色乙'] }],
-      povMap: {
-        角色甲: '你离场期间，乙和丙替你办妥了那件托付。',
-        角色乙: '你按约定替甲办妥了那件托付。',
-      },
       streamText: '（测试回复）',
     })
-    const jev = await mockJev({ fail: true }) // 事件补全不依赖 Jev：让 Jev 挂掉以证独立
+    const jev = await mockJev({ fail: true }) // 手动路径不依赖 Jev；Jev 挂掉也不影响结论
     rmSync(accDir, { recursive: true, force: true })
     buildGroupFixture(accDir, { chars: [...TEST_CAST, { dir: '角色丁', name: '角色丁', personality: '（测试设定：配合）', appearance: '（测试外观）', relationships: '（测试关系）' }], statusRecord: true })
     writeTestSettings(ds.port, jev.port)
     const { GroupSession } = await import('../src/group/engine.ts')
     const session = GroupSession.open(accName)
-    // 造离场窗口：甲先在场 → 离场（窗口内有乙丙照顾猫的对话）
+    // 造离场窗口：甲先在场 → 手动移出（窗口内有乙丙对话）→ 手动回归
     session.setScene({ present: ['角色甲', '角色乙', '角色丙'], remote: [], overhear: [] }, 'r1')
     session.store.append('user', '你', '（测试发言·托付）', 'all')
     session.setScene({ present: ['角色乙', '角色丙'], remote: [], overhear: [] }, '甲离场')
     session.store.append('user', '你', '（测试发言·履约）', 'all')
-    // 甲回归（手动修正路径）→ 入场包：现场所见 + 事件补全
     session.setScene({ present: ['角色甲', '角色乙', '角色丙'], remote: [], overhear: [] }, '甲回归')
     session.maybeSnapshotEntrants({ present: ['角色乙', '角色丙'], remote: [], overhear: [] }, '测试进场')
     const memOf2 = (n: string): string => {
       try { return fsReadFileSync(join(accDir, '角色', n, '记忆.jsonl'), 'utf8') } catch { return '' }
     }
     for (let i = 0; i < 80; i++) {
-      if (memOf2('角色甲').includes('离场经历') && memOf2('角色乙').includes('离场经历')) break
+      if (memOf2('角色甲').includes('现场所见')) break
       await new Promise(r => setTimeout(r, 250))
     }
-    assert.ok(memOf2('角色甲').includes('离场经历') && memOf2('角色甲').includes('替你办妥'), '回归者甲获得甲视角的离场经历')
-    assert.ok(memOf2('角色乙').includes('离场经历') && memOf2('角色乙').includes('替甲办妥'), '未入场的参与者乙同样获得乙视角的离场经历')
-    assert.ok(memOf2('角色甲').includes('现场所见'), '回归者同时拿到现场所见')
-    assert.ok(!memOf2('角色丙').includes('离场经历'), '非参与者丙不得获得离场经历')
+    assert.ok(memOf2('角色甲').includes('现场所见'), '手动回归仍然触发现场所见（进门就该看见）')
+    assert.ok(!memOf2('角色甲').includes('离场经历'), '手动调整不触发离场管线：不得凭空写离场经历')
+    assert.ok(!existsSync(join(accDir, '任务书.jsonl')), '手动调整不产生任务书')
     // 平面群无地图：场景相关的段/约束行不得出现在提示词里
     const flatSceneHit = ds.hits.filter(h => h.kind === 'scene').at(-1)
     assert.ok(flatSceneHit !== undefined, '平面群的现场所见调用存在')
     const flatSceneBody = JSON.stringify(flatSceneHit.body)
     assert.ok(!flatSceneBody.includes('当前场景（他进入的房间）') && !flatSceneBody.includes('本来的陈设'), '平面群现场所见提示词不得出现当前场景段/场景描述约束行')
-    const offHits = ds.hits.filter(h => h.kind === 'offstory')
-    assert.equal(offHits.length, 1, '事件发现恰一次（同轮进场者合并）')
-    assert.ok(JSON.stringify(offHits[0]?.body).includes('（测试发言·履约）'), '发现调用必须带离场窗口对话')
-    assert.ok(!JSON.stringify(offHits[0]?.body).includes('场景地图'), '平面群事件发现提示词不得出现场景地图段/约束行')
-    const povHits = ds.hits.filter(h => h.kind === 'pov')
-    assert.equal(povHits.length, 2, '每个（事件×参与者）各渲染一次')
-    // 首次进场（丁，无离场史）→ 不触发事件发现，只拿现场所见
+    // 首次进场（丁，无离场史）→ 只拿现场所见；同样不触发离场管线
     session.setScene({ present: ['角色甲', '角色乙', '角色丙', '角色丁'], remote: [], overhear: [] }, '丁首次进场')
     session.maybeSnapshotEntrants({ present: ['角色甲', '角色乙', '角色丙'], remote: [], overhear: [] }, '丁首进')
     for (let i = 0; i < 80; i++) {
@@ -825,11 +829,11 @@ try {
       await new Promise(r => setTimeout(r, 250))
     }
     assert.ok(memOf2('角色丁').includes('现场所见'), '首次进场者拿现场所见')
-    assert.equal(ds.hits.filter(h => h.kind === 'offstory').length, 1, '首次进场不触发事件发现（无离场窗口）')
     assert.ok(!memOf2('角色丁').includes('离场经历'), '首次进场者不获得离场经历')
+    assert.ok(!existsSync(join(accDir, '任务书.jsonl')), '手动路径全程不产生任务书')
+    assert.equal(ds.hits.filter(h => h.kind === 'memory').length, 0, '手动路径不调离场补全')
     ds.server.close(); jev.server.close()
   }
-
   // ── 4h) 接力累计衰减（纯代码）：刚发言者概率硬性压 0——Jev 原始选甲、分布 甲0.5 仍被压成 0
   //         → 翻转到乙（留痕，带被压 0 的完整分布）
   {
@@ -1295,7 +1299,7 @@ try {
     ds.server.close(); jev.server.close()
   }
 
-  console.log('快/慢双路径自检通过：Jev命中/位置判定(场景choice)/链接推导/知情名单(原文移植，含偷听者)/低置信与名单外→路由回退但位置知情不连坐(留痕) · 合并判定(知情+总门+转告+接力一次调用) · 额外记忆(一段触发/二段逐轮/逐字移植/带mid幂等/堆在末尾) · 记账门控(无变化零调用/回复脏恰一次) · 记账员无名册权(越权丢弃) · 规则注入边界(仅角色生成上下文；主判定/合并判定/记账/回退总管不含) · 客观注入(不问知情/转告/受众=现场记录/接入与单向感知不收/客观条目带mid活账本/管线照旧) · 状态记录开关(默认关：不问state_dirty/脏回复不记账/回退总管账本丢弃；群设定改true即时生效：判定与记账恢复) · 思维链(reasoning逐字落盘按mid键控/不进记忆不进任何提示词/删除消息一并清除) · 现场所见(进场检测/发言前等待) · 事件补全(离场锚点纯代码/发现一次合并/事件×参与者限知视角分别注入/首次进场不触发) · 接力判定（判给用户即结束/刚发言压0不可能连续发言/无硬上限） · 接力累计衰减（每判定乘0.8重新发言不重置/衰减最终判回用户/翻转与阻断留痕） · 回退=完整总管 · 未配置=完全兼容')
+  console.log('快/慢双路径自检通过：Jev命中/位置判定(场景choice)/链接推导/知情名单(原文移植，含偷听者)/低置信与名单外→路由回退但位置知情不连坐(留痕) · 合并判定(知情+总门+转告+接力一次调用) · 额外记忆(一段触发/二段逐轮/逐字移植/带mid幂等/堆在末尾) · 记账门控(无变化零调用/回复脏恰一次) · 记账员无名册权(越权丢弃) · 规则注入边界(仅角色生成上下文；主判定/合并判定/记账/回退总管不含) · 客观注入(不问知情/转告/受众=现场记录/接入与单向感知不收/客观条目带mid活账本/管线照旧) · 状态记录开关(默认关：不问state_dirty/脏回复不记账/回退总管账本丢弃；群设定改true即时生效：判定与记账恢复) · 思维链(reasoning逐字落盘按mid键控/不进记忆不进任何提示词/删除消息一并清除) · 现场所见(进场检测/发言前等待) · 手动路径只出现场所见（离场管线不被手动调整触发，详见 selfcheck:briefs） · 接力判定（判给用户即结束/刚发言压0不可能连续发言/无硬上限） · 接力累计衰减（每判定乘0.8重新发言不重置/衰减最终判回用户/翻转与阻断留痕） · 回退=完整总管 · 未配置=完全兼容')
 } finally {
   rmSync(accDir, { recursive: true, force: true })
   if (hadSettings) writeFileSync(settingsFile, backup ?? '', 'utf8')
