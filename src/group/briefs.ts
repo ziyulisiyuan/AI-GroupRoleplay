@@ -164,6 +164,25 @@ export function claimedWindowKeys(briefs: readonly Brief[]): Set<string> {
   return new Set(briefs.flatMap(b => b.windowKeys))
 }
 
+/** 参与名单沿名字链归一（纸条落盘后角色改名的兼容；去重、空名丢弃）。 */
+export function resolveBriefParticipants(briefs: readonly Brief[], resolve: (name: string) => string): Brief[] {
+  return briefs.map(b => ({
+    ...b,
+    participants: [...new Set(b.participants.map(n => resolve(n).trim()).filter(n => n !== ''))],
+  }))
+}
+
+/** 窗口键里的角色名沿名字链归一（改名后"这段窗口已被占住"的备忘录仍认得出同一段）。 */
+export function resolveWindowKeys(keys: Iterable<string>, resolve: (name: string) => string): Set<string> {
+  const out = new Set<string>()
+  for (const k of keys) {
+    const sep = k.lastIndexOf('|')
+    if (sep <= 0) continue
+    out.add(`${resolve(k.slice(0, sep))}${k.slice(sep)}`)
+  }
+  return out
+}
+
 /** 把点名的任务书收进后台（status=已收 + 收走时间/哪次补全收的）；返回真正改动的本数。 */
 export function consumeBriefs(groupDir: string, ids: ReadonlySet<string>, usedTs: string, usedBy: string): number {
   if (ids.size === 0) return 0

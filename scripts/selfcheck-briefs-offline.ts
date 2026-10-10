@@ -8,6 +8,7 @@
  *  P8  同一节点只给一段上下文
  *  P9/P10 写错人丢弃、一条记忆只进对应角色
  *  P11/P12 收账：点名变"已收"、未点名留桌上；已收不再进任何请求体
+ *  前置条件：回来者必须被某本在用任务书锚定才触发补全（未匹配不调用；改名沿名字链归一）
  *  P13 状态记录关闭：回退总管工具 schema 不带账本字段、任务书描绘的档案不带账本
  *  P15 锚定以参与名单为准：未点名者不得记忆/窗口；点名为空 → 零记忆
  * 另：手动调整不触发离场管线（moveCurrentScene）；回来者开口前先等记忆落盘。
@@ -20,7 +21,7 @@ import { config } from '../src/config.ts'
 import { createScene } from '../src/group/scene.ts'
 import { createGroup, saveGroupSettings } from '../src/group/scaffold.ts'
 import { GroupSession } from '../src/group/engine.ts'
-import { completionDialogue, loadBriefs, sceneEnterMid, windowKey, type Brief } from '../src/group/briefs.ts'
+import { completionDialogue, loadBriefs, resolveBriefParticipants, resolveWindowKeys, sceneEnterMid, windowKey, type Brief } from '../src/group/briefs.ts'
 import type { MsgLine, StoryLine } from '../src/store.ts'
 
 const accName = '_selfcheck-briefs'
@@ -178,6 +179,12 @@ try {
     assert.equal(sceneEnterMid(lines, S1), 1, '旧场景段仍可计算')
     assert.equal(sceneEnterMid(lines, '场景三'), 0, '找不到该场景 → 0')
 
+    // 名字链归一：参与名单/窗口键在角色改名后仍对得上
+    const stale = [{ ...mkBrief('bRename', 'nRename', 30), participants: ['角色甲', '角色乙', '角色甲'] }]
+    const resolvedB = resolveBriefParticipants(stale, n => (n === '角色甲' ? '角色甲甲' : n))
+    assert.deepEqual(resolvedB[0]?.participants, ['角色甲甲', '角色乙'])
+    assert.deepEqual([...resolveWindowKeys(['角色甲|30', '角色乙|60'], n => (n === '角色甲' ? '角色甲甲' : n))].sort(), ['角色甲甲|30', '角色乙|60'].sort())
+
     const msgs = Array.from({ length: 200 }, (_, i) => mkMsg(i + 1))
     const briefs = [mkBrief('bX', 'nX', 30), mkBrief('bY', 'nY', 60), mkBrief('bX2', 'nX', 30)]
     const ctx = completionDialogue(msgs, [31], briefs, 200)
@@ -224,8 +231,9 @@ try {
         replyJudge('角色乙', ['角色乙', '角色丙']),
         replyJudge('你', ['角色甲', '角色丙']),
         mainJudge({ 角色甲: S1, 角色乙: S1, 角色丙: S2 }, '角色甲'),
+        mainJudge({ 角色甲: S1, 角色乙: S1, 角色丙: S2 }, '角色丙'),
       ],
-      gate: [0.9, 0.9],
+      gate: [0.9, 0.9, 0.9],
     })
     writeSettings(ds.port, jev.port)
     const session = GroupSession.open(accName)
@@ -255,6 +263,9 @@ try {
     assert.ok(briefBody.includes('ALGORITHM OffStoryBriefGeneration') && briefBody.includes('准确优先') && briefBody.includes('FORBIDDEN') && briefBody.includes('[客观注入]'), '任务书提示词：伪代码形态/准确优先/禁令/客观注入语义（P5）')
     assert.equal(((jev.gates[0]?.body as any)?.questions?.briefs?.type), 'noul', '任务书判定是 noul 题（P3）')
     assert.ok(JSON.stringify(jev.gates[0]?.body).includes('[窗口]'), '判定请求体带窗口块')
+    const gateBody = JSON.stringify(jev.gates[0]?.body)
+    assert.ok(gateBody.includes('[剧情原文]') && gateBody.includes('送别'), '判定必须携带与描绘同量的剧情窗口（P3）')
+    assert.ok(gateBody.includes('任务书') && gateBody.includes('留底'), '判定提示词必须说明任务书定义与 1/0 判据（P3）')
 
     // 第 2 轮：乙回来 → 补离场经历（先等落盘再开口）；写错人（丙）被丢弃
     const events2: Array<{ type: string; text?: string; name?: string }> = []
@@ -279,13 +290,24 @@ try {
     const bingStream = ds.hits.filter(h => h.kind === 'stream' && JSON.stringify(h.body).includes('你扮演「角色乙」')).at(-1)
     assert.ok(JSON.stringify(bingStream?.body).includes('（测试记忆·乙）'), '乙开口时记忆已在上下文里（先想起再开口）')
 
-    // 第 3 轮：⊘ 去场景二（甲/乙留守=分离、丙重逢）→ 新任务书；旧任务书已收，不得再进请求体（P12）
+    // 第 3 轮：⊘ 去场景二（甲/乙留守=分离、丙重逢）→ 写新任务书；但丙不在任何在用任务书里，
+    //         匹配不上 → 不触发离场补全（新任务书留在桌上）
+    const memCallsBefore = ds.hits.filter(h => h.kind === 'memory').length
     for await (const ev of session.speak('（测试发言·换场）', S2)) void ev
     briefs = loadBriefs(accDir)
-    for (let i = 0; i < 40 && ds.hits.filter(h => h.kind === 'memory').length < 2; i++) { await sleep(250); briefs = loadBriefs(accDir) }
-    assert.equal(briefs.filter(b => b.status === '已收').length, 2, '两本任务书都已收（第三轮新本也被收）')
+    for (let i = 0; i < 40 && briefs.filter(b => b.status === '在用').length < 1; i++) { await sleep(250); briefs = loadBriefs(accDir) }
+    for (let i = 0; i < 40 && !judgeLogOf(accDir).includes('未被任何在用任务书锚定'); i++) await sleep(250)
+    assert.equal(briefs.filter(b => b.status === '已收').length, 1, '旧任务书保持已收')
+    assert.equal(briefs.filter(b => b.status === '在用').length, 1, '新任务书留在桌上（回来者未匹配，不触发补全）')
+    assert.equal(ds.hits.filter(h => h.kind === 'memory').length, memCallsBefore, '匹配不上：不调用离场补全（前置条件）')
+    assert.ok(judgeLogOf(accDir).includes('未被任何在用任务书锚定'), '未匹配必须落判定日志')
+    // 第 4 轮：⊘ 回场景一（丙留守=分离、甲/乙重逢）→ 甲/乙匹配上在用任务书 → 触发补全并收账
+    for await (const ev of session.speak('（测试发言·回场）', S1)) void ev
+    for (let i = 0; i < 40 && ds.hits.filter(h => h.kind === 'memory').length < memCallsBefore + 1; i++) await sleep(250)
+    briefs = loadBriefs(accDir)
+    assert.equal(briefs.filter(b => b.status === '已收').length, 3, '回来者匹配上：在用任务书都被收走（连同早先那张共 3 张已收）')
     const memHit2 = ds.hits.filter(h => h.kind === 'memory').at(-1)
-    assert.ok(memHit2 !== undefined, '第三轮的离场补全调用存在')
+    assert.ok(memHit2 !== undefined, '第四轮的离场补全调用存在')
     assert.ok(!JSON.stringify(memHit2.body).includes(b1.id), '已收任务书不再进入请求体（P12）')
 
     // 手动调整：不触发离场管线（不产生新任务书）
@@ -345,7 +367,7 @@ try {
     console.log('C) 门控：无快路径不写任务书；状态记录开关决定 schema/档案是否带账本 通过')
   }
 
-  console.log('离场管线自检通过（任务书）：窗口/enterMid/上下文截取 · 分离判定与描绘 · 回来收账写记忆 · 等待与丢弃 · 已收不可见 · 门控与无快路径')
+  console.log('离场管线自检通过（任务书）：窗口/enterMid/上下文截取 · 分离判定与描绘 · 回来者锚定前置条件 · 回来收账写记忆 · 等待与丢弃 · 已收不可见 · 门控与无快路径 · 改名名字链归一')
 } finally {
   rmSync(accDir, { recursive: true, force: true })
   rmSync(nrDir, { recursive: true, force: true })

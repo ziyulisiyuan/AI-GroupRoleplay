@@ -682,7 +682,7 @@ a leaver without `absenceStartId` (first appearance) is skipped, and a window al
 `windowKeys` is never processed again (books closed — this is bookkeeping against duplicate fact sheets, not
 a lock on context: every step may still read any原文). An unclaimed window (below threshold, failed call, or no `routerId`) stays open: later separations list it again with its processing state until a brief written at its own separation names its owner.
 
-- **§2 判定** (`jevBriefGate`): one Jev `noul` question `briefs` per separation — "本次离场是否产出一本或多本任务书？产出=1，不产出=0" — threshold `JEV_THRESHOLDS.briefMin` (0.5), missing answer = 0. Below
+- **§2 判定** (`jevBriefGate`): one Jev `noul` question `briefs` per separation. It is asked with the **same dialogue window as §3** (`[enterMid+1, triggerMid]`, newest 50 when 总量 > 100; each line prefixed `[客观注入]`/`[剧情原文]`) plus the map, positions and windows, and its instructions are a pseudo-code `OffStoryBriefGate` spec defining what a 任务书 is (an objective fact sheet for later off-story memories) and the 1/0 criteria (1 = the departure dialogue holds material tied to the departing characters — orders given to them, promises, their participation, plans others hold about them, substantive relationship/state changes; 0 = none), forbidding facts outside the input. Threshold `JEV_THRESHOLDS.briefMin` (0.5), missing answer = 0. Below threshold → nothing. Call failure/timeout, or no `routerId` configured → nothing, and the window stays for the next separation.
   threshold → nothing. Call failure/timeout, or no `routerId` configured → nothing, and the window stays for
   the next separation.
 - **§3 描绘** (`askBriefWriter`, tool `record_brief`; one call per separation, several events become several
@@ -704,7 +704,7 @@ a lock on context: every step may still read any原文). An unclaimed window (be
   `sequence`, `perceives`, plus `usedTs`/`usedBy` once consumed. A failed writing grants nothing (windows
   stay for the next separation).
 
-**Return (§4).** One return event = one batch of characters that went from not-with to with-the-user. One call
+**Return (§4).** One return event = one batch of characters that went from not-with to with-the-user. **Precondition:** the event is processed only when at least one returned character is anchored in an on-table brief's `participants` (names resolved through the rename chain); otherwise no call is made, the briefs stay on the table and the skip is noted in 判定.jsonl. When it runs, one call
 per event (`askOffStoryCompletion`, tool `write_offstory_memory`). Candidates (槽位) = participants of **every
 brief still `在用`**, deduplicated against existing characters; a participant who did not return is written
 too, because one event's memories are written as a set. Blocks: `[本次任务书]` (every in-use brief in full,

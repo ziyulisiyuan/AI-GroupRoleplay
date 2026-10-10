@@ -33,6 +33,8 @@ import {
   messageSceneIndex,
   nextBriefId,
   nextNodeId,
+  resolveBriefParticipants,
+  resolveWindowKeys,
   retireInUseBriefs,
   saveBriefs,
   sceneEnterMid,
@@ -539,7 +541,7 @@ export class GroupSession {
    */
   private separationWindows(changed: readonly string[], triggerMid: number, afterWith: ReadonlySet<string>): Array<{ character: string; startId: number; endId: number; key: string; coveredBy: string[]; claimable: boolean }> {
     const briefs = loadBriefs(this.groupDir)
-    const claimed = claimedWindowKeys(briefs)
+    const claimed = resolveWindowKeys(claimedWindowKeys(briefs), n => this.store.nameOf(n))
     const out: Array<{ character: string; startId: number; endId: number; key: string; coveredBy: string[]; claimable: boolean }> = []
     const add = (n: string, claimable: boolean): void => {
       const start = this.store.absenceStartId(n)
@@ -591,6 +593,11 @@ export class GroupSession {
     const sceneNow = this.scene.scene ?? ''
     const userSceneNote = isMap ? `你：${sceneNow || '（未定）'}` : `现场：${this.presentNames().join('、') || '（无）'}`
     const flatPresence = `接入：${this.remoteLinks().map(l => l.character).join('、') || '（无）'}；单向感知：${this.overhearLinks().map(l => l.character).join('、') || '（无）'}`
+    // §2/§3 看同一段窗口：从进入当前场景那一刻（或最早的离开起点）到触发句
+    const enterMid = isMap ? sceneEnterMid(this.store.allLines, oldScene.scene ?? '') : 0
+    const rangeStart = Math.min(enterMid, ...windows.map(w => w.startId - 1)) + 1
+    const messages = briefDialogue(this.store.effectiveMessages(), rangeStart, triggerMid, this.store.messages.length)
+    const dialogue = this.dialogueLines(messages)
     const gate = await jevBriefGate({
       llm,
       ...(isMap ? { scenes, locations: { ...(this.scene.locations ?? {}) } } : {}),
@@ -598,14 +605,11 @@ export class GroupSession {
       userSceneNote,
       ...(isMap ? {} : { presenceLine: flatPresence }),
       windows: windows.map(w => ({ character: w.character, startId: w.startId, endId: w.endId, coveredBy: w.coveredBy })),
+      dialogue,
       timeoutMs: config.jevTimeoutMs,
       log: e => this.judgeLog({ phase: '任务书判定', ...e }),
     })
     if (gate !== true) return // false = 不写；undefined = 失败——都留待下一次分离
-    // §3 描绘：对话范围 = [max(进入当前场景那一刻, 各自的离开起点) + 1, 触发句]
-    const enterMid = isMap ? sceneEnterMid(this.store.allLines, oldScene.scene ?? '') : 0
-    const rangeStart = Math.min(enterMid, ...windows.map(w => w.startId - 1)) + 1
-    const messages = briefDialogue(this.store.effectiveMessages(), rangeStart, triggerMid, this.store.messages.length)
     const recordStatus = this.settings.statusRecord === true
     const characters = this.characters.map(c => {
       const f = this.filesFor(c.name)
@@ -624,7 +628,7 @@ export class GroupSession {
       characters,
       userSceneNote,
       ...(isMap ? { locations: { ...(this.scene.locations ?? {}) } } : { presenceLine: flatPresence }),
-      dialogue: this.dialogueLines(messages),
+      dialogue,
       windows: this.windowLines(windows),
       timeoutMs: Math.max(config.heavyTimeoutMs, 60000),
       trace: this.traceTo('任务书描绘'),
@@ -663,12 +667,20 @@ export class GroupSession {
   /** §4：回来事件 → 用桌上在用的任务书写记忆 → 收账。返回要补发的 info 文案。 */
   private async completeOffStoryForReturn(returned: readonly string[], triggerMid: number): Promise<string[]> {
     const notes: string[] = []
-    const inUse = inUseBriefs(loadBriefs(this.groupDir))
+    const raw = inUseBriefs(loadBriefs(this.groupDir))
+    const inUse = resolveBriefParticipants(raw, n => this.store.nameOf(n))
     if (inUse.length === 0) {
       this.judgeLog({ phase: '离场补全', note: '桌上没有在用的任务书，本次不写记忆', returned: [...returned] })
       return notes
     }
-    const slots = [...new Set(inUse.flatMap(b => b.participants))].filter(n => this.byName.has(n))
+    // 触发前置条件：只有回来的角色被某本在用任务书锚定，才触发离场补全；匹配不上不调用模型
+    const anchored = new Set(inUse.flatMap(b => b.participants))
+    const matched = returned.filter(n => anchored.has(n))
+    if (matched.length === 0) {
+      this.judgeLog({ phase: '离场补全', note: '回来者未被任何在用任务书锚定——本次不触发离场补全（任务书继续留在桌上）', returned: [...returned], briefs: inUse.map(b => b.id) })
+      return notes
+    }
+    const slots = [...anchored].filter(n => this.byName.has(n))
     if (slots.length === 0) {
       this.judgeLog({ phase: '离场补全', note: '在用任务书没有点名任何现存角色，本次不写记忆', briefs: inUse.map(b => b.id) })
       return notes
@@ -748,7 +760,7 @@ export class GroupSession {
     const triggerMid = this.store.effectiveMessages().at(-1)?.id ?? 0
     const targets = returned.length === 0
       ? new Set<string>()
-      : new Set([...inUseBriefs(loadBriefs(this.groupDir)).flatMap(b => b.participants), ...returned])
+      : new Set([...resolveBriefParticipants(inUseBriefs(loadBriefs(this.groupDir)), n => this.store.nameOf(n)).flatMap(b => b.participants), ...returned])
     let settle!: (v: string[]) => void
     const done = new Promise<string[]>(res => { settle = res })
     this.enqueueBg(async () => {

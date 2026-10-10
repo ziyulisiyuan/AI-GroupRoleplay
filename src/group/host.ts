@@ -1439,17 +1439,24 @@ export interface BriefGateInput {
   locations?: Record<string, string>
   presenceLine?: string
   windows: BriefGateWindow[]
+  /** 与任务书描绘同量的剧情窗口（行首带 [客观注入]/[剧情原文]）。 */
+  dialogue: string
   timeoutMs?: number
   log?: (entry: Record<string, unknown>) => void
 }
 
-/** 任务书判定（§2）：一次分离一道 noul。true=写任务书；false=不写；undefined=失败（窗口留待下次）。 */
+/** 任务书判定（§2）：一次分离一道 noul；与描绘同量窗口 + 任务书定义 + 1/0 判据。
+ *  true=写任务书；false=不写；undefined=失败（窗口留待下次）。 */
 export async function jevBriefGate(input: BriefGateInput): Promise<boolean | undefined> {
+  const scenes = input.scenes ?? []
+  const isMap = scenes.length > 0
   const state = [
-    '判断：这次角色离开是否需要留底任务书（供他们回来时补全离场经历）。',
-    ...(input.scenes !== undefined && input.scenes.length > 0
-      ? ['[场景地图]', `当前场景：${input.activeScene || '（未定）'}`, ...input.scenes.map(s => `- ${s.name}：${s.description}`)]
-      : []),
+    'ALGORITHM OffStoryBriefGate',
+    '',
+    'DEFINE 任务书 = 客观事实底稿（一件事 + 参与名单 + facts + sequence + perceives），供离开的角色回来时补全"离场经历"。',
+    '',
+    'INPUT:',
+    ...(isMap ? ['[场景地图]', `当前场景：${input.activeScene || '（未定）'}`, ...scenes.map(s => `- ${s.name}：${s.description}`)] : []),
     '[位置]',
     input.userSceneNote,
     ...(input.locations !== undefined
@@ -1457,13 +1464,21 @@ export async function jevBriefGate(input: BriefGateInput): Promise<boolean | und
       : (input.presenceLine === undefined || input.presenceLine === '' ? [] : [input.presenceLine])),
     '[窗口]',
     ...input.windows.map(w => `- ${w.character}：第${w.startId}句–第${w.endId}句；状态：${w.coveredBy.length > 0 ? `已在 ${w.coveredBy.join('、')} 名下` : '未处理'}`),
+    '[剧情原文]',
+    input.dialogue.trim() === '' ? '（无）' : input.dialogue,
   ].filter(s => s !== '').join('\n')
+  const instructions = [
+    'JUDGE: 本次离场是否需要留底一本或多本任务书。',
+    '1 = 本次离场及此前的剧情中存在与离开者相关的可留底材料：对他下的指令 / 与他的约定 / 他参与的事件 / 他人关于他的打算 / 关系或状态的实质变化。',
+    '0 = 不存在上述材料。',
+    'CONSTRAINT: 只依据 INPUT 判断；不得引入 INPUT 之外的事实；不得按常识补全。',
+  ].join('\n')
   const t0 = Date.now()
   try {
     const answers = await jevDecide({
       llm: input.llm,
       state,
-      questions: { briefs: { type: 'noul', instructions: '本次离场是否产出一本或多本任务书？产出=1，不产出=0。' } },
+      questions: { briefs: { type: 'noul', instructions } },
       timeoutMs: input.timeoutMs,
     })
     const a = answers['briefs']
