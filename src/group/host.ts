@@ -437,8 +437,7 @@ export interface JevRouteInput {
 }
 
 export interface JevRouteResult {
-  /** 选中的发言者；**空串 = Jev 路由不可用**（置信不足/名单外）——调用方把路由回退完整总管，
-   *  但同一结果里的位置/知情/转告/状态门判定照常生效（各自带阈值，单独站得住）。 */
+  /** **恒为空串**：这一段判定不含路由——谁接话在场景/位置落位之后由 jevPickSpeaker 单独触发。 */
   picked: string
   reason: string
   /** 链接修正（接入/单向感知层，与位置正交；未变时 undefined）。各层 since 由 setScene 继承。 */
@@ -457,18 +456,40 @@ export interface JevRouteResult {
   stateDirty: boolean
 }
 
+/** 路由判定的输入（jevPickSpeaker）：只需拼 state 与候选所需的字段。 */
+export type JevSpeakerInput = Pick<JevRouteInput,
+  'llm' | 'roster' | 'rosterLines' | 'allNames' | 'presentNotes' | 'statusNotes' | 'recent' | 'userText' | 'timeoutMs' | 'log' | 'scenes' | 'activeScene' | 'locations'>
+
+/** 判定用的 state 文本（两段判定共用：候选 / 场景与位置 / 状态原文 / 最近对话 / 用户这句话）。 */
+function judgeState(input: JevSpeakerInput): string {
+  const scenes = input.scenes ?? []
+  return [
+    '判断抽象情景（能否感知/能否互动，与手段无关）。',
+    `候选：${input.roster.map(c => c.name).join('、')}（可发言）`,
+    `场景：${input.presentNotes.join('、') || '（无）'}`,
+    scenes.length > 0 ? [
+      `[场景地图]`,
+      `当前场景：${(input.activeScene ?? '') || '（未定）'}`,
+      ...scenes.map(s => `- ${s.name}：${s.description}`),
+      `[人员位置] ${input.allNames.map(n => `${n}=${input.locations?.[n] ?? '其他'}`).join('、')}`,
+    ].join('\n') : '',
+    input.statusNotes.length > 0 ? `状态：${input.statusNotes.join('；')}（原文）` : '',
+    input.recent.trim() !== '' ? `[最近对话]\n${input.recent}` : '',
+    input.userText !== undefined ? `用户刚说：${input.userText}` : '',
+  ].filter(s => s !== '').join('\n')
+}
+
 /**
- * 快路径：一次 Jev 调用同时回答"谁接话""三层场景名单是否要修""谁听不到这句发言"
- * "谁被转告了（额外记忆一段触发）""要不要记账（状态总门）"。
+ * 第一段判定（SPEC §6.1a）：一次 Jev 调用回答"三层场景名单是否要修""谁听不到这句发言"
+ * "谁被转告了（额外记忆一段触发）""要不要记账（状态总门）"——**不含路由**：
+ * 谁接话要看落位之后的名单（现场 = 位置等于当前场景的代码事实），故由 jevPickSpeaker
+ * 在这一段的位置答案生效之后单独触发。
  * 判定全部抽象化——问"有没有办法知道/互动"，绝不列举手段，不做关键词匹配。
- * 任何失败（网络/超时/低置信/名单外）返回 undefined——调用方回退完整总管单次调用，
+ * 任何失败（网络/超时）返回 undefined——调用方回退完整总管单次调用，
  * 绝不让快路径本身成为新的等待或错判来源；缺答案的字段按"保持现状"处理（fail-open）。
  */
 export async function jevRoute(input: JevRouteInput): Promise<JevRouteResult | undefined> {
   if (input.roster.length === 0) return undefined
-  const overviews = new Map(input.rosterLines.map(l => [l.split('｜')[0]?.trim() ?? '', l.split('｜').slice(1).join('｜').trim()]))
-  const criteria: Record<string, string> = {}
-  for (const c of input.roster) criteria[c.name] = overviews.get(c.name) ?? ''
   const absentNow = input.allNames.filter(n => !input.present.includes(n))
   const presentSet = new Set(input.present)
   const linkedSet = new Set([...input.remote, ...input.overhear].map(l => l.character))
@@ -478,29 +499,9 @@ export async function jevRoute(input: JevRouteInput): Promise<JevRouteResult | u
   const isMap = scenes.length > 0
   const activeScene = input.activeScene ?? ''
   const sceneCriteria = Object.fromEntries(scenes.map(s => [s.name, s.description]))
-  const state = [
-    '判断抽象情景（能否感知/能否互动，与手段无关）。',
-    `候选：${input.roster.map(c => c.name).join('、')}（可发言）`,
-    `场景：${input.presentNotes.join('、') || '（无）'}`,
-    isMap ? [
-      `[场景地图]`,
-      `当前场景：${activeScene || '（未定）'}`,
-      ...scenes.map(s => `- ${s.name}：${s.description}`),
-      `[人员位置] ${input.allNames.map(n => `${n}=${input.locations?.[n] ?? '其他'}`).join('、')}`,
-    ].join('\n') : '',
-    input.statusNotes.length > 0 ? `状态：${input.statusNotes.join('；')}（原文）` : '',
-    input.recent.trim() !== '' ? `[最近对话]\n${input.recent}` : '',
-    input.userText !== undefined ? `用户刚说：${input.userText}` : '',
-  ].filter(s => s !== '').join('\n')
-
-  const questions: Record<string, import('../llm/jev.ts').JevQuestion> = {
-    next_speaker: {
-      type: 'choice',
-      // 主判定不提供"选用户"出口：用户发言必有角色接话；把发言权交还用户是接力判定的职责。
-      instructions: '用户这段话之后，下一位发言者应该是谁？先判断用户在跟谁说话：括号里的动作描写通常标明真正的对话对象；说话内容里出现的名字可能是被谈论的第三者而非对话对象——括号指向与台词中的名字冲突时，以括号指向的人为准；括号没有指向任何人、且台词直接点名时，选被点名的角色。只能从选项中选。',
-      criteria,
-    },
-  }
+  const state = judgeState(input)
+  // **本段不问路由**：next_speaker 在场景/位置落位之后由 jevPickSpeaker 单独触发（候选 = 落位后的名单）。
+  const questions: Record<string, import('../llm/jev.ts').JevQuestion> = {}
   // 换场景判定（地图群）：极严苛二元——只有明确描写到达/进入某个已建场景才算
   if (isMap && input.manualScene === undefined) {
     questions['scene_change'] = {
@@ -580,13 +581,6 @@ export async function jevRoute(input: JevRouteInput): Promise<JevRouteResult | u
       questions,
       timeoutMs: input.timeoutMs,
     })
-    // 路由：选项必须在可发言名单内且置信度达标；不达标 → 仅路由回退完整总管（picked 置空标记），
-    // 同一批答案里的场景/知情/转告/状态门判定**照常生效**——它们各自带阈值，单独站得住。
-    const route = answers['next_speaker']
-    const routeUsable = route?.type === 'choice'
-      && input.roster.some(c => c.name === route.choice)
-      && route.confidence >= JEV_THRESHOLDS.confidenceMin
-
     // 地图群：换场景与位置判定（⊘ 手选时 scene_change 未问，直接按手选值）。
     // locationChoice 是唯一的在场机制：每个角色的最新位置（'' = 其他/图外；undefined = 缺答案，位置不动）。
     let sceneChange: string | undefined
@@ -658,34 +652,8 @@ export async function jevRoute(input: JevRouteInput): Promise<JevRouteResult | u
     const dirtyAns = answers['state_dirty']
     const stateDirty = input.statusRecord === false ? false : dirtyAns?.type === 'noul' ? dirtyAns.noul >= JEV_THRESHOLDS.gateKeep : true
 
-    if (!routeUsable) {
-      input.log?.({
-        note: '路由不可用——路由回退完整总管，位置/知情/转告/状态门判定照常生效',
-        route: route?.type === 'choice' ? route.choice : String(route?.type ?? '无答案'),
-        confidence: route?.type === 'choice' ? route.confidence : undefined,
-        ...(linksUnchanged ? { links: '未变' } : { links: { remote: remote.map(l => `${l.character}(${l.perceive})`), overhear: overhear.map(l => `${l.character}(${l.perceive})`) } }),
-        ...(sceneChange !== undefined ? { sceneChange } : {}),
-        ...(input.objective === true ? { objective: true } : {}),
-        knows: [...knows],
-        told: [...told],
-        stateDirty,
-        elapsedMs: Date.now() - t0,
-        answers,
-      })
-      return {
-        picked: '',
-        reason: 'Jev路由置信不足或名单外——路由回退完整总管，位置/知情判定照常生效',
-        ...(linksUnchanged ? {} : { links: { remote, overhear } }),
-        ...(sceneChange !== undefined ? { sceneChange, locationChoice, knowsNoul } : {}),
-        knows,
-        told,
-        stateDirty,
-      }
-    }
-
     input.log?.({
-      picked: route.choice,
-      confidence: route.confidence,
+      note: '判定段（不含路由）——路由在场景/位置落位之后单独触发',
       ...(linksUnchanged ? { links: '未变' } : { links: { remote: remote.map(l => `${l.character}(${l.perceive})`), overhear: overhear.map(l => `${l.character}(${l.perceive})`) } }),
       ...(sceneChange !== undefined ? { sceneChange } : {}),
       ...(input.objective === true ? { objective: true } : {}),
@@ -697,8 +665,8 @@ export async function jevRoute(input: JevRouteInput): Promise<JevRouteResult | u
     })
 
     return {
-      picked: route.choice,
-      reason: `Jev·置信${route.confidence.toFixed(2)}`,
+      picked: '',
+      reason: '',
       ...(linksUnchanged ? {} : { links: { remote, overhear } }),
       ...(sceneChange !== undefined ? { sceneChange, locationChoice, knowsNoul } : {}),
       knows,
@@ -708,6 +676,51 @@ export async function jevRoute(input: JevRouteInput): Promise<JevRouteResult | u
   } catch (e) {
     input.log?.({ error: String(e instanceof Error ? e.message : e) })
     if (process.env.DSH_DEBUG === '1') console.error('[jevRoute] 快路径失败（回退完整总管）:', e)
+    return undefined
+  }
+}
+
+/**
+ * 第二段判定（SPEC §6.1a）：**场景/位置落位之后**单独触发的一次 Jev 调用，只问"谁接话"。
+ * 候选 = 落位后的可发言名单（现场 = 位置等于当前场景的代码事实，∪ 接入），由引擎在场景落位后传进来——
+ * 上一段的位置答案此刻已经生效，名单与实际场景是同一份事实，不会再点到一个已经不在场的人。
+ * 不可用（失败/低置信/名单外）返回 undefined：调用方回退完整总管（看到的是落位后的场景）。
+ */
+export async function jevPickSpeaker(input: JevSpeakerInput): Promise<{ picked: string; reason: string } | undefined> {
+  if (input.roster.length === 0) return undefined
+  const overviews = new Map(input.rosterLines.map(l => [l.split('｜')[0]?.trim() ?? '', l.split('｜').slice(1).join('｜').trim()]))
+  const criteria: Record<string, string> = {}
+  for (const c of input.roster) criteria[c.name] = overviews.get(c.name) ?? ''
+  const questions: Record<string, import('../llm/jev.ts').JevQuestion> = {
+    next_speaker: {
+      type: 'choice',
+      // 主判定不提供"选用户"出口：用户发言必有角色接话；把发言权交还用户是接力判定的职责。
+      instructions: '用户这段话之后，下一位发言者应该是谁？先判断用户在跟谁说话：括号里的动作描写通常标明真正的对话对象；说话内容里出现的名字可能是被谈论的第三者而非对话对象——括号指向与台词中的名字冲突时，以括号指向的人为准；括号没有指向任何人、且台词直接点名时，选被点名的角色。只能从选项中选。',
+      criteria,
+    },
+  }
+  const t0 = Date.now()
+  try {
+    const answers = await jevDecide({ llm: input.llm, state: judgeState(input), questions, timeoutMs: input.timeoutMs })
+    const route = answers['next_speaker']
+    const usable = route?.type === 'choice'
+      && input.roster.some(c => c.name === route.choice)
+      && route.confidence >= JEV_THRESHOLDS.confidenceMin
+    if (!usable) {
+      input.log?.({
+        note: '路由不可用——回退完整总管',
+        route: route?.type === 'choice' ? route.choice : String(route?.type ?? '无答案'),
+        confidence: route?.type === 'choice' ? route.confidence : undefined,
+        elapsedMs: Date.now() - t0,
+        answers,
+      })
+      return undefined
+    }
+    input.log?.({ picked: route.choice, confidence: route.confidence, elapsedMs: Date.now() - t0, answers })
+    return { picked: route.choice, reason: `Jev·置信${route.confidence.toFixed(2)}` }
+  } catch (e) {
+    input.log?.({ error: String(e instanceof Error ? e.message : e) })
+    if (process.env.DSH_DEBUG === '1') console.error('[jevPickSpeaker] 路由判定失败（回退完整总管）:', e)
     return undefined
   }
 }

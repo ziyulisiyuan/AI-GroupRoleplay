@@ -52,16 +52,19 @@ async function mockJev(script: { answers?: Record<string, unknown> | Array<Recor
       const body = JSON.parse(buf) as Record<string, unknown>
       const questions = (body.questions ?? {}) as Record<string, unknown>
       const isGate = Object.prototype.hasOwnProperty.call(questions, 'briefs')
+      // 路由判定（第二段）：只问 next_speaker 一道题——不消耗脚本条目，用同一轮第一段的答案作答
+      // （脚本的一条 = 一轮的判定答案；路由题只是换个时机问同一个问题）。
+      const isRoutingOnly = !isGate && Object.keys(questions).length === 1 && Object.prototype.hasOwnProperty.call(questions, 'next_speaker')
       const answers: Record<string, unknown> | undefined = Array.isArray(script.answers)
-        ? script.answers[Math.min(scripted, script.answers.length - 1)]
+        ? script.answers[Math.max(0, Math.min(isRoutingOnly ? scripted - 1 : scripted, script.answers.length - 1))]
         : script.answers
       if (script.slowMs !== undefined) {
-        if (isGate) gates.push({ url: req.url, body }); else { scripted++; hits.push({ url: req.url, body }) }
+        if (isGate) gates.push({ url: req.url, body }); else { if (!isRoutingOnly) scripted++; hits.push({ url: req.url, body }) }
         setTimeout(() => { res.statusCode = 500; res.end() }, script.slowMs)
         return
       }
       if (script.fail === true) {
-        if (isGate) gates.push({ url: req.url, body }); else { scripted++; hits.push({ url: req.url, body }) }
+        if (isGate) gates.push({ url: req.url, body }); else { if (!isRoutingOnly) scripted++; hits.push({ url: req.url, body }) }
         res.statusCode = 500; res.end(); return
       }
       if (isGate) {
@@ -70,7 +73,7 @@ async function mockJev(script: { answers?: Record<string, unknown> | Array<Recor
         res.end(JSON.stringify({ model: 'jev-test', answers: { briefs: { type: 'noul', noul: 0 } } }))
         return
       }
-      scripted++
+      if (!isRoutingOnly) scripted++
       hits.push({ url: req.url, body })
       res.setHeader('content-type', 'application/json')
       res.end(JSON.stringify({ model: 'jev-test', answers: answers ?? {} }))
@@ -179,7 +182,7 @@ const writeTestSettings = (dsPort: number, jevPort: number): void => {
   writeFileSync(settingsFile, `activeId: pd\nrouterId: pj\nproviders:\n  - { id: pd, name: deepseek-mock, baseUrl: 'http://127.0.0.1:${dsPort}', apiKey: fake, model: fake-model, reasoningEffort: off }\n  - { id: pj, name: jev-mock, baseUrl: 'http://127.0.0.1:${jevPort}', apiKey: fake, model: jev-test, reasoningEffort: off }\n`, 'utf8')
 }
 
-const { jevRoute, jevAfterReply, jevExtraRounds } = await import('../src/group/host.ts')
+const { jevRoute, jevPickSpeaker, jevAfterReply, jevExtraRounds } = await import('../src/group/host.ts')
 
 try {
   // ── 1) jevRoute：命中与位置判定（location choice = 唯一在场机制）+ 链接推导
@@ -206,9 +209,8 @@ try {
       state_dirty: { type: 'noul', noul: 0.05 },    // 纯聊天：不触发记账
     } })
     const r = await jevRoute(baseInput(m.port))
-    assert.ok(r !== undefined, '命中且高置信应返回结果')
-    assert.equal(r?.picked, '角色乙')
-    assert.match(r?.reason ?? '', /Jev·置信0\.92/)
+    assert.ok(r !== undefined, '第一段判定命中应返回结果')
+    assert.equal(r?.picked, '', '第一段判定不问路由（picked 恒空）')
     assert.equal(r?.sceneChange, '', '未移动 → 空串（不落场景行）')
     assert.deepEqual(r?.locationChoice?.['角色甲'], '场景一', '位置判定：甲留场景一')
     assert.deepEqual(r?.locationChoice?.['角色丙'], '场景二', '位置判定：丙在场景二')
@@ -221,6 +223,12 @@ try {
     assert.deepEqual([...(r?.told ?? [])], ['角色丙'], '额外记忆一段触发：只有过线的丙')
     assert.equal(r?.stateDirty, false, 'state_dirty 0.05 → 不需要记账')
     assert.ok(JSON.stringify(m.hits[0]?.body ?? {}).includes('你：（测试发言）'), '主判定请求体必须带最近对话')
+    // 第二段：路由判定（落位后单独触发）——只问 next_speaker，候选 = 落位后的可发言名单
+    const pick = await jevPickSpeaker(baseInput(m.port))
+    assert.equal(pick?.picked, '角色乙', '第二段路由判定：选中名单内的乙')
+    assert.match(pick?.reason ?? '', /Jev·置信0\.92/)
+    assert.deepEqual(Object.keys((m.hits[1]?.body as { questions: Record<string, unknown> }).questions), ['next_speaker'],
+      '第二段只问路由（场景/位置/知情/转告/状态门都在第一段）')
     m.server.close()
   }
 
@@ -256,16 +264,15 @@ try {
     m2.server.close()
   }
 
-  // ── 2) 低置信 → 路由置空回退；名单外 → 同；回退必须落判定日志
+  // ── 2) 低置信 → 路由不可用（回退完整总管）；名单外 → 同；回退必须落判定日志
   {
     const logs: Array<Record<string, unknown>> = []
     const m = await mockJev({ answers: {
       next_speaker: { type: 'choice', choice: '角色甲', confidence: 0.3, probabilities: {} },
       location_角色甲: { type: 'choice', choice: '场景一', confidence: 0.9, probabilities: {} },
     } })
-    const r = await jevRoute({ ...baseInput(m.port), log: e => logs.push(e) })
-    assert.ok(r !== undefined && r.picked === '', '置信度低于阈值：路由必须置空（回退完整总管）')
-    assert.ok(r?.reason.includes('回退'), '理由必须说明路由已回退')
+    assert.ok(await jevRoute({ ...baseInput(m.port), log: e => logs.push(e) }) !== undefined, '第一段判定照常返回（低置信只影响路由）')
+    assert.equal(await jevPickSpeaker({ ...baseInput(m.port), log: e => logs.push(e) }), undefined, '置信度低于阈值：路由不可用（回退完整总管）')
     assert.ok(logs.some(l => typeof l.note === 'string' && String(l.note).includes('回退')), '路由回退必须落判定日志')
     assert.ok(logs.every(l => l.answers !== undefined), '回退日志必须带 Jev 原始答案')
     m.server.close()
@@ -274,8 +281,8 @@ try {
       next_speaker: { type: 'choice', choice: '不存在的人', confidence: 0.99, probabilities: {} },
       location_角色甲: { type: 'choice', choice: '场景一', confidence: 0.9, probabilities: {} },
     } })
-    const r2 = await jevRoute({ ...baseInput(m2.port), log: e => logs2.push(e) })
-    assert.ok(r2 !== undefined && r2.picked === '', '名单外的选择：路由置空回退')
+    await jevRoute({ ...baseInput(m2.port), log: e => logs2.push(e) })
+    assert.equal(await jevPickSpeaker({ ...baseInput(m2.port), log: e => logs2.push(e) }), undefined, '名单外的选择：路由不可用')
     assert.ok(logs2.some(l => typeof l.note === 'string' && String(l.note).includes('回退') && l.route === '不存在的人'), '名单外回退必须记录 Jev 选了谁')
     m2.server.close()
   }
@@ -294,11 +301,11 @@ try {
       knows_角色丙: { type: 'noul', noul: 0.8 },
     } })
     const r = await jevRoute({ ...baseInput(m.port), log: e => logs.push(e) })
-    assert.ok(r !== undefined && r.picked === '', '路由置信 0.22 → 路由置空回退')
+    assert.ok(r !== undefined, '第一段判定照常返回')
     assert.deepEqual(r?.locationChoice?.['角色丙'], '场景一', '位置判定不与路由连坐：丙照常落位场景一')
     assert.ok(r?.knows.has('角色甲') && r?.knows.has('角色丙'), '知情判定照常生效')
     assert.ok(!r?.knows.has('角色乙'), '知情阈值照常拦截')
-    assert.ok(logs.some(l => typeof l.note === 'string' && String(l.note).includes('照常生效')), '回退日志必须说明位置/知情判定仍然生效')
+    assert.equal(await jevPickSpeaker({ ...baseInput(m.port), log: e => logs.push(e) }), undefined, '路由置信 0.22 → 路由不可用（回退完整总管）')
     m.server.close()
   }
 
@@ -446,7 +453,7 @@ try {
     assert.ok(!types.includes('ledger'), '后台记账不发实时 ledger 事件（流及时结束，不锁输入）')
     assert.equal(events.filter(e => e.type === 'route').length, 1, '接力判给用户：只有一个 route 事件')
     assert.equal(ds.hits.filter(h => h.kind === 'route').length, 0, '快路径成功时不得再调 deepseek 路由')
-    assert.equal(jev.hits.length, 2, 'Jev 调用：1 主判定 + 1 合并判定')
+    assert.equal(jev.hits.length, 3, 'Jev 调用：主判定两段（场景/位置/知情 + 路由）+ 1 合并判定')
 
     // 等后台记账落盘（后台任务与流并行，需轮询等待）
     for (let i = 0; i < 40; i++) {
@@ -542,7 +549,7 @@ try {
     assert.equal(routeEvents.length, 2, '接力应产生两个 route 事件（甲、乙）')
     assert.equal(routeEvents[1]?.picked, '角色乙', '接力判给乙')
     assert.equal(replyEvents.length, 2, '甲、乙各回复一次，然后交还用户')
-    assert.equal(jev.hits.length, 3, 'Jev 调用：1 主判定 + 2 合并判定')
+    assert.equal(jev.hits.length, 4, 'Jev 调用：主判定两段 + 2 合并判定')
     assert.equal(ds.hits.filter(h => h.kind === 'bookkeep').length, 0, '全程无状态变化：记账门控把 DeepSeek 记账省到零')
     ds.server.close(); jev.server.close()
   }
@@ -589,7 +596,7 @@ try {
     const replyCount = events.filter(e => e.type === 'reply').length
     assert.equal(replyCount, 5, `无上限且衰减叠加：链长超过旧上限（4 条）后由衰减判回用户，实得 ${replyCount}`)
     assert.ok(!events.some(e => e.type === 'info' && (e.text ?? '').includes('上限')), '接力无硬上限：不出现任何上限提示')
-    assert.equal(jev.hits.length, 6, 'Jev 调用：1 主判定 + 每条回复 1 次合并判定（5 条回复）')
+    assert.equal(jev.hits.length, 7, 'Jev 调用：主判定两段 + 每条回复 1 次合并判定（5 条回复）')
     const picks = events.filter(e => e.type === 'route').map(e => e.picked)
     assert.deepEqual(picks, ['角色甲', '角色乙', '角色丙', '角色甲', '角色乙'], `接力按累计衰减日程推进，实得 ${JSON.stringify(picks)}`)
     const judgeRaw = fsReadFileSync(join(accDir, '判定.jsonl'), 'utf8')
@@ -709,7 +716,7 @@ try {
     assert.ok(extraLedgerRows.every(l => ((l as { content?: string }).content ?? '').includes('"teller":"你"')), 'ledger 行必须带上转告人（重建/重放不丢）')
     // T3：再转告一次——丙已无缺失轮，二段判定不得再触发（幂等）
     for await (const ev of session.speak('（测试发言·重复转告）')) void ev
-    assert.equal(jev.hits.length, 7, 'Jev 调用：T1/T2/T3 各 1 主判定 + T2/T3 各 1 合并判定 + T2 恰 1 次二段')
+    assert.equal(jev.hits.length, 10, 'Jev 调用：T1/T2/T3 主判定各两段 + T2/T3 各 1 合并判定 + T2 恰 1 次二段')
     assert.equal(memLines('角色丙').filter(e => e.source === '额外得知').length, 2, '重复转告不重复移植（按 mid 幂等）')
     ds.server.close(); jev.server.close()
   }
@@ -933,7 +940,7 @@ try {
     assert.equal(sawCap, false, '硬阻断不是上限：不得出现上限提示')
     const judgeRaw = fsReadFileSync(join(accDir, '判定.jsonl'), 'utf8')
     assert.ok(judgeRaw.includes('"phase":"接力加权"') && judgeRaw.includes('不可能连续发言'), '硬阻断必须落判定日志（带压0说明）')
-    assert.equal(jev.hits.length, 3, 'Jev 调用：1 主判定 + 2 合并判定')
+    assert.equal(jev.hits.length, 4, 'Jev 调用：主判定两段 + 2 合并判定')
     ds.server.close(); jev.server.close()
   }
 
@@ -1025,9 +1032,10 @@ try {
       events.push({ type: ev.type })
     }
     const asked = Object.keys((jev.hits[0]?.body as { questions: Record<string, unknown> }).questions)
-    assert.ok(asked.includes('next_speaker') && asked.includes('state_dirty'), '客观注入仍问路由与状态门')
+    assert.ok(!asked.includes('next_speaker') && asked.includes('state_dirty'), '第一段判定不问路由，但照问状态门')
     assert.ok(!asked.some(k => k.startsWith('knows_') || k.startsWith('told_')), '客观注入不问知情/转告（感知判定范畴不适用）')
-    const askedAfterReply = Object.keys((jev.hits[1]?.body as { questions: Record<string, unknown> }).questions)
+    assert.deepEqual(Object.keys((jev.hits[1]?.body as { questions: Record<string, unknown> }).questions), ['next_speaker'], '第二段只问路由')
+    const askedAfterReply = Object.keys((jev.hits[2]?.body as { questions: Record<string, unknown> }).questions)
     assert.ok(askedAfterReply.some(k => k.startsWith('knows_')), '角色回复仍走知情判定')
     const objMsg = session.snapshot().messages.find(m => m.objective === true)
     assert.ok(objMsg !== undefined, '客观注入的消息行必须带 objective 标记')
@@ -1098,7 +1106,7 @@ try {
     assert.ok(streamOff.length > 0 && streamOff.every(h => !JSON.stringify(h.body).includes('你当前的状态账本')), '状态记录关：角色生成请求体不含状态账本（角色连读都不读）')
     writeFileSync(join(accDir, '群设定.yaml'), "era: （测试用时代背景）\nworld: |\n  （测试用世界观）\ntone: \nstatusRecord: true\n", 'utf8')
     for await (const ev of session.speak('（又发生了可怕的事）')) void ev
-    const askedOn = Object.keys((jev.hits[2]?.body as { questions: Record<string, unknown> }).questions)
+    const askedOn = Object.keys((jev.hits[3]?.body as { questions: Record<string, unknown> }).questions)
     assert.ok(askedOn.includes('state_dirty'), '状态记录开：状态门恢复判定')
     const streamOn = ds.hits.filter(h => h.kind === 'stream').slice(streamOff.length)
     assert.ok(streamOn.length > 0 && streamOn.every(h => JSON.stringify(h.body).includes('你当前的状态账本')), '状态记录开：角色生成请求体含状态账本')

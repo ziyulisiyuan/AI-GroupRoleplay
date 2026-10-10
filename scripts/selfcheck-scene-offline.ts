@@ -45,18 +45,20 @@ async function mockJev(script: { answers?: Record<string, unknown> | Array<Recor
     let buf = ''
     req.on('data', (c: Buffer) => { buf += c })
     req.on('end', () => {
-      const answers: Record<string, unknown> | undefined = Array.isArray(script.answers)
-        ? script.answers[Math.min(scripted, script.answers.length - 1)]
-        : script.answers
       const body = JSON.parse(buf) as Record<string, unknown>
       const questions = (body.questions ?? {}) as Record<string, unknown>
+      // 路由判定（第二段）：只问 next_speaker 一道题——不消耗脚本条目，用同一轮第一段的答案作答
+      const isRoutingOnly = Object.keys(questions).length === 1 && Object.prototype.hasOwnProperty.call(questions, 'next_speaker')
+      const answers: Record<string, unknown> | undefined = Array.isArray(script.answers)
+        ? script.answers[Math.max(0, Math.min(isRoutingOnly ? scripted - 1 : scripted, script.answers.length - 1))]
+        : script.answers
       if (Object.prototype.hasOwnProperty.call(questions, 'briefs')) {
         gates.push({ url: req.url, body })
         res.setHeader('content-type', 'application/json')
         res.end(JSON.stringify({ model: 'jev-test', answers: { briefs: { type: 'noul', noul: 0 } } }))
         return
       }
-      scripted++
+      if (!isRoutingOnly) scripted++
       hits.push({ url: req.url, body })
       res.setHeader('content-type', 'application/json')
       res.end(JSON.stringify({ model: 'jev-test', answers: answers ?? {} }))
@@ -222,7 +224,7 @@ try {
 
   // ── 3) 判定移动回场景一（scene_change 命中）；甲丙留守（去向=场景二）；乙在场
   ds.server.close(); jev.server.close()
-  const events2: Array<{ type: string; text?: string }> = []
+  const events2: Array<{ type: string; text?: string; picked?: string }> = []
   const ds2 = await mockDeepseek({ streamText: '（测试回复）' })
   const jev2 = await mockJev({ answers: [
     { // 主判定：scene_change 命中场景一；同行者甲留守场景二；乙在场
@@ -250,7 +252,9 @@ try {
   ] })
   writeTestSettings(ds2.port, jev2.port)
   for await (const ev of session.speak('（测试发言·返回）')) {
-    events2.push({ type: ev.type, text: 'text' in ev ? ev.text : undefined })
+    events2.push(ev.type === 'route'
+      ? { type: ev.type, picked: ev.picked }
+      : { type: ev.type, text: 'text' in ev ? ev.text : undefined })
   }
   assert.equal(session.snapshot().scene, S1, '判定移动生效')
   assert.deepEqual(session.presentNames(), ['角色乙'], '留在场景二的甲丙不在现场')
@@ -258,6 +262,16 @@ try {
   const backVis = backMsg?.visible_to === 'all' ? [] : backMsg?.visible_to ?? []
   assert.deepEqual(backVis, ['角色乙'], '乙（在场景一）听见回来这句；甲丙（场景二）听不到')
   assert.deepEqual(session.snapshot().locations, { 角色甲: S2, 角色乙: S1, 角色丙: S2 }, '离开者去向必须有后台记录（presence 行的位置表）')
+  // 用户"撇下人走了"那一类轮次的回归钉：路由判定在**位置落位之后**才触发——候选 = 落位后的名单
+  // （场景一的乙），留在场景二的甲丙不再是候选。旧行为：按移动前的名单点名甲丙，再报"无法发言"。
+  const routingHit2 = jev2.hits.find(h => {
+    const q = ((h as { body?: { questions?: Record<string, unknown> } }).body?.questions) ?? {}
+    return Object.keys(q).length === 1 && Object.prototype.hasOwnProperty.call(q, 'next_speaker')
+  })
+  const routingCriteria2 = Object.keys(((routingHit2 as { body: { questions: { next_speaker: { criteria: Record<string, unknown> } } } }).body.questions.next_speaker.criteria))
+  assert.deepEqual(routingCriteria2, ['角色乙'], '路由候选 = 落位后的名单（场景一的乙）；留守场景二的甲丙不再是候选')
+  assert.equal(events2.find(e => e.type === 'route')?.picked, '角色乙', '落位后路由：由目的地的人接话')
+  assert.ok(!events2.some(e => e.type === 'info' && (e.text ?? '').includes('无法在此场景发言')), '不得再出现"点名的人已不在场"的误报')
 
   // ── 3b) 客观注入（地图群，非时间型世界事实）：不问 knows_/told_，location/scene_change 照问；
   //         受众=当前场景现场者（他场景者不收）
@@ -450,8 +464,9 @@ try {
       },
     })
     const jev9 = await mockJev({ answers: [
-      { // 主判定：⊘ 手选移回场景二。判定发生在移动**之前**——此刻可发言名单只有丙（甲还在场景二
-        // 不在名单、乙图外），next_speaker 必须在名单内，否则路由整体回退启发式总管。
+      { // 第一段判定 + 路由判定（同一条脚本 = 同一轮的判定答案）：⊘ 手选移回场景二，路由判定
+        // 在**移动之后**才触发——候选 = 落位后的可发言名单（目的地原住民甲 + 随行的丙），
+        // 不再是移动前那份（只有丙）。见下面 routingCriteria 断言。
         next_speaker: { type: 'choice', choice: '角色丙', confidence: 0.9, probabilities: {} },
         location_角色甲: { type: 'choice', choice: S2, confidence: 0.9, probabilities: {} },
         location_角色乙: { type: 'choice', choice: '其他', confidence: 0.9, probabilities: {} },
@@ -495,6 +510,14 @@ try {
     assert.equal(session.snapshot().scene, S2, '手选移回场景二')
     assert.deepEqual(session.presentNames().sort(), ['角色甲', '角色丙'].sort(), '甲丙原位在目的地（位置未变）')
     assert.deepEqual(ev9.filter(e => e.type === 'route').map(e => e.picked), ['角色丙', '角色甲'], '快路径路由丙 + 接力甲（无回退）')
+    // 路由判定的候选必须是**落位后**的名单：⊘ 移动后甲丙都在场景二（甲原位、丙随行），
+    // 移动前的名单里只有丙——两者可区分，正是"先落位再选人"的回归钉。
+    const routingHit = jev9.hits.find(h => {
+      const q = ((h as { body?: { questions?: Record<string, unknown> } }).body?.questions) ?? {}
+      return Object.keys(q).length === 1 && Object.prototype.hasOwnProperty.call(q, 'next_speaker')
+    })
+    const routingCriteria = Object.keys(((routingHit as { body: { questions: { next_speaker: { criteria: Record<string, unknown> } } } }).body.questions.next_speaker.criteria))
+    assert.deepEqual(routingCriteria, ['角色丙', '角色甲'], '路由候选 = 落位后的可发言名单（甲丙都在场景二），不是移动前那份（只有丙）')
     assert.ok(ev9.every(e => e.type !== 'info' || !(e.text ?? '').includes('降级')), '路由不得走启发式降级')
     // 回来者（甲丙）开口前先等离场管线（先想起再开口）；桌上没有在用任务书 → 零记忆落盘
     assert.equal(ev9.filter(e => e.type === 'info' && (e.text ?? '').includes('回忆离场期间的事')).length, 1, '回来者开口前等离场管线（句柄一次性，提示一次）')

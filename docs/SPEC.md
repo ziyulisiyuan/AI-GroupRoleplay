@@ -71,15 +71,17 @@ a fallback full director (deepseek, §6.1c), and a correction window (§6.3).
    `reloadBooks()`: discard in-memory caches; re-read character files, 规则.md, 用户.md, and
    群设定.yaml from disk. Disk is the source of truth [INV 3].
 2. If the log has no presence line yet, append one for the current scene (reason `初始`).
-3. Fast-path pre-flight (only when `settings.routerId` points at an existing provider): one Jev
-   call (`jevRoute`, §6.1a) answers who speaks next, three-layer scene corrections (flat groups)
-   or scene-change + per-character locations (map groups), the knowledge set for this message,
-   the retelling trigger set (§5.7), and the status-ledger gate. If the call itself fails →
-   `undefined` → whole turn to the full director. If only the **route pick**
-   is unusable (low confidence / out-of-roster — typical for pure-narration messages) →
-   `picked` is returned empty: routing falls back to the full director while scene / knowledge /
-   retelling / gate judgments from the same answers still apply (each is threshold-guarded and
-   stands on its own).
+3. Fast-path pre-flight (only when `settings.routerId` points at an existing provider) runs in
+   **two segments** (§6.1a). Segment 1 (`jevRoute`) answers the three-layer scene corrections
+   (flat groups) or scene-change + per-character locations (map groups), the knowledge set for this
+   message, the retelling trigger set (§5.7), and the status-ledger gate; it deliberately does
+   **not** ask who speaks next. If that call fails → `undefined` → whole turn to the full director.
+   Segment 2 (`jevPickSpeaker`) is triggered **after the scene and positions have landed**
+   (steps 3a/6) and asks only `next_speaker` over the post-move roster (destination occupants
+   included, characters left behind excluded — the roster is a consequence of segment 1's own
+   location answers, so the two cannot be asked in parallel). If segment 2 is unusable (failure /
+   low confidence / out-of-roster) only the route falls back to the full director, which then sees
+   the landed scene.
 3a. Map groups: apply the scene move **before** the user message — ⊘ manual pick, or the
    `scene_change` answer (confidence-guarded; strict). The user's **companions** (characters
    recorded in the previous active scene) fall where their `location_<角色>` answer says: the
@@ -252,9 +254,9 @@ Then one JSON object per line:
 Append-only, one JSON row per judgment or bookkeeping action, written by hard-coded code at each
 judgment site (`judgeLog`). **It never enters any character or director context** — it exists so
 humans can audit what the backend actually decided instead of guessing from the chat column.
-Phases: `主判定` (the per-turn Jev call: picked, confidence, scene kept/changed, `sceneChange`
-(map groups), `knows`, `told`, `stateDirty`, `elapsedMs`, and `answers` — every question's raw
-answer including probabilities),
+Phases: `主判定` (the per-turn Jev fast path — **two rows**: segment 1 = scene/positions/links/
+`knows`/`told`/`stateDirty`, and the routing segment = picked + confidence, §6.1a; both carry
+`elapsedMs` and `answers` — every question's raw answer including probabilities),
 `回复判定` (the merged post-reply call: audience, told, gate, relay), `额外记忆判定` (stage-2:
 candidate rounds, granted rounds), `总管路由` (fallback director result), `记账` (gate skip note
 or per-entry deepseek bookkeeping outcome), `现场所见` (scene-perception snapshot: targets and
@@ -732,27 +734,18 @@ a fast-path provider is configured.
 Judgment (fast, synchronous) and bookkeeping (slow, background) are separated. Fallback chain:
 fast path → full director (single call) → heuristic. No `routerId` = single full call only.
 
-### 6.1a Fast path (`jevRoute`)
+### 6.1a Fast path (`jevRoute` + `jevPickSpeaker`)
 
-One `jevRoute` call (systemOne protocol; native typed questions `noul`/`choice`; no generated
-text; transport failures throw and are caught). Questions:
+Two segments per turn (systemOne protocol; native typed questions `noul`/`choice`; no generated
+text; transport failures throw and are caught). The split exists because **the routing roster is a
+consequence of the first segment's own answers**: who may speak is `present` (location == active
+scene, a code fact) ∪ linked, so a single parallel call could only offer the pre-move roster and
+would then discover that its pick can no longer speak — turns in which the user leaves a character
+behind ended with "X cannot speak in this scene" and no reply at all. Segment 2 is therefore
+triggered **after** the scene move and the per-character locations have been applied.
 
-- `next_speaker` (choice over the speakable roster; confidence < 0.45, an out-of-roster pick, or
-  a missing answer → **only the route** falls back to the full director — `picked` is returned
-  empty and every other judgment from the same call still applies; the failed attempt itself is
-  always written to the judgment log with Jev's raw answers). Addressee determination weighs the
-  parenthetical stage direction over names in the spoken text: "（看着X说道）" marks X as the
-  addressee even when the speech names someone else (a name in speech may be a third person being
-  *talked about*); when the parenthesis points at nobody, a direct name in speech wins. The main
-  route **deliberately does
-  not offer the user as a choice**: a user message always gets a character response. Handing the
-  floor back to the user is the relay's job (below), where the context makes the choice honest.
-  Map groups add to the same call: the **map state** (active scene, every scene's full
-  description, every character's location), `scene_change` — a `choice` over the created scenes
-  plus 未移动, worded **extremely strictly** (only an explicit depiction of arriving at / entering
-  that scene counts; mentioning a place, intending to go, or sending someone else does not) —
-  and the per-character `location_<角色>` questions (below). `⊘` (the composer button) sets the
-  target scene directly: the question is skipped and the pick applies as-is.
+**Segment 1 (`jevRoute`)** — everything except routing:
+
 - `location_<角色>` for every character (choice over the created scenes plus 其他) — **the only
   presence mechanism**: the answer becomes the character's location, and presence derives from it
   (location == active scene). Extremely strict: the location changes only when the dialogue
@@ -776,11 +769,28 @@ text; transport failures throw and are caught). Questions:
   physical-environment one — nothing
   is ever skipped for "the environment did not change": presence, knowledge, retelling, routing
   and the gate are all re-judged every turn and after every reply.
+- Map groups also ask `scene_change` — a `choice` over the created scenes plus 未移动, worded
+  **extremely strictly** (only an explicit depiction of arriving at / entering that scene counts;
+  mentioning a place, intending to go, or sending someone else does not). `⊘` (the composer
+  button) sets the target scene directly: the question is skipped and the pick applies as-is.
 
 State passed to the judge assembles the full relevant context with no truncation: candidates
 (each roster line carries the character's **full appearance**), scene notes, complete status
 lines, the user utterance, and the recent dialogue (last `JEV_CONTEXT_WINDOW` messages, default
 75).
+
+**Segment 2 (`jevPickSpeaker`)** — one question, triggered after the scene/position landing:
+`next_speaker` (choice over the **post-move** speakable roster: destination occupants by record,
+followers placed by their `location_<角色>` answer, and linked characters — never a character the
+same turn has just left behind; the roster falls back to all characters only when nobody can
+speak). Confidence < 0.45, an out-of-roster pick, or a failure → **only the route** falls back to
+the full director, which is then called with the landed scene; the failed attempt is always written
+to the judgment log with Jev's raw answers. Addressee determination weighs the parenthetical stage
+direction over names in the spoken text: "（看着X说道）" marks X as the addressee even when the
+speech names someone else (a name in speech may be a third person being *talked about*); when the
+parenthesis points at nobody, a direct name in speech wins. The main route **deliberately does not
+offer the user as a choice**: a user message always gets a character response. Handing the floor
+back to the user is the relay's job (below), where the context makes the choice honest.
 
 **Merged post-reply judgment (`jevAfterReply`).** One call after each character reply, before
 that reply is appended, answers four things at once: the reply's knowledge audience
@@ -1149,7 +1159,7 @@ Convention [INV 11]: fixtures are temporary and always deleted. Offline checks n
 | `selfcheck:presence` | offline | three-layer yaml round-trip (with `since`) · parse semantics (omitted=keep/empty=clear/unknown=语音) · perception keywords · visible_to snapshots |
 | `selfcheck:models` | offline | model discovery proxy (`GET {baseUrl}/models`: baseUrl normalization with/without `/v1`, Bearer auth, dedupe+sort, id-only filter) · failure reasons readable (401/403 key rejected, 404 no list endpoint, non-JSON, missing `data`, empty list) · reasoning effort `off` = the request body carries **no** `reasoning_effort`, other levels pass through verbatim · key-source guard: empty key reuses the stored one only for the active provider's own URL, any other URL demands a typed key · `maxTokens`: 0/absent = the body carries **no** `max_tokens`, >0 writes it verbatim · the trace side channel carries reasoning / visible output / `finishReason` / elapsed (the raw material behind 模型调用.jsonl) |
 | `selfcheck:engine` | offline | bad-line tolerance + id continuity · text-retract no-resurrection (restart/replay) · edit living-ledger (physical ledger-row rewrite, respects retracts) · deleted-message physical removal (no text left in log) + memory cleanup + id monotonicity · rename chains |
-| `selfcheck:router` | offline | Jev hit / three-layer derivation / knowledge audience (incl. overhearers) / `told` stage-1 + `state_dirty` parsing (missing = safe side) · low-confidence, out-of-roster → route-only fallback with raw answers logged · scene/knowledge salvage when route unusable · `jevExtraRounds` stage-2 thresholds / failure grants nothing · `missingRounds`/`transplantRounds` units (verbatim, mid, own-speech prefix) · end-to-end merged judgment (1 call/reply) · extra-memory grant (end-append order, ledger rows, idempotence on re-telling) · gate (zero deepseek calls when clean, exactly one when dirty) · bookkeeper has no roster authority (overreach discarded) · objective injection (knows/told not asked · audience = present by record · remote/overhear excluded · 客观 entry carries mid, living-ledger rewrite · pipeline unchanged) · status-record switch (off = state_dirty not asked, dirty reply records nothing, `route_and_remember` schema omits the ledger field, fallback director's ledger discarded · flips resume immediately) · scene-perception snapshot (entrant detection, injection before entrant speaks via relay) · manual paths snapshot only (off-story pipeline not triggered) · judgment log (判定.jsonl rows with phases + raw answers + elapsed) · relay (user turn / cumulative decay: ×0 right after a speech — no consecutive output, that judgment does not advance the multiplier; `RELAY_DECAY` applied at every other judgment, cumulative across re-speeches; no hard cap, the undecaying user weight ends the chain; hard block hands the floor back to the user on just-spoke re-picks and all-zero distributions) · fallback = single full director · unconfigured = fast path off |
+| `selfcheck:router` | offline | Jev hit (two segments: scene/positions/links/knowledge first, then the routing pick over the post-move roster) / three-layer derivation / knowledge audience (incl. overhearers) / `told` stage-1 + `state_dirty` parsing (missing = safe side) · low-confidence, out-of-roster → route-only fallback with raw answers logged · scene/knowledge salvage when route unusable · `jevExtraRounds` stage-2 thresholds / failure grants nothing · `missingRounds`/`transplantRounds` units (verbatim, mid, own-speech prefix) · end-to-end merged judgment (1 call/reply) · extra-memory grant (end-append order, ledger rows, idempotence on re-telling) · gate (zero deepseek calls when clean, exactly one when dirty) · bookkeeper has no roster authority (overreach discarded) · objective injection (knows/told not asked · audience = present by record · remote/overhear excluded · 客观 entry carries mid, living-ledger rewrite · pipeline unchanged) · status-record switch (off = state_dirty not asked, dirty reply records nothing, `route_and_remember` schema omits the ledger field, fallback director's ledger discarded · flips resume immediately) · scene-perception snapshot (entrant detection, injection before entrant speaks via relay) · manual paths snapshot only (off-story pipeline not triggered) · judgment log (判定.jsonl rows with phases + raw answers + elapsed) · relay (user turn / cumulative decay: ×0 right after a speech — no consecutive output, that judgment does not advance the multiplier; `RELAY_DECAY` applied at every other judgment, cumulative across re-speeches; no hard cap, the undecaying user weight ends the chain; hard block hands the floor back to the user on just-spoke re-picks and all-zero distributions) · fallback = single full director · unconfigured = fast path off |
 | `selfcheck:scene` | offline | scene file layer (create / duplicate reject / description editable / name immutable / invalid name) · group creation builds the map + initial scene · character 初始场景 placement · ⊘ manual move skips scene_change (questions assert) and still moves · destination occupants present by record and hear the arrival line · followers placed, leavers fall to their location answer (其他 clears) · judged move (confidence-guarded) · strict no-move · objective injection (location/scene_change still asked, knows/told not · audience = active scene's present · other scenes excluded) · dialogue entrant lands post-snapshot (not in visible_to) with the scene snapshot injected · colocated-by-record characters are not scene-snapshot targets · scene snapshot carries the active scene's description only (other scenes excluded) · map full text + active scene injected into characters · user walking back to residents: no new snapshot and no off-story memory without an in-use brief (§5.9) · manual scene switch / character-location move / correction-window scene change all land in the location table |
 | `selfcheck:briefs` | offline | off-story pipeline (任务书 §5.9): window keys / `enterMid` / context budgets incl. the §5.6 example and per-node dedupe · separation gate (noul, `briefMin`, no `routerId` = no brief) · brief persistence (fields, `在用`, `windowKeys`) · return completion (slot candidates, wrong-character drop, consumed briefs retired with `usedTs`/`usedBy`, wait-before-speak, consumed briefs never re-enter a request body) · status-record gating (tool schema and dossier ledger field) · manual moves do not trigger |
 | `acceptance-*` (m1–m5, isolation, models, context-edit, presence, director) | online | end-to-end behaviors per milestone; re-run after any fast-path or memory change |
@@ -1167,7 +1177,7 @@ Convention [INV 11]: fixtures are temporary and always deleted. Offline checks n
 | models hallucinate "memories" | memory is verbatim-transplanted (nothing to invent); ledger + correction window bound the damage |
 | streamed replies may echo the speaker name prefix | `stripNameEcho` strips it engine-side |
 | sound-only links may receive visual text | judged by the fast path per message; residual error is bounded by director bookkeeping and the correction window |
-| two sequential LLM calls per turn (judge → character) | judge ≈1s; bookkeeping runs in the background after the reply |
+| three sequential LLM calls per turn: two judge segments (scene/positions/links/knowledge → route) + the character | each Jev segment is a few hundred ms and priced by input only; bookkeeping runs in the background after the reply |
 | fast-path probability jitter (routing/scene/knowledge) | conservative thresholds (ambiguity = keep/return to user); scene/knowledge judgments survive route failures; correction window fixes wrong calls; `JEV_TIMEOUT_MS` |
 | reply knowledge judgment delays the `reply` event by one sub-second call | brief cursor linger; failure keeps the keyword rule (no added risk) |
 | background bookkeeping finishes after the stream closes | its ledger notes are not streamed; files are authoritative and visible on refresh |

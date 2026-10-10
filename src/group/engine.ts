@@ -14,7 +14,7 @@ import { hasGroupSettings, loadCharacters, loadGroupSettings, loadUserPersona, t
 import { loadRules } from './rules.ts'
 import { canWitness, loadScene, perceives, saveScene, type RemoteLink, type SceneAccess } from './presence.ts'
 import { listScenes, type Scene } from './scene.ts'
-import { askBriefWriter, askDirector, askOffStoryCompletion, askSceneSummarizer, assembleGroup, askBookkeeper, jevAfterReply, jevBriefGate, jevExtraRounds, jevRoute, knowsThreshold, routeNextSpeaker, type JevAfterReplyResult, type RouteResult } from './host.ts'
+import { askBriefWriter, askDirector, askOffStoryCompletion, askSceneSummarizer, assembleGroup, askBookkeeper, jevAfterReply, jevBriefGate, jevExtraRounds, jevPickSpeaker, jevRoute, knowsThreshold, routeNextSpeaker, type JevAfterReplyResult, type RouteResult } from './host.ts'
 import { turnFromMessages } from '../host.ts'
 import { resolveRouter } from '../settings.ts'
 import { LEDGER_KEYS, loadFiles, saveMemory, savePersonality, saveRelationships, saveStatus, type CharacterFiles } from './status.ts'
@@ -923,12 +923,16 @@ export class GroupSession {
     const recordStatus = this.settings.statusRecord === true
     // 思考模式下总管判断需数秒~十几秒：先给等待反馈，避免干等黑箱
     yield { type: 'info', text: '总管判断谁接话…' }
-    // ── 快路径（SPEC §6.1a）：Jev 一次调用回答"谁接话 + 三层场景名单 + 知情名单 + 转告 + 状态门"。
-    // 未配置/调用失败 → undefined；路由不可用（置信不足/名单外）→ picked 置空：路由回退完整总管，
-    // 场景/知情/转告/状态门判定照常生效（各自带阈值，不与路由连坐）。
-    const recent = this.store.effectiveMessages().slice(-config.jevContextWindow).map(m => `${m.name}：${m.text}`).join('\n')
+    // ── 快路径（SPEC §6.1a）：**分两段**——第一段问"三层场景名单 + 知情 + 转告 + 状态门"，
+    // 场景/位置落位之后再触发第二段问"谁接话"（名单是位置答案的产物，不能与它并行）。
+    // 判定窗口 = 用户消息落盘**之前**的快照：第一段判定与完整总管代偿都用它。
+    const historyAtJudge = this.store.effectiveMessages()
+    const recent = historyAtJudge.slice(-config.jevContextWindow).map(m => `${m.name}：${m.text}`).join('\n')
     const routerLlm = resolveRouter()
     if (routerLlm === undefined) this.judgeLog({ phase: '主判定', note: '未配置快路径，走完整总管' })
+    // ── 第一段判定（SPEC §6.1a）：场景/位置/链路/知情/转告/状态门——**不含路由**。
+    // 谁接话要看落位后的名单（现场 = 位置等于当前场景，代码事实），所以路由判定必须等这一段的
+    // 位置答案生效之后再单独触发（下面的第二段）。未配置/整体失败 → undefined。
     let quick: import('./host.ts').JevRouteResult | undefined
     if (routerLlm !== undefined) {
       quick = await jevRoute({
@@ -952,39 +956,17 @@ export class GroupSession {
       })
     }
     let route: RouteResult | undefined
-    let picked: string
-    let reason: string
-    if (quick !== undefined && quick.picked !== '') {
-      picked = quick.picked
-      reason = quick.reason
-    } else {
-      route = await routeNextSpeaker({
-        roster: routeRoster,
-        rosterLines: this.rosterLines.filter((_, i) => routeRoster.some(c => c.name === this.characters[i]?.name)),
-        history: this.store.effectiveMessages(), // 总管 prompt 用删后视图：删除 = 从未发生，对所有人成立
-        effectiveHistory: this.store.effectiveMessages(), // 启发式降级看删改后的视图
-        pendingUserText: text, // 快路径预检时消息尚未落盘——回退路径靠它补全 prompt 与提及检测
-        tone: this.settings.tone,
-        presentNames: before.present,
-        presentNotes: this.presentNotes(),
-        statusRecord: recordStatus,
-        directorTimeoutMs: config.directorTimeoutMs,
-        trace: this.traceTo('总管路由'),
-      })
+    let picked = ''
+    let reason = ''
+    if (quick === undefined) {
+      // 完整总管代偿（未配快路径，或第一段判定整体失败）：一次 tool-call 出路由 + 状态账本 + 场景名单。
+      route = await this.directorRoute({ history: historyAtJudge, pendingUserText: text, presentNames: before.present, roster: routeRoster })
       if (route.picked === '') {
         yield { type: 'info', text: '路由失败：群里没有可用角色' }
         return
       }
       picked = route.picked
       reason = route.reason
-      this.judgeLog({
-        phase: '总管路由',
-        picked: route.picked,
-        reason: route.reason,
-        fallback: route.fallback,
-        ledgerUpdates: route.ledgerUpdates.length,
-        presenceUpdates: route.presenceUpdates.length,
-      })
     }
 
     // ── 地图群 · 阶段一（先于用户消息）：用户移动场景；**同行者**（此前与用户同处一地）
@@ -1095,10 +1077,46 @@ export class GroupSession {
         this.setScene(applied, 'Jev链接判定')
         yield { type: 'info', text: `场景更新：${sceneSummary(applied)}（Jev）` }
       }
-    } else if (route !== undefined) {
-      // 回退路径：总管判断的场景人员变动（谁进来/离开/接入/开始偷听；scene = 用户移动到的场景）。
-      // 名单里的名字经 resolveCharacterName 对号（"甲"↔"角色甲"），对不上的丢弃。
-      for (const p of route!.presenceUpdates) {
+    }
+
+    // ── 第二段判定（SPEC §6.1a）：谁接话——**场景/位置落位之后**才触发，候选 = 落位后的可发言
+    // 名单（现场 = 位置等于当前场景，∪ 接入；皆空时退回全员防卡死）。第一段的位置答案此刻已生效，
+    // 名单与实际场景是同一份事实，不会再点到一个已经不在场的人。不可用 → 完整总管代偿（落位后）。
+    if (quick !== undefined && routerLlm !== undefined) {
+      const speakableNow = new Set(this.speakableNames())
+      const speakersNow = this.roster.filter(c => speakableNow.has(c.name))
+      const rosterNow = speakersNow.length > 0 ? speakersNow : this.roster
+      const pick = await jevPickSpeaker({
+        llm: routerLlm,
+        roster: rosterNow,
+        rosterLines: this.rosterLinesFor(rosterNow.map(c => c.name)),
+        allNames: this.characterNames(),
+        presentNotes: this.presentNotes(),
+        statusNotes: recordStatus ? this.statusNotes() : [],
+        recent,
+        userText: text,
+        timeoutMs: config.jevTimeoutMs,
+        ...(isMap ? { scenes: listScenes(this.groupDir), activeScene: this.scene.scene ?? '', locations: { ...(this.scene.locations ?? {}) } } : {}),
+        log: e => this.judgeLog({ phase: '主判定', ...e }),
+      })
+      if (pick !== undefined) {
+        picked = pick.picked
+        reason = pick.reason
+      } else {
+        route = await this.directorRoute({ history: historyAtJudge, pendingUserText: text, presentNames: this.presentNames(), roster: rosterNow })
+        if (route.picked === '') {
+          yield { type: 'info', text: '路由失败：群里没有可用角色' }
+          return
+        }
+        picked = route.picked
+        reason = route.reason
+      }
+    }
+
+    // 回退路径：总管判断的场景人员变动（谁进来/离开/接入/开始偷听；scene = 用户移动到的场景）。
+    // 名单里的名字经 resolveCharacterName 对号（"甲"↔"角色甲"），对不上的丢弃。
+    if (route !== undefined) {
+      for (const p of route.presenceUpdates) {
         const resolved = this.resolvePresence(p)
         if (resolved === undefined) continue
         const cur = this.sceneAccess()
@@ -1220,6 +1238,39 @@ export class GroupSession {
     const lastText = replies.at(-1)?.text ?? ''
     if (lastText.trim() === '') yield { type: 'info', text: '（空回复）' }
     this.backfillAll()
+  }
+
+  /** 完整总管路由（回退/代偿，SPEC §6.1c）：一次 tool-call 出路由 + 状态账本 + 场景名单。
+   *  调用方决定时机——未配快路径/第一段失败在移动前，路由判定不可用则在场景落位后（看到的是落位后的场景）。
+   *  名单里的名字由调用方给全（roster），名字对号与丢弃在 resolvePresence / rosterLinesFor 内完成。 */
+  private async directorRoute(opts: {
+    history: MsgLine[]
+    pendingUserText: string
+    presentNames: string[]
+    roster: ReadonlyArray<RoutableCharacter>
+  }): Promise<RouteResult> {
+    const route = await routeNextSpeaker({
+      roster: [...opts.roster],
+      rosterLines: this.rosterLinesFor(opts.roster.map(c => c.name)),
+      history: opts.history, // 总管 prompt 用删后视图：删除 = 从未发生，对所有人成立
+      effectiveHistory: opts.history, // 启发式降级看删改后的视图
+      pendingUserText: opts.pendingUserText, // 消息尚未落盘（移动前）或按落盘前快照给——补全 prompt 与提及检测
+      tone: this.settings.tone,
+      presentNames: opts.presentNames,
+      presentNotes: this.presentNotes(),
+      statusRecord: this.settings.statusRecord === true,
+      directorTimeoutMs: config.directorTimeoutMs,
+      trace: this.traceTo('总管路由'),
+    })
+    this.judgeLog({
+      phase: '总管路由',
+      picked: route.picked,
+      reason: route.reason,
+      fallback: route.fallback,
+      ledgerUpdates: route.ledgerUpdates.length,
+      presenceUpdates: route.presenceUpdates.length,
+    })
+    return route
   }
 
   /** 总管/用户给的场景名单 → 对号到本群角色（对不上的名字丢弃）；present 非数组返回 undefined。

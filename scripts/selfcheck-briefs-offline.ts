@@ -82,8 +82,10 @@ async function mockJev(script: { route: Array<Record<string, unknown>>; gate?: A
         return
       }
       hits.push({ url: req.url, body })
-      const a = script.route[Math.min(ri, script.route.length - 1)]
-      ri++
+      // 路由判定（第二段）：只问 next_speaker 一道题——不消耗脚本条目，用同一轮第一段的答案作答
+      const isRoutingOnly = Object.keys(q).length === 1 && Object.prototype.hasOwnProperty.call(q, 'next_speaker')
+      const a = script.route[Math.max(0, Math.min(isRoutingOnly ? ri - 1 : ri, script.route.length - 1))]
+      if (!isRoutingOnly) ri++
       res.end(JSON.stringify({ model: 'jev-test', answers: a ?? {} }))
     })
   })
