@@ -260,10 +260,10 @@ export class StoryStore {
    * 某角色最后一次"离场"时的消息 id 快照（离场管线 §5.9 的窗口起点，纯代码）：
    * 在他最后一次在场的 presence 行之后、第一条不含他的 presence 行处离场——
    * 离场窗口 = 生效视图中 id 大于该值的消息。从未在场（首次进场）或从未离场 → undefined。
-   * 行内名字与查询名都经名字链（rename 行）归一到当前名后比较——改名不丢离场起点。
+   * 行内名字与查询名都经名字链（rename 行）归一到当前名后比较。
    */
   absenceStartId(name: string): number | undefined {
-    const target = this.nameOf(name) // 名字链归一：改名前的 presence 行仍是旧名，按当前名也要能算（改名不丢离场起点）
+    const target = this.nameOf(name) // 名字链归一：presence 行记的可能仍是历史名，按当前名归一再比
     let inScene = false
     let departedId: number | undefined
     for (let i = 0; i < this.lines.length; i++) {

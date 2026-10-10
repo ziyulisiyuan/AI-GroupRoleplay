@@ -165,7 +165,7 @@ export function claimedWindowKeys(briefs: readonly Brief[]): Set<string> {
   return new Set(briefs.flatMap(b => b.windowKeys))
 }
 
-/** 旧数据兼容：参与名单 token（编号 / 当前名 / 历史名）归一成编号；翻不出来的整条丢弃，不报错。 */
+/** 参与名单 token（编号 / 当前名 / 历史名）归一成编号；翻不出来的整条丢弃，不报错。 */
 export function resolveBriefParticipants(briefs: readonly Brief[], resolve: (token: string) => string | undefined): Brief[] {
   return briefs.map(b => ({
     ...b,
@@ -176,7 +176,7 @@ export function resolveBriefParticipants(briefs: readonly Brief[], resolve: (tok
   }))
 }
 
-/** 旧数据兼容：窗口键里的 token 归一成编号；翻不出来的键丢弃（该窗口视为未被占住）。 */
+/** 窗口键里的 token 归一成编号；翻不出来的键丢弃（该窗口视为未被占住）。 */
 export function resolveWindowKeys(keys: Iterable<string>, resolve: (token: string) => string | undefined): Set<string> {
   const out = new Set<string>()
   for (const k of keys) {

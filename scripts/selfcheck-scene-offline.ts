@@ -541,11 +541,11 @@ try {
     assert.deepEqual(s2.presentNames().sort(), ['角色丙'], '移到其他（图外）后不再是现场')
     assert.throws(() => s2.setCharacterLocation('不存在的角色', S2), /未知角色/, '未知角色必须拒绝')
 
-    // c) 纠正窗口换场景：presence_updates.scene 必须被解析并真的落表（此前被静默丢弃）
+    // c) 纠正窗口换场景：presence_updates.scene 必须被解析并真的落表
     s2.moveCurrentScene(S1)
     assert.equal(s2.snapshot().scene, S1, '先回到场景一，确保下一步是"真的切换"')
     const r = await s2.correct('把当前场景改到场景二去')
-    assert.equal(s2.snapshot().scene, S2, '纠正窗口的 scene 必须被解析并落表（此前被静默丢弃）')
+    assert.equal(s2.snapshot().scene, S2, '纠正窗口的 scene 必须被解析并落表')
     assert.ok(r.applied.some(x => x.startsWith('场景 →')), '纠正必须报出场景变更')
     const corBody = JSON.stringify(ds.hits.filter(h => h.kind === 'correction')[0]?.body)
     assert.ok(corBody.includes('（测试描述一）') && corBody.includes('（测试描述二）'), '纠正提示词必须携带场景地图全文（否则模型无从选场景）')

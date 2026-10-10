@@ -1215,7 +1215,7 @@ export async function askSceneSummarizer(input: {
 
 // ---------- 任务书（离场管线 §2/§3）：分离时判定 + 描绘 ----------
 
-/** record_brief：一本 = 一件事 + 参与名单 + 客观事实与顺序 + 每个参与者的限知感知。 */
+/** record_brief：一本 = 一件事 + 参与编号名单 + 客观事实与顺序 + 每个参与者的限知感知。 */
 /** 文风禁令（§3 的 facts/title 与 §4 的 memories[*].text 共用；只做限制，不做正面文风引导）。 */
 const STYLE_FORBIDDEN = [
   '转折、波澜、转机',
@@ -1240,7 +1240,7 @@ const STYLE_FORBIDDEN = [
   'ABAC式成语',
 ]
 
-/** record_brief：参与名单与感知只能选"角色编号"（= 角色目录名）的枚举，模型没机会写名字/外号。 */
+/** record_brief：参与名单与感知都取自角色编号（= 角色目录名）的枚举。 */
 export function briefTool(ids: readonly string[]): ToolSpec {
   const idEnum = [...ids]
   return {
@@ -1259,7 +1259,7 @@ export function briefTool(ids: readonly string[]): ToolSpec {
               properties: {
                 title: { type: 'string', description: '事件名；≤20 字。' },
                 place: { type: 'string', description: '事发地点；MUST IN [场景地图] OR [剧情原文]。' },
-                participants: { type: 'array', items: { type: 'string', enum: idEnum }, description: '参与编号名单；MUST IN [角色档案] 的编号；只收该事件真正涉及的编号；不得写名字、外号或自造名。' },
+                participants: { type: 'array', items: { type: 'string', enum: idEnum }, description: '参与编号名单；MUST IN [角色档案] 的编号；只收该事件真正涉及的编号。' },
                 facts: { type: 'array', items: { type: 'string' }, description: '客观事实；一条一句；准确优先，禁止有损压缩；禁止心理、评价、因果推断与文风修饰。' },
                 sequence: {
                   type: 'array',
@@ -1364,9 +1364,9 @@ export async function askBriefWriter(input: BriefWriterInput): Promise<BriefDraf
     'ASSERT 准确优先，禁止为省字数做有损压缩',
     '',
     'STEP 1 事件拆分',
-    '  从 [剧情原文] 与 [客观注入] 识别零个或多个独立事件；每个事件 = 一件事 + 参与名单',
+    '  从 [剧情原文] 与 [客观注入] 识别零个或多个独立事件；每个事件 = 一件事 + 参与编号名单',
     '  ASSERT place MUST IN [场景地图] OR [剧情原文]',
-    '  ASSERT participants MUST IN [角色档案] 的编号集合（不得写名字、外号或自造名）',
+    '  ASSERT participants MUST IN [角色档案] 的编号集合',
     '  ASSERT participants 只收该事件真正涉及的编号；同批离开不构成参与',
     '',
     'STEP 2 事实与顺序',
@@ -1459,7 +1459,7 @@ export async function jevBriefGate(input: BriefGateInput): Promise<boolean | und
   const state = [
     'ALGORITHM OffStoryBriefGate',
     '',
-    'DEFINE 任务书 = 客观事实底稿（一件事 + 参与名单 + facts + sequence + perceives），供离开的角色回来时补全"离场经历"。',
+    'DEFINE 任务书 = 客观事实底稿（一件事 + 参与编号名单 + facts + sequence + perceives），供离开的角色回来时补全"离场经历"。',
     '',
     'INPUT:',
     ...(isMap ? ['[场景地图]', `当前场景：${input.activeScene || '（未定）'}`, ...scenes.map(s => `- ${s.name}：${s.description}`)] : []),

@@ -9,7 +9,7 @@
 import { appendFileSync, existsSync, readdirSync } from 'node:fs'
 import { join } from 'node:path'
 import { config } from '../config.ts'
-import { StoryStore, type MsgLine, type RouteLine } from '../store.ts'
+import { StoryStore, type MsgLine, type RouteLine, type StoryLine } from '../store.ts'
 import { hasGroupSettings, loadCharacters, loadGroupSettings, loadUserPersona, type CharacterPersona, type UserPersona } from './persona.ts'
 import { loadRules } from './rules.ts'
 import { canWitness, loadScene, perceives, saveScene, type RemoteLink, type SceneAccess } from './presence.ts'
@@ -82,11 +82,9 @@ export class GroupSession {
     this.rules = loadRules()
     const saved = loadScene(groupDir)
     // 场景来源优先级：日志里最后一次 presence 行（事实源）→ 在场.yaml → 地图初始状态 → 全员现场
-    // 名字经名字链（rename 行）归一到当前名（含位置表的键）：改名者不会被静默踢出现场，
-    // 也不会因旧名键被判成"不在用户身边"而丢掉离场/重逢事件
+    // 名字经名字链（rename 行）归一到当前名（含位置表的键）：位置表、在场/离场与窗口起点都以当前名为准
     const fromLog = this.store.lastScene()
-    /** 位置表键同样过名字链：改名后最后一次 presence 行的旧名键要归一到当前名
-     *  （否则 withUserNames / 现场所见差集认不出"他和用户在一起"，分离/重逢事件整个丢）。 */
+    /** 位置表键同样过名字链：最后一次 presence 行的键可能是历史名，归一到当前名后再使用。 */
     const mapLocationNames = (locations: Record<string, string>): Record<string, string> => {
       const out: Record<string, string> = {}
       for (const [n, sc] of Object.entries(locations)) {
@@ -377,17 +375,17 @@ export class GroupSession {
     return this.characters.flatMap((c, i) => (set.has(c.name) ? [this.rosterLines[i]] : []))
   }
 
+  /** 模型调用原始材料的落盘口（模型调用.jsonl）——只给人排查，永不进任何模型输入。 */
+  private traceTo(phase: string): (e: import('../llm/chat.ts').LlmTraceEvent) => void {
+    return e => appendModelTrace(this.groupDir, phase, e)
+  }
+
   /**
    * 额外记忆移植（§5.7）：转告触发名单里的每个角色，先算他缺失的轮次，二段逐轮判定后
    * 把命中轮的消息逐字移植进账本（source=额外得知，带原 mid/round）。
    * 同步执行——必须在下一跳发言组装前完成（"让他也说一下"后接力到他时，记忆必须已就位）。
    * 二段失败/零命中静默跳过：漏补只是维持现状（可手动补），错补却要手动撤。
    */
-  /** 模型调用原始材料的落盘口（模型调用.jsonl）——只给人排查，永不进任何模型输入。 */
-  private traceTo(phase: string): (e: import('../llm/chat.ts').LlmTraceEvent) => void {
-    return e => appendModelTrace(this.groupDir, phase, e)
-  }
-
   private async *grantExtraMemory(targets: ReadonlySet<string>, retoldText: string, teller: string, routerLlm: NonNullable<ReturnType<typeof resolveRouter>>): AsyncGenerator<SessionEvent> {
     for (const name of targets) {
       const files = this.filesFor(name)
@@ -556,13 +554,6 @@ export class GroupSession {
   }
 
   /**
-   * 本次判定的窗口（§1.5/§1.6/§2.5）：[起点+1, 触发句]。
-   * - claimable = 本次分离的离开者（§1.1 changed）的窗口：新任务书可以把它收进 windowKeys；
-   * - 其余当前不在用户场景、窗口仍未被占住的角色：窗口留在桌上继续参与后续判定（"留给下一次分离"），
-   *   但不会被本批任务书 claim（P2：windowKeys 只取 participants 里本次离开者的窗口）。
-   * 第一次出现的人（取不到 absenceStartId）不带；已被任务书 windowKeys 占住的窗口不再参与（备忘录）。
-   */
-  /**
    * 本次判定的窗口（§1.5/§1.6/§2.5）：[起点+1, 触发句]，键 = 角色编号|离开起点。
    * - claimable = 本次分离的离开者（§1.1 changed）的窗口：新任务书可以把它收进 windowKeys；
    * - 其余当前不在用户场景、窗口仍未被占住的角色：窗口留在桌上继续参与后续判定（"留给下一次分离"），
@@ -594,23 +585,9 @@ export class GroupSession {
     return windows.map(w => `- ${w.character}：第${w.startId}句–第${w.endId}句；状态：${w.coveredBy.length > 0 ? `已在 ${w.coveredBy.join('、')} 名下` : '未处理'}`).join('\n')
   }
 
-  /** 剧情原文逐条（§3.3）：消息号、轮次、时间、说话人、内容、说话人当时的场景、这条谁能听见。 */
+  /** 剧情原文逐条（§3.3）：名字与位置键交给 dialogueLinesOf（名字链归一）。 */
   private dialogueLines(messages: readonly MsgLine[]): string {
-    const env = messageSceneIndex(this.store.allLines)
-    return messages.map(m => {
-      const row = env.get(m.id)
-      // 场景列的键也走名字链：改名后的消息可能落在旧名键的 presence 行上（反之亦然）
-      const me = this.store.nameOf(m.name)
-      const loc = row === undefined || row.locations === undefined ? undefined
-        : (row.locations[m.name] ?? Object.entries(row.locations).find(([n]) => this.store.nameOf(n) === me)?.[1])
-      const where = row === undefined ? '（无场景记录）'
-        : row.scene !== undefined
-          ? (m.name === this.userPersona.name ? row.scene : (loc ?? '其他'))
-          : (row.present.some(n => this.store.nameOf(n) === me) ? '现场' : '不在场')
-      const hear = m.visible_to === 'all' ? 'all' : m.visible_to.join('、')
-      const mark = m.objective === true ? '[客观注入]' : '[剧情原文]'
-      return `${mark} #${m.id}｜第${m.round}轮｜${m.ts}｜${m.name}｜场景：${where}｜可见：${hear}｜${m.text}`
-    }).join('\n')
+    return dialogueLinesOf(messages, this.store.allLines, n => this.store.nameOf(n))
   }
 
   /** §2/§3：分离事件 → Jev 判定 → 过了才描绘 → 任务书落盘（后台执行；失败不写、窗口留待下次）。 */
@@ -1162,7 +1139,7 @@ export class GroupSession {
 
     // ── 回复与接力（§1.1）：角色发言完毕后，合并判定（jevAfterReply）已顺带回答了接力——
     // 有人接话就继续说，判给用户则发言权交还、本轮结束。
-    // 接力判定是 Jev 的能力：未配置/回退路径保持一次回复（fail-open = 旧行为）。
+    // 接力判定是 Jev 的能力：未配置/回退路径保持单次回复（fail-open）。
     const replies: Array<{ speaker: string; text: string }> = []
     /** 记账工作列表（快路径）：判定为"可能有状态变化"的用户发言与回复。 */
     const dirtyWork: Array<{ speaker: string; replyText: string }> = []
@@ -1185,7 +1162,7 @@ export class GroupSession {
         yield* this.grantExtraMemory(r.judge.told, r.text, current, routerLlm)
       }
       if (recordStatus && (r.judge === undefined || r.judge.stateDirty)) dirtyWork.push({ speaker: current, replyText: r.text })
-      if (routerLlm === undefined || route !== undefined) break // 无快路径/回退路径：一次回复（旧行为）
+      if (routerLlm === undefined || route !== undefined) break // 无快路径/回退路径：单次回复
       if (r.judge?.next === undefined || r.judge.next.userTurn) break
       // 接力累计衰减：本次判定先让所有已发言者（除刚发言者）的累计权重乘 relayDecay，再加权取最大者
       // ——刚发言者本次硬性压 0（不可能连续发言）且衰减不推进（"现在是 0.64，又发言了，下一次乘 0，
@@ -1694,6 +1671,26 @@ function stripNameEcho(text: string, name: string): string {
     if (out.startsWith(name + colon)) out = out.slice(name.length + 1).trimStart()
   }
   return out
+}
+
+/** 剧情原文逐条（§3.3）的纯函数形态：消息号、轮次、时间、说话人、说话人当时的场景、这条谁能听见、内容。
+ *  场景列按消息 **role** 判定用户/角色（用户名变化不影响）；角色名与位置表的键都经 nameOf 归一到当前名后比对。 */
+export function dialogueLinesOf(messages: readonly MsgLine[], allLines: readonly StoryLine[], nameOf: (raw: string) => string): string {
+  const env = messageSceneIndex(allLines)
+  return messages.map(m => {
+    const row = env.get(m.id)
+    const me = nameOf(m.name)
+    const loc = row === undefined || row.locations === undefined ? undefined
+      : (row.locations[m.name] ?? Object.entries(row.locations).find(([n]) => nameOf(n) === me)?.[1])
+    const where = row === undefined ? '（无场景记录）'
+      : m.role === 'user' ? (row.scene ?? '现场')
+        : row.scene !== undefined
+          ? (loc ?? '其他')
+          : (row.present.some(n => nameOf(n) === me) ? '现场' : '不在场')
+    const hear = m.visible_to === 'all' ? 'all' : m.visible_to.join('、')
+    const mark = m.objective === true ? '[客观注入]' : '[剧情原文]'
+    return `${mark} #${m.id}｜第${m.round}轮｜${m.ts}｜${m.name}｜场景：${where}｜可见：${hear}｜${m.text}`
+  }).join('\n')
 }
 
 /** 一句话描述场景（当前地点 + 现场 + 接入 + 单向感知），用于事件与日志摘要。 */

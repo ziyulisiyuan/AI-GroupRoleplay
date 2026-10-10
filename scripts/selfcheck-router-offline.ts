@@ -1249,10 +1249,10 @@ try {
     ds.server.close(); jev.server.close()
   }
 
-  // ── 6) 未配置 routerId → 完全走旧路径（兼容保证）
+  // ── 6) 未配置 routerId → 单次完整总管
   {
     const ds = await mockDeepseek({
-      route: { next_speaker: '角色甲', reason: '旧路径' },
+      route: { next_speaker: '角色甲', reason: '完整总管' },
       streamText: '（甲）在。',
     })
     writeFileSync(settingsFile, `activeId: pd\nrouterId: ''\nproviders:\n  - { id: pd, name: deepseek-mock, baseUrl: 'http://127.0.0.1:${ds.port}', apiKey: fake, model: fake-model, reasoningEffort: off }\n`, 'utf8')
@@ -1264,7 +1264,7 @@ try {
     ds.server.close()
   }
 
-  // ── 4n) 空回复不再隐形：判定.jsonl 留一行（called=true + finishReason），
+  // ── 4n) 空回复留痕：判定.jsonl 留一行（called=true + finishReason），
   //         模型调用.jsonl 留原始材料（output 为空也要留）
   {
     const ds = await mockDeepseek({ streamText: '' })
@@ -1292,7 +1292,7 @@ try {
     for await (const ev of session.speak('（空回复测试）')) if (ev.type === 'info') infos.push(ev.text ?? '')
     assert.ok(infos.includes('（空回复）'), '空回复必须提示用户')
     const judged = fsReadFileSync(join(accDir, '判定.jsonl'), 'utf8')
-    assert.ok(judged.includes('"phase":"空回复"'), '空回复必须落判定.jsonl（不再隐形）')
+    assert.ok(judged.includes('"phase":"空回复"'), '空回复必须落判定.jsonl')
     assert.ok(judged.includes('"called":true'), '空回复必须记录"模型确实被调过"')
     const trace = fsReadFileSync(join(accDir, '模型调用.jsonl'), 'utf8')
     assert.ok(trace.includes('"phase":"角色生成"'), '模型调用.jsonl 必须记录角色生成')

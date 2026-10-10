@@ -431,12 +431,11 @@ overhear:           # one-directional perceivers (can know, cannot interact; hid
 
 - Name validity (group names, character names, `:dir` params): non-empty, ≤60 chars, no
   `\ / : * ? " < > |` or control chars, not `.`/`..` (path traversal guard). Duplicates rejected.
-- Identity: a character's **编号 is its directory name (`dirName`)** and never changes when the display name is edited; briefs anchor and match by this ID (old briefs that stored display names are normalized on read: token = ID, else rename chain, else dropped).
+- Identity: a character's **编号 is its directory name (`dirName`)** and never changes when the display name is edited; briefs anchor and match by this ID (a token that is not an ID is resolved through the rename chain and dropped if unresolvable).
 - Renames are refused when the new name collides with another character; a legal rename appends a
   `rename` row. `store.nameOf()` maps any historical name through the chain to the current name;
   ledger replay, scene restoration, rebuild, the location table and the off-story absence windows
-  all resolve through it (renaming never loses history, evicts a character from the scene, or
-  drops a departure window).
+  all resolve through it; every consumer of these artifacts sees the current name.
 - Unknown frontmatter fields in any user file are ignored.
 
 ---

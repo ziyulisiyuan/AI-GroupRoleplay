@@ -33,7 +33,7 @@ export const config = {
   root: ROOT,
   groupsDir: resolve(ROOT, 'groups'),
   get apiKey(): string {
-    // 通用名优先，DEEPSEEK_* 为旧名兼容（settings.yaml 有提供方时本组根本不参与）
+    // 通用名优先，DEEPSEEK_* 为等价别名（settings.yaml 有提供方时本组根本不参与）
     return get('LLM_API_KEY') ?? get('DEEPSEEK_API_KEY') ?? ''
   },
   baseUrl: get('LLM_BASE_URL') ?? get('DEEPSEEK_BASE_URL') ?? 'https://api.deepseek.com',
