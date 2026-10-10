@@ -434,8 +434,9 @@ overhear:           # one-directional perceivers (can know, cannot interact; hid
 - Identity: a character's **编号 is its directory name (`dirName`)** and never changes when the display name is edited; briefs anchor and match by this ID (old briefs that stored display names are normalized on read: token = ID, else rename chain, else dropped).
 - Renames are refused when the new name collides with another character; a legal rename appends a
   `rename` row. `store.nameOf()` maps any historical name through the chain to the current name;
-  ledger replay, scene restoration, and rebuild all resolve through it (renaming never loses
-  history or evicts the character from the scene).
+  ledger replay, scene restoration, rebuild, the location table and the off-story absence windows
+  all resolve through it (renaming never loses history, evicts a character from the scene, or
+  drops a departure window).
 - Unknown frontmatter fields in any user file are ignored.
 
 ---
@@ -678,16 +679,15 @@ character-location moves and correction-window placements do not trigger it (the
 **Separation (§2/§3).** One separation event = one batch of characters that went from with-the-user to
 not-with-the-user in the same turn (map groups: location no longer equals your active scene; flat groups:
 dropped from `present`). `triggerMid` = the highest message id at processing time (after the change, so the
-causing message is inside the window). For each leaver, the **window** is `[absenceStartId(c)+1, triggerMid]`;
+causing message is inside the window). For each leaver, the **window** is `[absenceStartId(c)+1, triggerMid]` (names resolve through the rename
+chain, so presence rows written under a historical name still anchor it);
 a leaver without `absenceStartId` (first appearance) is skipped, and a window already named by some brief's
 `windowKeys` is never processed again (books closed — this is bookkeeping against duplicate fact sheets, not
 a lock on context: every step may still read any原文). An unclaimed window (below threshold, failed call, or no `routerId`) stays open: later separations list it again with its processing state until a brief written at its own separation names its owner.
 
-- **§2 判定** (`jevBriefGate`): one Jev `noul` question `briefs` per separation. It is asked with the **same dialogue window as §3** (`[enterMid+1, triggerMid]`, newest 50 when 总量 > 100; each line prefixed `[客观注入]`/`[剧情原文]`) plus the map, positions and windows, and its instructions are a pseudo-code `OffStoryBriefGate` spec defining what a 任务书 is (an objective fact sheet for later off-story memories) and the 1/0 criteria (1 = the departure dialogue holds material tied to the departing characters — orders given to them, promises, their participation, plans others hold about them, substantive relationship/state changes; 0 = none), forbidding facts outside the input. Threshold `JEV_THRESHOLDS.briefMin` (0.5), missing answer = 0. Below threshold → nothing. Call failure/timeout, or no `routerId` configured → nothing, and the window stays for the next separation.
-  threshold → nothing. Call failure/timeout, or no `routerId` configured → nothing, and the window stays for
-  the next separation.
+- **§2 判定** (`jevBriefGate`): one Jev `noul` question `briefs` per separation. It is asked with the **same dialogue window as §3** (same range and newest-50 rule) plus the map, positions and windows, and its instructions are a pseudo-code `OffStoryBriefGate` spec defining what a 任务书 is (an objective fact sheet for later off-story memories) and the 1/0 criteria (1 = the departure dialogue holds material tied to the departing characters — orders given to them, promises, their participation, plans others hold about them, substantive relationship/state changes; 0 = none), forbidding facts outside the input. Threshold `JEV_THRESHOLDS.briefMin` (0.5), missing answer = 0. Below threshold → nothing. Call failure/timeout, or no `routerId` configured → nothing, and the window stays for the next separation.
 - **§3 描绘** (`askBriefWriter`, tool `record_brief`; one call per separation, several events become several
-  briefs in one writing): dialogue range `[max(enterMid, min window start - 1) + 1, triggerMid]`, where
+  briefs in one writing): dialogue range `[min(enterMid, min window start - 1) + 1, triggerMid]`, where
   `enterMid` is the message id immediately before the first presence row of the active scene's latest
   continuous run (0 when there is none — flat groups and freshly-created scenes); when the log holds more than
   100 messages (总量 > 100) only the range's newest 50 are given, otherwise all. Blocks, each labelled:

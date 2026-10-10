@@ -82,10 +82,21 @@ export class GroupSession {
     this.rules = loadRules()
     const saved = loadScene(groupDir)
     // 场景来源优先级：日志里最后一次 presence 行（事实源）→ 在场.yaml → 地图初始状态 → 全员现场
-    // 名字经名字链（rename 行）归一到当前名，改名者不会被静默踢出现场
+    // 名字经名字链（rename 行）归一到当前名（含位置表的键）：改名者不会被静默踢出现场，
+    // 也不会因旧名键被判成"不在用户身边"而丢掉离场/重逢事件
     const fromLog = this.store.lastScene()
+    /** 位置表键同样过名字链：改名后最后一次 presence 行的旧名键要归一到当前名
+     *  （否则 withUserNames / 现场所见差集认不出"他和用户在一起"，分离/重逢事件整个丢）。 */
+    const mapLocationNames = (locations: Record<string, string>): Record<string, string> => {
+      const out: Record<string, string> = {}
+      for (const [n, sc] of Object.entries(locations)) {
+        const cur = this.store.nameOf(n)
+        if (cur === n || out[cur] === undefined) out[cur] = sc // 当前名条目优先，历史名不覆盖
+      }
+      return out
+    }
     const rawName = (scene: SceneAccess): SceneAccess => ({
-      ...(scene.scene !== undefined ? { scene: scene.scene, locations: { ...(scene.locations ?? {}) } } : {}),
+      ...(scene.scene !== undefined ? { scene: scene.scene, locations: mapLocationNames(scene.locations ?? {}) } : {}),
       present: scene.present.map(n => this.store.nameOf(n)),
       remote: scene.remote.map(l => ({ ...l, character: this.store.nameOf(l.character) })),
       overhear: scene.overhear.map(l => ({ ...l, character: this.store.nameOf(l.character) })),
@@ -588,10 +599,14 @@ export class GroupSession {
     const env = messageSceneIndex(this.store.allLines)
     return messages.map(m => {
       const row = env.get(m.id)
+      // 场景列的键也走名字链：改名后的消息可能落在旧名键的 presence 行上（反之亦然）
+      const me = this.store.nameOf(m.name)
+      const loc = row === undefined || row.locations === undefined ? undefined
+        : (row.locations[m.name] ?? Object.entries(row.locations).find(([n]) => this.store.nameOf(n) === me)?.[1])
       const where = row === undefined ? '（无场景记录）'
         : row.scene !== undefined
-          ? (m.name === this.userPersona.name ? row.scene : (row.locations?.[m.name] ?? '其他'))
-          : (row.present.includes(m.name) ? '现场' : '不在场')
+          ? (m.name === this.userPersona.name ? row.scene : (loc ?? '其他'))
+          : (row.present.some(n => this.store.nameOf(n) === me) ? '现场' : '不在场')
       const hear = m.visible_to === 'all' ? 'all' : m.visible_to.join('、')
       const mark = m.objective === true ? '[客观注入]' : '[剧情原文]'
       return `${mark} #${m.id}｜第${m.round}轮｜${m.ts}｜${m.name}｜场景：${where}｜可见：${hear}｜${m.text}`

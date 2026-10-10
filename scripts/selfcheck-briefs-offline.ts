@@ -2,6 +2,7 @@
  * 离场管线（任务书 §2/§3/§4）离线自检：本地 mock Jev + mock 对话模型，无需 API key。
  * 覆盖（对应 .local-plans 任务书 §10 的 P1–P15）：
  *  P2/P4/P4a 任务书落盘字段、windowKeys 只取 participants 里本次离开者的窗口、一次分离一次成文
+ *  P2b 改名后离场起点按名字链归一（presence 行仍是历史名时窗口不得丢）
  *  P3  判定达阈值才写；无 Jev 快路径不写（窗口留待下次）
  *  P5/P6 请求体块完整、行首标注（剧情原文/客观注入）
  *  P7  ≤100 全给 / >100 最新 50 + 每本往前 20（纯函数按 §5.6 算例核对）
@@ -15,14 +16,15 @@
  */
 import assert from 'node:assert/strict'
 import { createServer, type Server } from 'node:http'
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { config } from '../src/config.ts'
 import { createScene } from '../src/group/scene.ts'
-import { createGroup, saveGroupSettings } from '../src/group/scaffold.ts'
+import { createGroup, saveGroupSettings, updateCharacter } from '../src/group/scaffold.ts'
 import { GroupSession } from '../src/group/engine.ts'
 import { completionDialogue, loadBriefs, resolveBriefParticipants, resolveWindowKeys, sceneEnterMid, windowKey, type Brief } from '../src/group/briefs.ts'
-import type { MsgLine, StoryLine } from '../src/store.ts'
+import { StoryStore, type MsgLine, type StoryLine } from '../src/store.ts'
 
 const accName = '_selfcheck-briefs'
 const accDir = join(config.groupsDir, accName)
@@ -199,7 +201,20 @@ try {
     const ctx2 = completionDialogue(small, [10], briefs, 80)
     assert.equal(ctx2.returnedRange[0].id, 10)
     assert.equal(ctx2.returnedRange[ctx2.returnedRange.length - 1].id, 80, '≤100：回来范围全给')
-    console.log('A) 纯函数：窗口标识 / enterMid / 上下文截取（含 §5.6 算例、同节点去重）通过')
+    // 改名不丢离场起点：presence 行保留历史名时，absenceStartId 必须按名字链归一到当前名
+    const renameDir = mkdtempSync(join(tmpdir(), 'briefs-rename-'))
+    try {
+      const rs = StoryStore.open(renameDir, 'g')
+      rs.appendPresence(['角色甲'], '初始')
+      const mid = rs.append('user', '你', '（测试第 1 句）').id
+      rs.appendRename('角色甲', '角色乙') // 只改显示名；presence 行仍是旧名
+      rs.appendPresence([], '离开')        // 第一条新名 presence 行 = 已经不在场
+      assert.equal(rs.absenceStartId('角色乙'), mid, '改名后离场起点仍可算（名字链归一，不得丢窗口）')
+      assert.equal(rs.absenceStartId('角色甲'), mid, '用旧名查询同样归一到同一窗口')
+    } finally {
+      rmSync(renameDir, { recursive: true, force: true })
+    }
+    console.log('A) 纯函数/存储：窗口标识 / enterMid / 上下文截取 / 改名后离场起点归一（含 §5.6 算例、同节点去重）通过')
   }
   // ── B) 端到端：分离写任务书（§2/§3）→ 回来收账写记忆（§4）；含等待/丢弃/收账/已收不可见
   {
@@ -371,10 +386,61 @@ try {
     console.log('C) 门控：无快路径不写任务书；状态记录开关决定 schema/档案是否带账本 通过')
   }
 
+  // ── D) 改名后的分离（端到端）：位置表 / 离场起点都按名字链归一，窗口键必须以编号（目录名）锚定
+  {
+    const rnName = '_selfcheck-briefs-rn'
+    const rnDir = join(config.groupsDir, rnName)
+    rmSync(rnDir, { recursive: true, force: true })
+    createGroup(rnDir, { era: '（测试时代）', world: '（测试世界）', tone: '', scene: S1, statusRecord: false, pinned: false }, [
+      { name: S1, description: '（测试描述一）' },
+      { name: S2, description: '（测试描述二）' },
+    ])
+    makeChar(rnDir, '角色丁', S1)
+    // 改名前的 presence 行仍是旧名（角色丁）；改名只改显示名，目录名不变
+    StoryStore.open(rnDir, rnName).appendPresence(['角色丁'], '初始', [], [], S1, { '角色丁': S1 })
+    updateCharacter(rnDir, '角色丁', { name: '角色戊', appearance: '（测试外观）', background: '（测试背景）', personality: '', relationships: '' })
+    // 改名后、下一次场景变更之前，先说一句（新名）——它的场景列必须能沿名字链查到旧名键的 presence 行
+    StoryStore.open(rnDir, rnName).append('character', '角色戊', '（测试：改名后说的一句）', 'all')
+    const dsD = await mockModel({
+      briefs: [{
+        title: '（测试事件·改名后）', place: S1, participants: ['角色丁'],
+        facts: ['（测试事实）'], sequence: [], perceives: [{ character: '角色丁', saw: ['（测试所见）'] }],
+      }],
+      streamText: () => '（测试回复）',
+    })
+    const jevD = await mockJev({
+      route: [{
+        next_speaker: { type: 'choice', choice: '角色戊', confidence: 0.9, probabilities: {} },
+        scene_change: { type: 'choice', choice: '未移动', confidence: 0.9, probabilities: {} },
+        location_角色戊: { type: 'choice', choice: '其他', confidence: 0.9, probabilities: {} },
+        knows_角色戊: { type: 'noul', noul: 0.9 },
+        told_角色戊: { type: 'noul', noul: 0.05 },
+        state_dirty: { type: 'noul', noul: 0.1 },
+      }],
+      gate: [0.9],
+    })
+    writeSettings(dsD.port, jevD.port)
+    const sD = GroupSession.open(rnName)
+    for await (const ev of sD.speak('（测试发言·改名后离开）')) void ev
+    let briefsD = loadBriefs(rnDir)
+    for (let i = 0; i < 40 && briefsD.length === 0; i++) { await sleep(250); briefsD = loadBriefs(rnDir) }
+    assert.equal(briefsD.length, 1, '改名后分离仍产出任务书（位置表按名字链归一生效）')
+    const bD = briefsD[0]!
+    const userMsgD = sD.snapshot().messages.find(m => m.text.includes('改名后离开'))
+    assert.deepEqual(bD.participants, ['角色丁'], '参与名单用编号（目录名）——显示名已改为角色戊后依然如此')
+    assert.deepEqual(bD.windowKeys, [`角色丁|${userMsgD?.id}`], '窗口键用编号锚定（改名不丢离场起点）')
+    const briefBodyD = JSON.stringify(dsD.hits.filter(h => h.kind === 'brief')[0]?.body ?? {})
+    assert.ok(briefBodyD.includes('场景：场景一｜可见：all｜（测试：改名后说的一句）'), '改名后消息的场景列必须沿名字链查到历史 presence 行的旧名键（不得误成其他）')
+    dsD.server.close(); jevD.server.close()
+    rmSync(rnDir, { recursive: true, force: true })
+  }
+
+  console.log('D) 改名后分离：位置表键归一 · 窗口键以编号锚定 通过')
   console.log('离场管线自检通过（任务书）：窗口/enterMid/上下文截取 · 分离判定与描绘 · 回来者锚定前置条件 · 回来收账写记忆 · 等待与丢弃 · 已收不可见 · 门控与无快路径 · 角色编号（目录名）锚定 · 旧名/外号归一与丢弃')
 } finally {
   rmSync(accDir, { recursive: true, force: true })
   rmSync(nrDir, { recursive: true, force: true })
+  rmSync(join(config.groupsDir, '_selfcheck-briefs-rn'), { recursive: true, force: true })
   if (hadSettings) writeFileSync(settingsFile, backup ?? '', 'utf8')
   else if (existsSync(settingsFile)) rmSync(settingsFile, { force: true })
   rmSync(settingsFile + '.selfcheck-bak', { force: true })

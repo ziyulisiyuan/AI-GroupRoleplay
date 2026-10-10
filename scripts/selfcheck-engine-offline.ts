@@ -4,7 +4,7 @@
  * 1) 剧情.jsonl 坏行忽略且新消息 id 不与幸存行撞号。
  * 2) 按 text 撤回的记忆：重启（重开回填）与 rebuild 重放都不复活。
  * 3) edit 活账本：记忆条目跟着消息新文本走；被撤回过的 mid 不复活。
- * 5) 改名：重名拒绝 + rename 名字链归一（ledger 重放不丢历史）。
+ * 5) 改名：重名拒绝 + rename 名字链归一（ledger 重放不丢历史；位置表键 / 离场窗口按当前名归一）。
  */
 import assert from 'node:assert/strict'
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
@@ -15,7 +15,7 @@ import { StoryStore } from '../src/store.ts'
 import { GroupSession } from '../src/group/engine.ts'
 import { buildGroupFixture, TEST_CAST } from './lib/fixture.ts'
 import { applyLedgerEvent, emptyFiles } from '../src/group/status.ts'
-import { createCharacter, updateCharacter } from '../src/group/scaffold.ts'
+import { createCharacter, createGroup, updateCharacter } from '../src/group/scaffold.ts'
 import { recordThinking } from '../src/group/thinking.ts'
 
 const accName = '_selfcheck-engine'
@@ -127,6 +127,25 @@ try {
     rmSync(join(accDir, '角色', '角色丁'), { recursive: true, force: true }) // 清理测试角色目录
   }
 
+  // ── 5b) 改名后位置表归一：最后一次 presence 行的旧名键必须在载入时归到当前名
+  //        （否则 withUserNames 认不出"他和用户在一起"，离场/重逢事件整个丢失）
+  {
+    const mapName = '_selfcheck-engine-map'
+    const mapDir = join(config.groupsDir, mapName)
+    rmSync(mapDir, { recursive: true, force: true })
+    createGroup(mapDir, { era: '', world: '', tone: '', scene: '场景一', statusRecord: false, pinned: false }, [
+      { name: '场景一', description: '（测试场景）' },
+    ])
+    createCharacter(mapDir, { name: '角色丁', appearance: '', background: '', personality: '', relationships: '', scene: '场景一' })
+    const mapStore = StoryStore.open(mapDir, mapName)
+    mapStore.appendPresence(['角色丁'], '初始', [], [], '场景一', { '角色丁': '场景一' })
+    updateCharacter(mapDir, '角色丁', { name: '角色戊', appearance: '', background: '', personality: '', relationships: '' })
+    const mapSession = GroupSession.open(mapName)
+    assert.deepEqual(mapSession.snapshot().locations, { '角色戊': '场景一' }, '改名后位置表键必须归一到当前名')
+    assert.ok(mapSession.presentNames().includes('角色戊'), '改名者仍按记录在现场')
+    rmSync(mapDir, { recursive: true, force: true })
+  }
+
   // ── 6) 清空记录：msg+ledger 行移除、记忆/状态文件清空、思维链清空、id 不复用；
   //        route/presence/director/rename 行与 header 保留（operational 历史不清理）
   {
@@ -154,8 +173,9 @@ try {
     assert.equal(s6.store.append('user', '你', '（清空后的第一句）').id, nextIdBefore, '清空后 id 从续号继续')
   }
 
-  console.log('引擎离线自检通过：坏行忽略·id续号 · text撤回不复活(重启/重放) · edit活账本(含撤回尊重) · 删除消息=记忆一并撤回 · 改名名字链 · 清空记录(消息+账本行移除/记忆状态清空/思维链清空/id不复用/operational行与判定日志保留)')
+  console.log('引擎离线自检通过：坏行忽略·id续号 · text撤回不复活(重启/重放) · edit活账本(含撤回尊重) · 删除消息=记忆一并撤回 · 改名名字链(ledger/位置表) · 清空记录(消息+账本行移除/记忆状态清空/思维链清空/id不复用/operational行与判定日志保留)')
 } finally {
   rmSync(accDir, { recursive: true, force: true })
+  rmSync(join(config.groupsDir, '_selfcheck-engine-map'), { recursive: true, force: true })
   rmSync(tmp, { recursive: true, force: true })
 }
