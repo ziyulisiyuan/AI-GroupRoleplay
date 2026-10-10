@@ -1260,32 +1260,28 @@ export function briefTool(ids: readonly string[]): ToolSpec {
     type: 'function',
     function: {
       name: 'record_brief',
-      description: '生成客观事实底稿（任务书）：一本 = 一件事 + 参与编号名单 + facts + sequence + perceives。',
+      description: '写离场任务书：一本 = 一个离开者接下来要去办的一件事（谁 · 去哪里 · 对谁 · 做什么 + 依据 + 相关编号）。',
       parameters: {
         type: 'object',
         properties: {
           briefs: {
             type: 'array',
-            description: '零本或多本任务书；没有可留底的事件时为 []。',
+            description: '零本或多本任务书；这次离开没有任何要办的事时为 []。',
             items: {
               type: 'object',
               properties: {
-                title: { type: 'string', description: '事件名；≤20 字。' },
-                place: { type: 'string', description: '事发地点；MUST IN [场景地图] OR [剧情原文]。' },
-                participants: { type: 'array', items: { type: 'string', enum: idEnum }, description: '参与编号名单；MUST IN [角色档案] 的编号；只收该事件真正涉及的编号。' },
-                facts: { type: 'array', items: { type: 'string' }, description: '客观事实；一条一句；准确优先，禁止有损压缩；禁止心理、评价、因果推断与文风修饰。' },
-                sequence: {
-                  type: 'array',
-                  description: 'facts 的先后顺序；引用 facts 下标；无法确定时不填。',
-                  items: { type: 'object', properties: { i: { type: 'number' }, then: { type: 'number' } }, required: ['i', 'then'] },
-                },
+                task: { type: 'string', description: '一句话任务：「执行人 去哪里 对谁 做什么」。要办的事从剧情推断（领了差事 / 应下的 / 有约定 / 说了要去做什么），不是复述已经发生的对话，也不是总结离场过程。' },
+                title: { type: 'string', description: '任务名（task 的浓缩）；≤20 字。' },
+                place: { type: 'string', description: '任务发生地；MUST IN [场景地图]。' },
+                participants: { type: 'array', items: { type: 'string', enum: idEnum }, description: '相关编号名单；MUST IN [角色档案] 的编号；= 执行人 + 任务对象（被找上门 / 被交代 / 被安排的人），不是所有在场者。' },
+                facts: { type: 'array', items: { type: 'string' }, description: '这条任务的依据与已知条件（原话指令 / 约定 / 委托 / 对象现状）；一条一句，可直接用原话。不是离场过程的流水账：谁起身、谁回头、谁迈门槛都不算依据。禁止心理、评价、因果推断与文风修饰。' },
                 perceives: {
                   type: 'array',
-                  description: '每个参与编号能感知到的条目（看到 / 听到 / 被当场告知）；与性格外貌内心无关；每条 MUST 可回溯到 facts 中的某条。',
+                  description: '每个相关编号已经知道的、与这条任务有关的内容（执行人通常全知道，任务对象可能一无所知）；与性格外貌内心无关。',
                   items: { type: 'object', properties: { character: { type: 'string', enum: idEnum }, saw: { type: 'array', items: { type: 'string' } } }, required: ['character', 'saw'] },
                 },
               },
-              required: ['title', 'place', 'participants', 'facts'],
+              required: ['task', 'title', 'place', 'participants', 'facts'],
             },
           },
         },
@@ -1370,44 +1366,44 @@ export async function askBriefWriter(input: BriefWriterInput): Promise<BriefDraf
     '[窗口]',
     input.windows.trim() === '' ? '（无）' : input.windows,
     '',
-    'ASSERT 本步产物 = 客观事实底稿：后续"离场记忆"的唯一事实来源',
-    'ASSERT facts 只能来自 [剧情原文] 与 [场景地图]',
-    'ASSERT [客观注入] = 叙事者级已生效事实，可直接写入 facts',
-    'ASSERT [剧情原文] = 场景内实际发生的内容',
-    'ASSERT 准确优先，禁止为省字数做有损压缩',
+    'ASSERT 本步产物 = 离场任务书：一份"他离开之后要去办的事"的底稿，供他回来时补全离场经历',
+    'ASSERT 任务只能来自 [剧情原文] 与 [客观注入] 能确认的依据：领了差事 / 应下的 / 有约定 / 明确说了去哪里做什么 / 别人安排了他去做什么',
+    'ASSERT [客观注入] = 叙事者级已生效事实，可直接当依据',
+    'ASSERT facts = 这条任务的依据与已知条件，不是离场过程的流水账',
     '',
-    'STEP 1 事件拆分',
-    '  从 [剧情原文] 与 [客观注入] 识别零个或多个独立事件；每个事件 = 一件事 + 参与编号名单',
-    '  ASSERT place MUST IN [场景地图] OR [剧情原文]',
+    'STEP 1 任务拆分',
+    '  从 [剧情原文] 找出本次离开者接下来要去办的事；每件事 = 一个任务 + 相关编号名单',
+    '  没有可办的事（只是走开、路过、没有任何交代或目的）→ 这本不写',
+    '  ASSERT place MUST IN [场景地图]',
     '  ASSERT participants MUST IN [角色档案] 的编号集合',
-    '  ASSERT participants 只收该事件真正涉及的编号；同批离开不构成参与',
+    '  ASSERT participants = 执行人 + 任务对象（被找上门 / 被交代 / 被安排的人）；同批离开、围观者、无关在场者都不算',
     '',
-    'STEP 2 事实与顺序',
-    '  FOR EACH 事件:',
-    '    facts := 原文可直接确认的客观事实；一条一句',
+    'STEP 2 任务与依据',
+    '  FOR EACH 任务:',
+    '    task := 一句话：「执行人 去哪里 对谁 做什么」；没有具体对象时省略对象',
+    '    facts := 这条任务的依据与已知条件；一条一句，可用原话',
     '    ASSERT facts NOT CONTAINS 心理 / 评价 / 因果推断 / 原文未支持的内容',
-    '    sequence := facts 的先后顺序，引用 facts 下标；无法确定则不填',
+    '    ASSERT facts NOT CONTAINS 离场过程本身（谁起身、谁回头、谁迈门槛、谁扶宫灯这类行进描写都不是依据）',
     '  END FOR',
     '',
-    'STEP 3 限知感知',
-    '  FOR EACH 事件:',
+    'STEP 3 知情范围',
+    '  FOR EACH 任务:',
     '    FOR EACH 编号 IN participants:',
-    '      perceives(编号) := 该编号对应的角色在此事件中能感知到的条目（看到 / 听到 / 被当场告知）',
+    '      perceives(编号) := 该编号已经知道的、与这条任务有关的内容（执行人通常全知道；任务对象可能一无所知）',
     '      ASSERT perceives(编号) 与 性格 / 外貌 / 情绪 / 动机 / 关系 / 内心 无关',
-    '      ASSERT perceives(编号) 中每条 MUST 可回溯到 facts 中的某条',
     '    END FOR',
     '  END FOR',
     '',
-    'FORBIDDEN（仅约束 facts 与 title；不做正面文风引导）:',
+    'FORBIDDEN（仅约束 task / facts / title；不做正面文风引导）:',
     ...STYLE_FORBIDDEN.map(f => `  ${f}`),
     '',
     'CHECK:',
-    '  title ≤20 字',
-    '  place ∈ [场景地图] ∪ [剧情原文]',
+    '  task 说清 谁 / 去哪里 / 做什么（有对象时含对谁）',
+    '  title ≤20 字且与 task 同指一件事',
+    '  place ∈ [场景地图]',
     '  participants ⊆ [角色档案] 的编号集合',
-    '  sequence 仅引用 facts 下标',
-    '  perceives 仅含可回溯到 facts 的条目',
-    '  无事件可留底 → briefs = []',
+    '  facts 每条都能在 [剧情原文] 或 [客观注入] 找到依据',
+    '  没有可办的事 → briefs = []',
     '',
     'OUTPUT:',
     '  仅调用 record_brief',
@@ -1429,9 +1425,11 @@ export async function askBriefWriter(input: BriefWriterInput): Promise<BriefDraf
   return raw.flatMap(x => {
     const o = (x ?? {}) as Record<string, unknown>
     const title = typeof o.title === 'string' ? o.title.trim() : ''
-    if (title === '') return []
+    const task = typeof o.task === 'string' ? o.task.trim() : ''
+    if (title === '' || task === '') return [] // 任务书必须有正文（一句话任务）；缺正文的草稿丢弃
     const participants = [...new Set(strArray(o.participants).filter(n => ids.has(n)))]
     return [{
+      task,
       title,
       place: typeof o.place === 'string' ? o.place.trim() : '',
       participants,
@@ -1472,7 +1470,7 @@ export async function jevBriefGate(input: BriefGateInput): Promise<boolean | und
   const state = [
     'ALGORITHM OffStoryBriefGate',
     '',
-    'DEFINE 任务书 = 客观事实底稿（一件事 + 参与编号名单 + facts + sequence + perceives），供离开的角色回来时补全"离场经历"。',
+    'DEFINE 任务书 = 离场任务书（谁 · 去哪里 · 对谁 · 做什么 + 依据 + 相关编号名单），留给离开的角色回来时补全"离场经历"。',
     '',
     'INPUT:',
     ...(isMap ? ['[场景地图]', `当前场景：${input.activeScene || '（未定）'}`, ...scenes.map(s => `- ${s.name}：${s.description}`)] : []),
@@ -1488,8 +1486,8 @@ export async function jevBriefGate(input: BriefGateInput): Promise<boolean | und
   ].filter(s => s !== '').join('\n')
   const instructions = [
     'JUDGE: 本次离场是否需要留底一本或多本任务书。',
-    '1 = 本次离场及此前的剧情中存在与离开者相关的可留底材料：对他下的指令 / 与他的约定 / 他参与的事件 / 他人关于他的打算 / 关系或状态的实质变化。',
-    '0 = 不存在上述材料。',
+    '1 = 从剧情能确认离开者接下来要去办的事：领了差事 / 应下了什么 / 有约定要办 / 明确说了去哪里做什么 / 别人安排了他去做什么。',
+    '0 = 只是走开：没有交代、没有目的、没有任何可办的事，或仅仅是关系与状态的渐变。',
     'CONSTRAINT: 只依据 INPUT 判断；不得引入 INPUT 之外的事实；不得按常识补全。',
   ].join('\n')
   const t0 = Date.now()
@@ -1514,7 +1512,7 @@ export async function jevBriefGate(input: BriefGateInput): Promise<boolean | und
 // ---------- 离场补全（§4）：按桌上在用的任务书写记忆 ----------
 
 /** participants 与 perceives[].character 均为角色编号（= 角色目录名）。 */
-export type CompletionBrief = Pick<Brief, 'id' | 'nodeId' | 'judgeMid' | 'title' | 'place' | 'participants' | 'facts' | 'sequence' | 'perceives'>
+export type CompletionBrief = Pick<Brief, 'id' | 'nodeId' | 'judgeMid' | 'task' | 'title' | 'place' | 'participants' | 'facts' | 'sequence' | 'perceives'>
 
 /** write_offstory_memory：character 只认 [槽位] 的编号枚举，代码再兜一道白名单。 */
 export function offstoryMemoryTool(slotIds: readonly string[]): ToolSpec {
@@ -1577,10 +1575,11 @@ function briefBlock(b: CompletionBrief, names: ReadonlyMap<string, string>): str
   const perceives = b.perceives.map(p => `${p.character}（${names.get(p.character) ?? p.character}）：${p.saw.join('；') || '（无）'}`).join('\n  ')
   return [
     `【${b.id}｜节点 ${b.nodeId}｜判定于第${b.judgeMid}句】`,
+    b.task === '' ? '' : `任务：${b.task}`,
     `标题：${b.title}`,
     b.place === '' ? '' : `地点：${b.place}`,
     `参与者：${b.participants.map(id => `${id}（${names.get(id) ?? id}）`).join('、') || '（无）'}`,
-    '事实：',
+    '依据：',
     facts === '' ? '（无）' : facts,
     sequence === '' ? '' : `顺序：${sequence}`,
     perceives === '' ? '' : `感知：\n  ${perceives}`,
@@ -1618,8 +1617,8 @@ export async function askOffStoryCompletion(input: OffStoryCompletionInput): Pro
     '[槽位]',
     input.slots.length === 0 ? '（无）' : input.slots.map(s => `${s.id}（${s.name}）`).join('\n'),
     '',
-    'ASSERT 客观事实层 := [本次任务书] 中全部事实；它是唯一真实层',
-    'ASSERT 角色记忆 != 客观事实层',
+    'ASSERT 任务层 := [本次任务书] 的 task 与 facts：他离开之后要去办 / 会经历的事，以及它的依据',
+    'ASSERT 角色记忆 != 任务层：执行人写"你去办了这件事"，任务对象写"你在此期间经历了这件事"',
     '',
     'STEP 1 视角模型',
     '  FOR EACH 编号 IN [槽位]:',
@@ -1631,18 +1630,18 @@ export async function askOffStoryCompletion(input: OffStoryCompletionInput): Pro
     '',
     'STEP 2 筛选',
     '  FOR EACH 编号 IN [槽位]:',
-    '    可接收内容(编号) := 客观事实层 中 符合 视角模型(编号) 的部分',
+    '    可接收内容(编号) := 任务层 中 符合 视角模型(编号) 的部分',
     '  END FOR',
     '',
     'STEP 3 生成',
     '  FOR EACH 编号 IN [槽位]:',
     '    memories.append({',
     '      character: 编号,',
-    '      text: 以"你"称呼该编号对应的角色，把 可接收内容(编号) 写成该角色的离场记忆',
+    '      text: 以"你"称呼该编号对应的角色，写他在离场期间 办到 / 经历到 的事',
     '    })',
     '  END FOR',
     '  长度: 不限',
-    '  事实: 与所用任务书一致或更窄；不得增删任务书里的事实',
+    '  推进: 只允许在任务层给的范围内交代"办到哪一步、对方什么反应"；不得改变任务内容与对象，不得增删依据',
     '',
     'STEP 4 收账',
     '  consumedBriefs := 本次采用的任务书 id；MUST IN [本次任务书]',
@@ -1656,7 +1655,7 @@ export async function askOffStoryCompletion(input: OffStoryCompletionInput): Pro
     '',
     'CHECK:',
     '  不得包含 视角模型(编号) 之外的信息（他看不到的、别人私下的、别人视角专有的）',
-    '  不得把客观事实层写成全知叙述',
+    '  不得把任务层写成全知叙述',
     '  不得出现本工序的步骤名、检查过程、解释、道歉、修改痕迹',
     '  同一事实在不同角色的记忆中不得互相矛盾',
     '',

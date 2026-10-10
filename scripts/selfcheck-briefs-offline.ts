@@ -163,7 +163,7 @@ function replyJudge(next: string, others: string[]): Record<string, unknown> {
 }
 
 const mkMsg = (id: number): MsgLine => ({ type: 'msg', id, role: 'user', name: '你', text: `（测试第${id}句）`, round: 1, visible_to: 'all', ts: new Date(0).toISOString() })
-const mkBrief = (id: string, nodeId: string, judgeMid: number): Brief => ({ id, nodeId, judgeMid, createdTs: '', status: '在用', windowKeys: [], title: '（测试事件）', place: '（测试地点）', participants: ['角色甲'], facts: ['（测试事实）'], sequence: [], perceives: [] })
+const mkBrief = (id: string, nodeId: string, judgeMid: number): Brief => ({ id, nodeId, judgeMid, createdTs: '', status: '在用', windowKeys: [], task: '（测试任务：甲去某处办事）', title: '（测试事件）', place: '（测试地点）', participants: ['角色甲'], facts: ['（测试事实）'], sequence: [], perceives: [] })
 const mkPresence = (scene: string): StoryLine => ({ type: 'presence', scene, present: [], reason: '（测试）', ts: new Date(0).toISOString() } as StoryLine)
 
 try {
@@ -245,7 +245,7 @@ try {
 
     const ds = await mockModel({
       briefs: [{
-        title: '（测试事件）', place: S1, participants: ['角色甲', '角色乙'],
+        task: '（测试任务：甲去某处办一件事）', title: '（测试事件）', place: S1, participants: ['角色甲', '角色乙'],
         facts: ['（测试事实）'], sequence: [], perceives: [{ character: '角色乙', saw: ['（测试所见）'] }],
       }],
       memories: [
@@ -295,7 +295,9 @@ try {
     assert.ok(briefBody.includes('编号：角色甲｜名字：角色甲'), '档案按编号渲染（编号=角色目录名）')
     const enumIds = ((briefHit.body as any).tools?.[0]?.function?.parameters?.properties?.briefs?.items?.properties?.participants?.items?.enum ?? []) as string[]
     assert.deepEqual([...enumIds].sort(), ['角色甲', '角色乙', '角色丙'].sort(), '参与名单只能从角色编号枚举中选')
-    assert.ok(briefBody.includes('ALGORITHM OffStoryBriefGeneration') && briefBody.includes('准确优先') && briefBody.includes('FORBIDDEN') && briefBody.includes('[客观注入]'), '任务书提示词：伪代码形态/准确优先/禁令/客观注入语义（P5）')
+    assert.ok(briefBody.includes('ALGORITHM OffStoryBriefGeneration') && briefBody.includes('离场任务书') && briefBody.includes('要去办的事') && briefBody.includes('FORBIDDEN') && briefBody.includes('[客观注入]'), '任务书提示词：伪代码形态/任务语义/禁令/客观注入语义（P5）')
+    const briefRequired = ((briefHit.body as any).tools?.[0]?.function?.parameters?.properties?.briefs?.items?.required ?? []) as string[]
+    assert.ok(briefRequired.includes('task'), 'record_brief 必填 task（任务书正文 = 一句话任务）')
     assert.equal(((jev.gates[0]?.body as any)?.questions?.briefs?.type), 'noul', '任务书判定是 noul 题（P3）')
     assert.ok(JSON.stringify(jev.gates[0]?.body).includes('[窗口]'), '判定请求体带窗口块')
     const gateBody = JSON.stringify(jev.gates[0]?.body)
@@ -328,7 +330,8 @@ try {
     // 第 3 轮：⊘ 去场景二（甲/乙留守=分离、丙重逢）→ 写新任务书；但丙不在任何在用任务书里，
     //         匹配不上 → 不触发离场补全（新任务书留在桌上）
     const memCallsBefore = ds.hits.filter(h => h.kind === 'memory').length
-    for await (const ev of session.speak('（测试发言·换场）', S2)) void ev
+    const ev3: Array<{ type: string; text?: string }> = []
+    for await (const ev of session.speak('（测试发言·换场）', S2)) ev3.push({ type: ev.type, ...('text' in ev ? { text: ev.text } : {}) })
     briefs = loadBriefs(accDir)
     for (let i = 0; i < 40 && briefs.filter(b => b.status === '在用').length < 1; i++) { await sleep(250); briefs = loadBriefs(accDir) }
     for (let i = 0; i < 40 && !judgeLogOf(accDir).includes('未被任何在用任务书锚定'); i++) await sleep(250)
@@ -336,6 +339,10 @@ try {
     assert.equal(briefs.filter(b => b.status === '在用').length, 1, '新任务书留在桌上（回来者未匹配，不触发补全）')
     assert.equal(ds.hits.filter(h => h.kind === 'memory').length, memCallsBefore, '匹配不上：不调用离场补全（前置条件）')
     assert.ok(judgeLogOf(accDir).includes('未被任何在用任务书锚定'), '未匹配必须落判定日志')
+    // 这一轮同时有分离：分离那一步可能就在本轮写出锚定回来者的任务书 → 回来者照等（先想起再开口）；
+    // "没人能被锚定"由下面的零记忆断言与判定日志兜底。
+    assert.ok(ev3.some(e => (e.text ?? '').includes('回忆离场期间的事')), '同轮既有分离又有回来：回来者照等（分离可能本轮写出锚定他的任务书）')
+    assert.ok(ev3.every(e => e.type !== 'info' || !(e.text ?? '').includes('离场经历已记入记忆')), '未被锚定：不写记忆（也就没有"已记入记忆"提示）')
     // 第 4 轮：⊘ 回场景一（丙留守=分离、甲/乙重逢）→ 甲/乙匹配上在用任务书 → 触发补全并收账
     for await (const ev of session.speak('（测试发言·回场）', S1)) void ev
     for (let i = 0; i < 40 && ds.hits.filter(h => h.kind === 'memory').length < memCallsBefore + 1; i++) await sleep(250)
@@ -365,7 +372,7 @@ try {
     makeChar(nrDir, '角色乙', S1)
     const dsC = await mockModel({
       routeArgs: { next_speaker: '角色甲', reason: '（测试）', presence_updates: [{ present: ['角色甲'], reason: '（测试移出）' }] },
-      briefs: [{ title: '（测试事件）', place: S1, participants: ['角色甲'], facts: ['（测试事实）'], sequence: [], perceives: [] }],
+      briefs: [{ task: '（测试任务：甲去某处办一件事）', title: '（测试事件）', place: S1, participants: ['角色甲'], facts: ['（测试事实）'], sequence: [], perceives: [] }],
       memories: [{ character: '角色甲', text: '（测试记忆·甲）' }],
       streamText: () => '（测试回复）',
     })
@@ -419,7 +426,7 @@ try {
     StoryStore.open(rnDir, rnName).append('character', '角色戊', '（测试：改名后说的一句）', 'all')
     const dsD = await mockModel({
       briefs: [{
-        title: '（测试事件·改名后）', place: S1, participants: ['角色丁'],
+        task: '（测试任务·改名后：丁去某处办一件事）', title: '（测试事件·改名后）', place: S1, participants: ['角色丁'],
         facts: ['（测试事实）'], sequence: [], perceives: [{ character: '角色丁', saw: ['（测试所见）'] }],
       }],
       streamText: () => '（测试回复）',

@@ -55,8 +55,9 @@ export const config = {
   /** 单次输出的 token 上限：>0 显式写死；**0 = 完全不发该字段**（上限交给提供方）。
    *  提供方级 maxTokens 优先，缺省回落这里。 */
   outputMaxTokens: Number(get('LLM_MAX_TOKENS') ?? get('DEEPSEEK_MAX_TOKENS') ?? 0),
-  /** 重工具调用（现场所见/任务书描绘/离场补全/记账/纠正）的单次等待上限：思考久的模型要更宽的线。 */
-  heavyTimeoutMs: Number(get('HEAVY_TIMEOUT_MS') ?? 180000),
+  /** 重工具调用（现场所见/任务书描绘/离场补全/记账/纠正）的单次等待上限：思考久的模型要更宽的线。
+   *  这是"对面一直不响应"的最坏等待线，不是固定等待——模型自己收尾（stop/被输出上限截断/报错）会立刻返回。 */
+  heavyTimeoutMs: Number(get('HEAVY_TIMEOUT_MS') ?? 360000),
   /** 出站代理（Jev/中转用）：环境变量优先，.env 的 HTTPS_PROXY 兜底；空 = 直连。 */
   get proxy(): string {
     return process.env.HTTPS_PROXY ?? process.env.https_proxy ?? process.env.HTTP_PROXY ?? process.env.http_proxy

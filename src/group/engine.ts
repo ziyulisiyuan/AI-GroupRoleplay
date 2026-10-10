@@ -667,6 +667,7 @@ export class GroupSession {
         createdTs,
         status: '在用' as const,
         windowKeys: d.participants.flatMap(p => { const k = changedKeys.get(p); return k === undefined ? [] : [k] }),
+        task: d.task,
         title: d.title,
         place: d.place,
         participants: d.participants,
@@ -778,13 +779,20 @@ export class GroupSession {
     const returned = [...afterWith].filter(n => !beforeWith.has(n))
     if (changed.length === 0 && returned.length === 0) return
     const triggerMid = this.store.effectiveMessages().at(-1)?.id ?? 0
-    const targets = returned.length === 0
-      ? new Set<string>()
-      : new Set([
-          ...resolveBriefParticipants(inUseBriefs(loadBriefs(this.groupDir)), n => this.identityId(n))
-            .flatMap(b => b.participants.flatMap(id => { const p = this.byDir.get(id); return p === undefined ? [] : [p.name] })),
-          ...returned,
-        ])
+    // 等待集 = **真要写记忆的人**，与 §4 的前置条件同一把尺：在用任务书的参与编号（他们是被写的槽位），
+    // 加上被某本在用任务书锚定的回来者。桌上没有在用任务书、或回来者谁也匹配不上 → 等待集为空：
+    // 不设句柄、不弹"回忆离场期间的事"、回复不被这段后台工作拖住——没有东西可等，也没有东西会写。
+    const inUseNow = resolveBriefParticipants(inUseBriefs(loadBriefs(this.groupDir)), n => this.identityId(n))
+    const anchoredIds = new Set(inUseNow.flatMap(b => b.participants))
+    const anchoredReturned = returned.filter(n => { const p = this.byName.get(n); return p !== undefined && anchoredIds.has(p.dirName) })
+    // 同轮"既分离又回来"时，分离那一步可能**就在这一轮**写出锚定回来者的任务书（描绘在补全之前跑），
+    // 所以这种回来者照等（"先想起再开口"）。纯回来、桌上又没有在用任务书 → 等待集为空：不设句柄、
+    // 不弹"回忆离场期间的事"、回复不被拖住——没有东西可等，也没有东西会写。
+    const mayReceive = anchoredReturned.length > 0 || (changed.length > 0 && returned.length > 0)
+    const targets = new Set<string>([
+      ...inUseNow.flatMap(b => b.participants.flatMap(id => { const p = this.byDir.get(id); return p === undefined ? [] : [p.name] })),
+      ...(mayReceive ? returned : []),
+    ])
     let settle!: (v: string[]) => void
     const done = new Promise<string[]>(res => { settle = res })
     this.enqueueBg(async () => {
@@ -799,9 +807,10 @@ export class GroupSession {
         settle(notes)
       }
     })
-    this.offstoryWait = { targets, done }
+    if (targets.size > 0) this.offstoryWait = { targets, done }
     if (changed.length > 0) this.judgeLog({ phase: '任务书判定', note: `本轮场景变化——后台离场管线：分离 ${changed.join('、')}` })
-    if (returned.length > 0) this.judgeLog({ phase: '离场补全', note: `本轮场景变化——后台离场管线：回来 ${returned.join('、')}` })
+    // 回来事件只在**真有人要收记忆**时记一行；没有在用任务书时不记（后台那一步自己会记跳过原因）
+    if (returned.length > 0 && targets.size > 0) this.judgeLog({ phase: '离场补全', note: `本轮场景变化——后台离场管线：回来 ${returned.join('、')}` })
   }
 
   /**

@@ -519,8 +519,8 @@ try {
     const routingCriteria = Object.keys(((routingHit as { body: { questions: { next_speaker: { criteria: Record<string, unknown> } } } }).body.questions.next_speaker.criteria))
     assert.deepEqual(routingCriteria, ['角色丙', '角色甲'], '路由候选 = 落位后的可发言名单（甲丙都在场景二），不是移动前那份（只有丙）')
     assert.ok(ev9.every(e => e.type !== 'info' || !(e.text ?? '').includes('降级')), '路由不得走启发式降级')
-    // 回来者（甲丙）开口前先等离场管线（先想起再开口）；桌上没有在用任务书 → 零记忆落盘
-    assert.equal(ev9.filter(e => e.type === 'info' && (e.text ?? '').includes('回忆离场期间的事')).length, 1, '回来者开口前等离场管线（句柄一次性，提示一次）')
+    // 桌上没有在用任务书 → 回来者谁也拿不到记忆：不设等待句柄、不弹"回忆离场期间的事"、回复不被拖住
+    assert.equal(ev9.filter(e => e.type === 'info' && (e.text ?? '').includes('回忆离场期间的事')).length, 0, '没有在用任务书：不得出现"回忆离场期间的事"提示（没东西可等）')
     assert.equal(ev9.filter(e => e.type === 'info' && (e.text ?? '').includes('离场经历已记入记忆')).length, 0, '没有在用任务书 → 零记忆')
     assert.equal(ds9.hits.filter(h => h.kind === 'scene').length, 0, '无人进门：现场所见调用为零')
     assert.equal(ds9.hits.filter(h => h.kind === 'brief').length, 0, '本次没有分离 → 不写任务书')
@@ -575,7 +575,7 @@ try {
     ds.server.close(); jev.server.close()
   }
 
-  console.log('地图机制自检通过：场景文件层(创建/重名/描述可改/名称不可改) · 建群即建图 · 初始场景落位 · ⊘手选跳过判定生效(不问scene_change/present_*) · 目的地者直接在场听见进门句 · 同行者/离开者按location落位 · 判定移动与极严苛不动 · 客观注入(不问知情转告/location照问/受众=当前场景现场者/他场景者不收) · 对话进场晚于快照且入场包照常 · 一直在场者不入入场包 · 场景全文+当前场景注入角色 · 离开去向=其他清位 · 跨场景通话(双向接入建立/接入者可被路由/位置不动/呼叫句可听) · 用户走向角色(只办回来侧:原地居民无新增现场所见/无在用任务书不凭空写记忆/开口前空等一次) · 现场所见只携当前场景描述 · 事件发现携场景地图全文 · 手动切场景/手动调位置/纠正窗口换场景三条路都真的落表')
+  console.log('地图机制自检通过：场景文件层(创建/重名/描述可改/名称不可改) · 建群即建图 · 初始场景落位 · ⊘手选跳过判定生效(不问scene_change/present_*) · 目的地者直接在场听见进门句 · 同行者/离开者按location落位 · 判定移动与极严苛不动 · 客观注入(不问知情转告/location照问/受众=当前场景现场者/他场景者不收) · 对话进场晚于快照且入场包照常 · 一直在场者不入入场包 · 场景全文+当前场景注入角色 · 离开去向=其他清位 · 跨场景通话(双向接入建立/接入者可被路由/位置不动/呼叫句可听) · 用户走向角色(只办回来侧:原地居民无新增现场所见/无在用任务书不凭空写记忆/无书可收则不设等待) · 现场所见只携当前场景描述 · 事件发现携场景地图全文 · 手动切场景/手动调位置/纠正窗口换场景三条路都真的落表')
 } finally {
   rmSync(accDir, { recursive: true, force: true })
   if (hadSettings) writeFileSync(settingsFile, backup ?? '', 'utf8')

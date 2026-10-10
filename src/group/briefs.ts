@@ -30,6 +30,8 @@ export interface Brief {
   status: BriefStatus
   /** 这本任务书服务的离开窗口（只取它 participants 里、本次分离离开的那几个人的窗口）。 */
   windowKeys: string[]
+  /** 一句话任务：「执行人 去哪里 对谁 做什么」——任务书的正文（旧数据可能为空）。 */
+  task: string
   title: string
   place: string
   /** 参与名单：角色编号（= 角色目录名；改名不改号）。 */
@@ -42,7 +44,7 @@ export interface Brief {
 }
 
 /** 一本任务书的草稿（LLM 产出 + 引擎补编号/节点/时间/状态/窗口）。 */
-export type BriefDraft = Pick<Brief, 'title' | 'place' | 'participants' | 'facts' | 'sequence' | 'perceives'>
+export type BriefDraft = Pick<Brief, 'task' | 'title' | 'place' | 'participants' | 'facts' | 'sequence' | 'perceives'>
 
 export const briefsPath = (groupDir: string): string => join(groupDir, '任务书.jsonl')
 
@@ -92,6 +94,7 @@ export function parseBriefs(raw: string): Brief[] {
           createdTs: typeof j.createdTs === 'string' ? j.createdTs : '',
           status,
           windowKeys: strArray(j.windowKeys),
+          task: typeof j.task === 'string' ? j.task.trim() : '',
           title: typeof j.title === 'string' ? j.title : '',
           place: typeof j.place === 'string' ? j.place : '',
           participants: strArray(j.participants),
@@ -114,6 +117,7 @@ export function serializeBrief(b: Brief): string {
     createdTs: b.createdTs,
     status: b.status,
     windowKeys: b.windowKeys,
+    task: b.task,
     title: b.title,
     place: b.place,
     participants: b.participants,

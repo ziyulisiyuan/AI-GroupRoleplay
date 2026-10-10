@@ -180,9 +180,11 @@ a fallback full director (deepseek, §6.1c), and a correction window (§6.3).
   emits a single object instead of an array.
 - Environment keys (all optional): `HOST_PORT`, `LLM_API_KEY` (`DEEPSEEK_API_KEY` legacy alias),
   `LLM_MODEL` (`DEEPSEEK_MODEL` alias), `LLM_REASONING_EFFORT` (`DEEPSEEK_REASONING_EFFORT` alias),
-  `DIRECTOR_TIMEOUT_MS` (default 30000), `HEAVY_TIMEOUT_MS` (default 180000 — the single wait line for
+  `DIRECTOR_TIMEOUT_MS` (default 30000), `HEAVY_TIMEOUT_MS` (default 360000 — the single **upper bound** for
   the heavy background tool calls: scene snapshot / brief writing / off-story completion / bookkeeping /
-  correction), `JEV_TIMEOUT_MS`
+  correction; it only bites when the far side stops responding — a model that ends its turn by itself
+  (stop, cut off by the output ceiling, or an error) returns at once and is logged with its `finishReason`),
+  `JEV_TIMEOUT_MS`
   (default 4000), `LLM_MAX_TOKENS` (`DEEPSEEK_MAX_TOKENS` alias; default **0 = the field is never sent**,
   so the provider's own ceiling applies; a provider-level `maxTokens` overrides this, and 0 there also
   means "do not send"), `RELAY_DECAY` (default 0.8, §6.1a relay
@@ -217,7 +219,7 @@ a fallback full director (deepseek, §6.1c), and a correction window (§6.3).
       思维链.jsonl             # per-reply thinking chains for humans only (§3.2b); never enters any context
       模型调用.jsonl           # raw model-call material for humans only (§3.2c); never enters any context
 
-      任务书.jsonl            # off-story pipeline fact sheets (§5.9): one line per brief, 在用/已收; never injected as such
+      任务书.jsonl            # off-story pipeline task sheets (§5.9): one line per brief, 在用/已收; never injected as such
       角色/
         <角色名>/             # directory name = character dirName
           角色.md             # user asset: frontmatter name/appearance + background body (read-only)
@@ -673,7 +675,8 @@ concern, through the return set):
 ### 5.9 Off-story pipeline (任务书 / 离场补全)
 
 Characters lead lives off-scene: orders given to others get fulfilled, appointments kept, relationships move.
-The pipeline freezes a **fact sheet (任务书)** at the moment of separation and turns it into off-story memories
+The pipeline freezes a **task sheet (任务书)** at the moment of separation — *what the leaver is going off to
+do* (who / where / to whom / what, plus its grounds) — and turns it into off-story memories
 (`source = 离场经历`) when someone returns. It is **story-driven only**: manual scene switches, manual
 character-location moves and correction-window placements do not trigger it (they still drive §5.8).
 
@@ -686,9 +689,9 @@ a leaver without `absenceStartId` (first appearance) is skipped, and a window al
 `windowKeys` is never processed again (books closed — this is bookkeeping against duplicate fact sheets, not
 a lock on context: every step may still read any原文). An unclaimed window (below threshold, failed call, or no `routerId`) stays open: later separations list it again with its processing state until a brief written at its own separation names its owner.
 
-- **§2 判定** (`jevBriefGate`): one Jev `noul` question `briefs` per separation. It is asked with the **same dialogue window as §3** (same range and newest-50 rule) plus the map, positions and windows, and its instructions are a pseudo-code `OffStoryBriefGate` spec defining what a 任务书 is (an objective fact sheet for later off-story memories) and the 1/0 criteria (1 = the departure dialogue holds material tied to the departing characters — orders given to them, promises, their participation, plans others hold about them, substantive relationship/state changes; 0 = none), forbidding facts outside the input. Threshold `JEV_THRESHOLDS.briefMin` (0.5), missing answer = 0. Below threshold → nothing. Call failure/timeout, or no `routerId` configured → nothing, and the window stays for the next separation.
+- **§2 判定** (`jevBriefGate`): one Jev `noul` question `briefs` per separation. It is asked with the **same dialogue window as §3** (same range and newest-50 rule) plus the map, positions and windows, and its instructions are a pseudo-code `OffStoryBriefGate` spec defining what a 任务书 is (the leaver's off-screen **task**) and the 1/0 criteria (1 = the story makes it confirmable what the leaver is going off to do — a job handed to him, something he took on, an appointment to keep, a stated destination and purpose, someone else's arrangement for him; 0 = he merely walks away: no brief, no purpose, nothing to carry out), forbidding facts outside the input. Threshold `JEV_THRESHOLDS.briefMin` (0.5), missing answer = 0. Below threshold → nothing. Call failure/timeout, or no `routerId` configured → nothing, and the window stays for the next separation.
 - **§3 描绘** (`askBriefWriter`, tool `record_brief`; one call per separation, several events become several
-  briefs in one writing): dialogue range `[min(enterMid, min window start - 1) + 1, triggerMid]`, where
+  task sheets in one writing): dialogue range `[min(enterMid, min window start - 1) + 1, triggerMid]`, where
   `enterMid` is the message id immediately before the first presence row of the active scene's latest
   continuous run (0 when there is none — flat groups and freshly-created scenes); when the log holds more than
   100 messages (总量 > 100) only the range's newest 50 are given, otherwise all. Blocks, each labelled:
@@ -697,13 +700,12 @@ a lock on context: every step may still read any原文). An unclaimed window (be
   when 状态记录 is on** — otherwise the ledger field does not exist), `[位置]`, `[剧情原文]` (one line per
   message: id, round, ts, speaker, the speaker's scene then, audience; line prefix `[客观注入]` for
   objective-injection lines else `[剧情原文]`), `[窗口]`. 全局规则 is not injected. Output per brief:
-  `{title ≤20 chars, place (from the map or the dialogue), participants (model-**selected** from the character IDs = directory names, never typed as names/nicknames; anchored to the
-  roster; unbounded by who left), facts, sequence, perceives}`. The writing prompt is a pseudo-code ALGORITHM (INPUT / ASSERT / STEP / FORBIDDEN / CHECK / OUTPUT; procedure keywords in English, system labels in Chinese, **no examples** — examples act as anchors and narrow the model, see [INV 9]) and it states 准确优先，禁止为省字数做有损压缩; `[客观注入]` lines are narrator-level facts that already hold in the world and may be written into `facts` directly, while `[剧情原文]` lines are what actually happened in the scene.
+  `{task (one sentence: who / where / to whom / what), title ≤20 chars (the task's short name), place (from the map), participants (model-**selected** from the character IDs = directory names, never typed as names/nicknames; the executor **plus the task's targets** — the people he is sent to, told about or arranged for; not every bystander, and not "whoever left in the same batch"), facts (**the task's grounds and known conditions** — the order as spoken, the promise, the arrangement, the target's current situation; never a recap of the walk-out itself), perceives (what each participant already knows about this task)}`. The writing prompt is a pseudo-code ALGORITHM (INPUT / ASSERT / STEP / FORBIDDEN / CHECK / OUTPUT; procedure keywords in English, system labels in Chinese, **no examples** — examples act as anchors and narrow the model, see [INV 9]), it explicitly forbids inventing a task the input cannot support, and `[客观注入]` lines are narrator-level facts that may serve as grounds directly.
 - **Storage** `groups/<群>/任务书.jsonl`, one line per brief (fixed key order): `id` (`b`+base36 timestamp,
   unique per group), `nodeId` (one per judgment; several briefs of one separation share it), `judgeMid`,
   `createdTs`, `status` (`在用` | `已收`), `windowKeys` (`<ID>|<absenceStartId>` windows of this separation's leavers that the brief
-  names — participants decide which windows a brief serves), `title`, `place`, `participants`, `facts`,
-  `sequence`, `perceives`, plus `usedTs`/`usedBy` once consumed. A failed writing grants nothing (windows
+  names — participants decide which windows a brief serves), `task`, `title`, `place`, `participants`, `facts`,
+  `perceives` (legacy rows may also carry `sequence`; new writings do not), plus `usedTs`/`usedBy` once consumed. A failed writing grants nothing (windows
   stay for the next separation).
 
 **Return (§4).** One return event = one batch of characters that went from not-with to with-the-user. **Precondition:** the event is processed only when at least one returned character is anchored in an on-table brief's `participants` (names resolved through the rename chain); otherwise no call is made, the briefs stay on the table and the skip is noted in 判定.jsonl. When it runs, one call
@@ -723,7 +725,10 @@ the result is visible after refresh). Failures grant nothing and un-named briefs
 
 **Waiting, logs, lifecycle.** The pipeline runs on the background queue with separation first and completion
 after (§1.3); when a character that may receive memories is picked to speak, `speakAs` waits for the job
-("（X 回忆离场期间的事……）") — nobody speaks before remembering. 判定.jsonl phases (§3.2a): `任务书判定`,
+("（X 回忆离场期间的事……）") — nobody speaks before remembering. The wait set is exactly the characters that can
+receive something: an in-use brief's participants, plus returned characters **anchored by an in-use brief**.
+With no in-use brief — or when no brief names the returning character — there is nothing to wait for: no wait
+handle, no prompt, and the reply is not held up (the job still logs its own skip reason). 判定.jsonl phases (§3.2a): `任务书判定`,
 `任务书描绘`, `离场补全`. 清空记录 retires every in-use brief (`status=已收`, `usedBy=清空记录`); the file is
 an operational archive — `rebuild` never touches it, and no AI ever reads a `已收` brief. User edits/deletions rewrite the log itself, so a brief segment always reads the current log: messages that no longer exist simply do not appear. Manual UI paths do
 not trigger the pipeline. Without `routerId` the gate cannot run: no 任务书 is written and windows wait until
