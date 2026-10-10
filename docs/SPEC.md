@@ -303,7 +303,7 @@ generation kept) so a phone's disk cannot be filled.
 
 | file | writer | structure |
 |---|---|---|
-| 角色.md | editor only | frontmatter `name`(default = dirName), `appearance`; body = background |
+| 角色.md | editor only | frontmatter `name`(default = dirName), `appearance`; body = background. The character's **编号 (ID) is `dirName`**: display name edits never change it |
 | 性格.md | editor only | `# 性格` + user initial personality. No AI-written section. |
 | 人物关系.md | editor only | `# 人物关系` + user initial notes. No AI-written entries. |
 | 状态.yaml | Host only (director snapshots §6.1b/§6.1c, user PUT §7.2) | status ledger, fixed seven fields (§3.4a) |
@@ -431,6 +431,7 @@ overhear:           # one-directional perceivers (can know, cannot interact; hid
 
 - Name validity (group names, character names, `:dir` params): non-empty, ≤60 chars, no
   `\ / : * ? " < > |` or control chars, not `.`/`..` (path traversal guard). Duplicates rejected.
+- Identity: a character's **编号 is its directory name (`dirName`)** and never changes when the display name is edited; briefs anchor and match by this ID (old briefs that stored display names are normalized on read: token = ID, else rename chain, else dropped).
 - Renames are refused when the new name collides with another character; a legal rename appends a
   `rename` row. `store.nameOf()` maps any historical name through the chain to the current name;
   ledger replay, scene restoration, and rebuild all resolve through it (renaming never loses
@@ -695,17 +696,17 @@ a lock on context: every step may still read any原文). An unclaimed window (be
   when 状态记录 is on** — otherwise the ledger field does not exist), `[位置]`, `[剧情原文]` (one line per
   message: id, round, ts, speaker, the speaker's scene then, audience; line prefix `[客观注入]` for
   objective-injection lines else `[剧情原文]`), `[窗口]`. 全局规则 is not injected. Output per brief:
-  `{title ≤20 chars, place (from the map or the dialogue), participants (model-named, anchored to the
+  `{title ≤20 chars, place (from the map or the dialogue), participants (model-**selected** from the character IDs = directory names, never typed as names/nicknames; anchored to the
   roster; unbounded by who left), facts, sequence, perceives}`. The writing prompt is a pseudo-code ALGORITHM (INPUT / ASSERT / STEP / FORBIDDEN / CHECK / OUTPUT; procedure keywords in English, system labels in Chinese, **no examples** — examples act as anchors and narrow the model, see [INV 9]) and it states 准确优先，禁止为省字数做有损压缩; `[客观注入]` lines are narrator-level facts that already hold in the world and may be written into `facts` directly, while `[剧情原文]` lines are what actually happened in the scene.
 - **Storage** `groups/<群>/任务书.jsonl`, one line per brief (fixed key order): `id` (`b`+base36 timestamp,
   unique per group), `nodeId` (one per judgment; several briefs of one separation share it), `judgeMid`,
-  `createdTs`, `status` (`在用` | `已收`), `windowKeys` (windows of this separation's leavers that the brief
+  `createdTs`, `status` (`在用` | `已收`), `windowKeys` (`<ID>|<absenceStartId>` windows of this separation's leavers that the brief
   names — participants decide which windows a brief serves), `title`, `place`, `participants`, `facts`,
   `sequence`, `perceives`, plus `usedTs`/`usedBy` once consumed. A failed writing grants nothing (windows
   stay for the next separation).
 
 **Return (§4).** One return event = one batch of characters that went from not-with to with-the-user. **Precondition:** the event is processed only when at least one returned character is anchored in an on-table brief's `participants` (names resolved through the rename chain); otherwise no call is made, the briefs stay on the table and the skip is noted in 判定.jsonl. When it runs, one call
-per event (`askOffStoryCompletion`, tool `write_offstory_memory`). Candidates (槽位) = participants of **every
+per event (`askOffStoryCompletion`, tool `write_offstory_memory`). Candidates (槽位) = the IDs named by **every
 brief still `在用`**, deduplicated against existing characters; a participant who did not return is written
 too, because one event's memories are written as a set. Blocks: `[本次任务书]` (every in-use brief in full,
 node-labelled), `[场景地图]`, `[位置]`, `[剧情原文]` (two kinds: the return range — full when 总量 ≤100,
@@ -713,7 +714,7 @@ newest 50 messages when >100 — plus one segment per brief: the 21 messages end
 same-nodeId group appears once), `[槽位]`. Output: `{facts, consumedBriefs, memories[{character,text}]}`. The completion prompt has the same pseudo-code form: STEP 1 builds a per-character 视角模型 (that character's `perceives` entries plus the lines he could perceive — independent of personality, appearance, emotions, motives and relationships; it only answers what he can perceive), STEP 2 filters the objective layer through it, STEP 3 writes the memory in second person "你" (length unbounded), STEP 4 does the bookkeeping; style is constrained only by a FORBIDDEN list shared with §3 (turns, foreshadowing, metaphor/symbol/analogy, scenery, narration, omniscient intrusion, hype, suspense, literary devices, contrastive syntax, colloquialisms, …), never positively directed.
 
 Code-enforced rules: only in-use brief ids survive in `consumedBriefs`; with none named nothing is written;
-a memory whose character is not in 槽位, or not in a consumed brief's participants, is dropped, as are
+a memory whose character is not a 槽位 ID, or not in a consumed brief's participant IDs, is dropped, as are
 duplicate (character,text) pairs; named briefs become `已收` with `usedTs`/`usedBy` even when no memory
 survived. Each surviving memory: ledger row first (`section=knowledge, op=append, source=离场经历`, no `mid`)
 then the character's `记忆.jsonl`; one info event per character (delivered when a waiter speaks, otherwise

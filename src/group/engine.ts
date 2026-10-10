@@ -61,6 +61,8 @@ export class GroupSession {
   /** 场景人员（现场 + 远程实时接入）；未配置 = 全员现场。 */
   private scene: SceneAccess
   private readonly byName: Map<string, CharacterPersona>
+  /** 编号（= 角色目录名）→ 角色。 */
+  private readonly byDir: Map<string, CharacterPersona>
   private readonly books = new Map<string, CharacterFiles>()
   /** 后台任务队列（慢路径记账）：串行执行；新一轮发言前先清空队列，避免与新一轮的文件写入交错。 */
   private bg: Promise<void> = Promise.resolve()
@@ -93,6 +95,7 @@ export class GroupSession {
       : (nonEmpty(saved) ? rawName(saved) : this.mapDefaultScene())
     this.scene = raw
     this.byName = new Map(this.characters.map(c => [c.name, c]))
+    this.byDir = new Map(this.characters.map(c => [c.dirName, c]))
     this.roster = this.characters.map(c => ({ name: c.name }))
     // 人物速览 = 外观原文（不截断）：Jev 的 next_speaker 选项说明与完整总管各提示词的[可选角色]都用它。
     this.rosterLines = this.characters.map(c => `${c.name}｜${c.appearance}`)
@@ -523,6 +526,15 @@ export class GroupSession {
   }
 
 
+  /** 编号 = 角色目录名（改名只改显示名，不动目录）。token 可为编号、当前名或历史名；翻不出返回 undefined。 */
+  private identityId(token: string): string | undefined {
+    const t = token.trim()
+    if (t === '') return undefined
+    const direct = this.byDir.get(t)
+    if (direct !== undefined) return direct.dirName
+    return this.byName.get(this.store.nameOf(t))?.dirName
+  }
+
   /** "和你在一起" = 现场（地图群：位置等于当前场景；平面群：present 名单）；接入/单向感知不算。 */
   private withUserNames(scene: SceneAccess): Set<string> {
     if (scene.scene !== undefined) {
@@ -539,17 +551,27 @@ export class GroupSession {
    *   但不会被本批任务书 claim（P2：windowKeys 只取 participants 里本次离开者的窗口）。
    * 第一次出现的人（取不到 absenceStartId）不带；已被任务书 windowKeys 占住的窗口不再参与（备忘录）。
    */
-  private separationWindows(changed: readonly string[], triggerMid: number, afterWith: ReadonlySet<string>): Array<{ character: string; startId: number; endId: number; key: string; coveredBy: string[]; claimable: boolean }> {
+  /**
+   * 本次判定的窗口（§1.5/§1.6/§2.5）：[起点+1, 触发句]，键 = 角色编号|离开起点。
+   * - claimable = 本次分离的离开者（§1.1 changed）的窗口：新任务书可以把它收进 windowKeys；
+   * - 其余当前不在用户场景、窗口仍未被占住的角色：窗口留在桌上继续参与后续判定（"留给下一次分离"），
+   *   但不会被本批任务书 claim（P2：windowKeys 只取 participants 里本次离开者的窗口）。
+   * 第一次出现的人（取不到 absenceStartId）不带；已被任务书 windowKeys 占住的窗口不再参与（备忘录）。
+   * 旧任务书里的窗口键（历史名）经 identityId 归一后同样参与备忘录。
+   */
+  private separationWindows(changed: readonly string[], triggerMid: number, afterWith: ReadonlySet<string>): Array<{ id: string; character: string; startId: number; endId: number; key: string; coveredBy: string[]; claimable: boolean }> {
     const briefs = loadBriefs(this.groupDir)
-    const claimed = resolveWindowKeys(claimedWindowKeys(briefs), n => this.store.nameOf(n))
-    const out: Array<{ character: string; startId: number; endId: number; key: string; coveredBy: string[]; claimable: boolean }> = []
-    const add = (n: string, claimable: boolean): void => {
-      const start = this.store.absenceStartId(n)
+    const claimed = resolveWindowKeys(claimedWindowKeys(briefs), n => this.identityId(n))
+    const out: Array<{ id: string; character: string; startId: number; endId: number; key: string; coveredBy: string[]; claimable: boolean }> = []
+    const add = (name: string, claimable: boolean): void => {
+      const persona = this.byName.get(name)
+      if (persona === undefined) return
+      const start = this.store.absenceStartId(name)
       if (start === undefined) return // 第一次出现的人：没有离开窗口
-      const key = windowKey(n, start)
+      const key = windowKey(persona.dirName, start)
       if (claimed.has(key)) return // 这段已被任务书占住：不再重复处理（防重复留底，不是锁上下文）
       if (out.some(w => w.key === key)) return
-      out.push({ character: n, startId: start + 1, endId: triggerMid, key, coveredBy: [], claimable })
+      out.push({ id: persona.dirName, character: name, startId: start + 1, endId: triggerMid, key, coveredBy: [], claimable })
     }
     for (const n of changed) add(n, true)
     for (const c of this.characters) if (!afterWith.has(c.name)) add(c.name, false)
@@ -614,6 +636,7 @@ export class GroupSession {
     const characters = this.characters.map(c => {
       const f = this.filesFor(c.name)
       return {
+        id: c.dirName,
         name: c.name,
         appearance: c.appearance,
         background: c.body,
@@ -641,7 +664,7 @@ export class GroupSession {
     const takenId = new Set(existing.map(b => b.id))
     const nodeId = nextNodeId(new Set(existing.map(b => b.nodeId)))
     const createdTs = new Date().toISOString()
-    const changedKeys = new Map(windows.filter(w => w.claimable).map(w => [w.character, w.key]))
+    const changedKeys = new Map(windows.filter(w => w.claimable).map(w => [w.id, w.key]))
     const created: Brief[] = drafts.map(d => {
       const id = nextBriefId(takenId)
       takenId.add(id)
@@ -668,19 +691,21 @@ export class GroupSession {
   private async completeOffStoryForReturn(returned: readonly string[], triggerMid: number): Promise<string[]> {
     const notes: string[] = []
     const raw = inUseBriefs(loadBriefs(this.groupDir))
-    const inUse = resolveBriefParticipants(raw, n => this.store.nameOf(n))
+    // 旧数据兼容：参与名单 token（编号/当前名/历史名）归一成编号；翻不出来的丢弃
+    const inUse = resolveBriefParticipants(raw, n => this.identityId(n))
     if (inUse.length === 0) {
       this.judgeLog({ phase: '离场补全', note: '桌上没有在用的任务书，本次不写记忆', returned: [...returned] })
       return notes
     }
-    // 触发前置条件：只有回来的角色被某本在用任务书锚定，才触发离场补全；匹配不上不调用模型
-    const anchored = new Set(inUse.flatMap(b => b.participants))
-    const matched = returned.filter(n => anchored.has(n))
+    // 触发前置条件：只有回来的角色被某本在用任务书锚定（编号匹配），才触发离场补全；匹配不上不调用模型
+    const anchored = new Set(inUse.flatMap(b => b.participants)) // 编号集合
+    const returnedIds = new Set(returned.flatMap(n => { const p = this.byName.get(n); return p === undefined ? [] : [p.dirName] }))
+    const matched = [...returnedIds].filter(id => anchored.has(id))
     if (matched.length === 0) {
       this.judgeLog({ phase: '离场补全', note: '回来者未被任何在用任务书锚定——本次不触发离场补全（任务书继续留在桌上）', returned: [...returned], briefs: inUse.map(b => b.id) })
       return notes
     }
-    const slots = [...anchored].filter(n => this.byName.has(n))
+    const slots = [...anchored].flatMap(id => { const p = this.byDir.get(id); return p === undefined ? [] : [{ id, name: p.name }] })
     if (slots.length === 0) {
       this.judgeLog({ phase: '离场补全', note: '在用任务书没有点名任何现存角色，本次不写记忆', briefs: inUse.map(b => b.id) })
       return notes
@@ -710,12 +735,13 @@ export class GroupSession {
     }
     const byId = new Map(inUse.map(b => [b.id, b]))
     const consumed = [...new Set(draft.consumedBriefs)].filter(id => byId.has(id))
-    const allowed = new Set(consumed.flatMap(id => byId.get(id)?.participants ?? []))
+    const allowed = new Set(consumed.flatMap(id => byId.get(id)?.participants ?? [])) // 编号集合
+    const slotIds = new Set(slots.map(s => s.id))
     const kept: Array<{ character: string; text: string }> = []
     const seen = new Set<string>()
     let dropped = 0
     for (const m of draft.memories) {
-      if (!slots.includes(m.character) || !allowed.has(m.character)) { dropped++; continue }
+      if (!slotIds.has(m.character) || !allowed.has(m.character)) { dropped++; continue }
       const key = `${m.character}|${m.text}`
       if (seen.has(key)) { dropped++; continue }
       seen.add(key)
@@ -729,17 +755,19 @@ export class GroupSession {
       this.judgeLog({ phase: '离场补全', briefs: inUse.map(b => b.id), consumed, dropped, facts: draft.facts, note: consumed.length === 0 ? '模型没有点名任何任务书，本次不写记忆' : '没有可落盘的记忆' })
       return notes
     }
+    const perChar = new Map<string, number>()
     for (const m of kept) {
-      const f = this.filesFor(m.character)
+      const p = this.byDir.get(m.character)
+      if (p === undefined) continue
+      const f = this.filesFor(p.name)
       if (f === undefined) continue
       const entry = { source: '离场经历', round: this.store.round, text: m.text }
       f.memory.push(entry)
-      this.store.appendLedgerLine(m.character, 'knowledge', 'append', JSON.stringify(entry))
-      this.persistFiles(m.character)
-      this.judgeLog({ phase: '离场补全', participant: m.character, memory: m.text })
+      this.store.appendLedgerLine(p.name, 'knowledge', 'append', JSON.stringify(entry))
+      this.persistFiles(p.name)
+      this.judgeLog({ phase: '离场补全', participant: `${p.name}（${p.dirName}）`, memory: m.text })
+      perChar.set(p.name, (perChar.get(p.name) ?? 0) + 1)
     }
-    const perChar = new Map<string, number>()
-    for (const m of kept) perChar.set(m.character, (perChar.get(m.character) ?? 0) + 1)
     for (const [name, count] of perChar) notes.push(`（${name} 的离场经历已记入记忆${count > 1 ? `（${count} 条）` : ''}）`)
     this.judgeLog({ phase: '离场补全', briefs: inUse.map(b => b.id), consumed, usedBy, dropped, slots, facts: draft.facts })
     return notes
@@ -760,7 +788,11 @@ export class GroupSession {
     const triggerMid = this.store.effectiveMessages().at(-1)?.id ?? 0
     const targets = returned.length === 0
       ? new Set<string>()
-      : new Set([...resolveBriefParticipants(inUseBriefs(loadBriefs(this.groupDir)), n => this.store.nameOf(n)).flatMap(b => b.participants), ...returned])
+      : new Set([
+          ...resolveBriefParticipants(inUseBriefs(loadBriefs(this.groupDir)), n => this.identityId(n))
+            .flatMap(b => b.participants.flatMap(id => { const p = this.byDir.get(id); return p === undefined ? [] : [p.name] })),
+          ...returned,
+        ])
     let settle!: (v: string[]) => void
     const done = new Promise<string[]>(res => { settle = res })
     this.enqueueBg(async () => {

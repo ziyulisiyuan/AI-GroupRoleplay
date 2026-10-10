@@ -1240,45 +1240,51 @@ const STYLE_FORBIDDEN = [
   'ABAC式成语',
 ]
 
-export const BRIEF_TOOL: ToolSpec = {
-  type: 'function',
-  function: {
-    name: 'record_brief',
-    description: '生成客观事实底稿（任务书）：一本 = 一件事 + 参与名单 + facts + sequence + perceives。',
-    parameters: {
-      type: 'object',
-      properties: {
-        briefs: {
-          type: 'array',
-          description: '零本或多本任务书；没有可留底的事件时为 []。',
-          items: {
-            type: 'object',
-            properties: {
-              title: { type: 'string', description: '事件名；≤20 字。' },
-              place: { type: 'string', description: '事发地点；MUST IN [场景地图] OR [剧情原文]。' },
-              participants: { type: 'array', items: { type: 'string' }, description: '参与名单；MUST IN [角色档案]；只收该事件真正涉及的角色。' },
-              facts: { type: 'array', items: { type: 'string' }, description: '客观事实；一条一句；准确优先，禁止有损压缩；禁止心理、评价、因果推断与文风修饰。' },
-              sequence: {
-                type: 'array',
-                description: 'facts 的先后顺序；引用 facts 下标；无法确定时不填。',
-                items: { type: 'object', properties: { i: { type: 'number' }, then: { type: 'number' } }, required: ['i', 'then'] },
+/** record_brief：参与名单与感知只能选"角色编号"（= 角色目录名）的枚举，模型没机会写名字/外号。 */
+export function briefTool(ids: readonly string[]): ToolSpec {
+  const idEnum = [...ids]
+  return {
+    type: 'function',
+    function: {
+      name: 'record_brief',
+      description: '生成客观事实底稿（任务书）：一本 = 一件事 + 参与编号名单 + facts + sequence + perceives。',
+      parameters: {
+        type: 'object',
+        properties: {
+          briefs: {
+            type: 'array',
+            description: '零本或多本任务书；没有可留底的事件时为 []。',
+            items: {
+              type: 'object',
+              properties: {
+                title: { type: 'string', description: '事件名；≤20 字。' },
+                place: { type: 'string', description: '事发地点；MUST IN [场景地图] OR [剧情原文]。' },
+                participants: { type: 'array', items: { type: 'string', enum: idEnum }, description: '参与编号名单；MUST IN [角色档案] 的编号；只收该事件真正涉及的编号；不得写名字、外号或自造名。' },
+                facts: { type: 'array', items: { type: 'string' }, description: '客观事实；一条一句；准确优先，禁止有损压缩；禁止心理、评价、因果推断与文风修饰。' },
+                sequence: {
+                  type: 'array',
+                  description: 'facts 的先后顺序；引用 facts 下标；无法确定时不填。',
+                  items: { type: 'object', properties: { i: { type: 'number' }, then: { type: 'number' } }, required: ['i', 'then'] },
+                },
+                perceives: {
+                  type: 'array',
+                  description: '每个参与编号能感知到的条目（看到 / 听到 / 被当场告知）；与性格外貌内心无关；每条 MUST 可回溯到 facts 中的某条。',
+                  items: { type: 'object', properties: { character: { type: 'string', enum: idEnum }, saw: { type: 'array', items: { type: 'string' } } }, required: ['character', 'saw'] },
+                },
               },
-              perceives: {
-                type: 'array',
-                description: '每个参与者能感知到的条目（看到 / 听到 / 被当场告知）；与性格外貌内心无关；每条 MUST 可回溯到 facts 中的某条。',
-                items: { type: 'object', properties: { character: { type: 'string' }, saw: { type: 'array', items: { type: 'string' } } }, required: ['character', 'saw'] },
-              },
+              required: ['title', 'place', 'participants', 'facts'],
             },
-            required: ['title', 'place', 'participants', 'facts'],
           },
         },
+        required: ['briefs'],
       },
-      required: ['briefs'],
     },
-  },
+  }
 }
 
 export interface BriefWriterCharacter {
+  /** 角色编号（= 角色目录名；改名不改号）。 */
+  id: string
   name: string
   appearance: string
   background: string
@@ -1316,7 +1322,7 @@ export async function askBriefWriter(input: BriefWriterInput): Promise<BriefDraf
   const currentSceneBlock = active !== undefined ? ['[当前场景]', `${active.name}：${active.description}`] : []
   const dossier = input.characters.flatMap(c => {
     const lines = [
-      `- ${c.name}`,
+      `- 编号：${c.id}｜名字：${c.name}`,
       `  外貌：${c.appearance.trim() !== '' ? c.appearance : '（无）'}`,
       `  背景：${c.background.trim() !== '' ? c.background : '（无）'}`,
       `  性格：${c.personality.trim() !== '' ? c.personality : '（无）'}`,
@@ -1334,7 +1340,7 @@ export async function askBriefWriter(input: BriefWriterInput): Promise<BriefDraf
     'INPUT:',
     '  [场景地图]    全部场景：名称 + 完整描述',
     '  [当前场景]    名称 + 描述',
-    '  [角色档案]    名字 / 外貌 / 背景 / 性格 / 人物关系 / 以及档案中实际给出的其余字段',
+    '  [角色档案]    编号 + 名字 / 外貌 / 背景 / 性格 / 人物关系 / 以及档案中实际给出的其余字段',
     '  [位置]',
     '  [剧情原文]    逐条；行首为 [客观注入] 或 [剧情原文]',
     '  [窗口]        本次分离的离开窗口：角色 / 起点 / 终点 / 处理状态',
@@ -1360,8 +1366,8 @@ export async function askBriefWriter(input: BriefWriterInput): Promise<BriefDraf
     'STEP 1 事件拆分',
     '  从 [剧情原文] 与 [客观注入] 识别零个或多个独立事件；每个事件 = 一件事 + 参与名单',
     '  ASSERT place MUST IN [场景地图] OR [剧情原文]',
-    '  ASSERT participants MUST IN [角色档案]',
-    '  ASSERT participants 只收该事件真正涉及的角色；同批离开不构成参与',
+    '  ASSERT participants MUST IN [角色档案] 的编号集合（不得写名字、外号或自造名）',
+    '  ASSERT participants 只收该事件真正涉及的编号；同批离开不构成参与',
     '',
     'STEP 2 事实与顺序',
     '  FOR EACH 事件:',
@@ -1372,10 +1378,10 @@ export async function askBriefWriter(input: BriefWriterInput): Promise<BriefDraf
     '',
     'STEP 3 限知感知',
     '  FOR EACH 事件:',
-    '    FOR EACH 角色 IN participants:',
-    '      perceives(角色) := 该角色在此事件中能感知到的条目（看到 / 听到 / 被当场告知）',
-    '      ASSERT perceives(角色) 与 性格 / 外貌 / 情绪 / 动机 / 关系 / 内心 无关',
-    '      ASSERT perceives(角色) 中每条 MUST 可回溯到 facts 中的某条',
+    '    FOR EACH 编号 IN participants:',
+    '      perceives(编号) := 该编号对应的角色在此事件中能感知到的条目（看到 / 听到 / 被当场告知）',
+    '      ASSERT perceives(编号) 与 性格 / 外貌 / 情绪 / 动机 / 关系 / 内心 无关',
+    '      ASSERT perceives(编号) 中每条 MUST 可回溯到 facts 中的某条',
     '    END FOR',
     '  END FOR',
     '',
@@ -1385,7 +1391,7 @@ export async function askBriefWriter(input: BriefWriterInput): Promise<BriefDraf
     'CHECK:',
     '  title ≤20 字',
     '  place ∈ [场景地图] ∪ [剧情原文]',
-    '  participants ⊆ [角色档案]',
+    '  participants ⊆ [角色档案] 的编号集合',
     '  sequence 仅引用 facts 下标',
     '  perceives 仅含可回溯到 facts 的条目',
     '  无事件可留底 → briefs = []',
@@ -1399,26 +1405,26 @@ export async function askBriefWriter(input: BriefWriterInput): Promise<BriefDraf
       { role: 'system', content: 'ROLE: 任务书生成。按 ALGORITHM 执行，仅提交 record_brief 工具调用。' },
       { role: 'user', content: prompt },
     ],
-    tools: [BRIEF_TOOL],
+    tools: [briefTool(input.characters.map(c => c.id))],
     expectedFunction: 'record_brief',
     trace: input.trace,
     signal: AbortSignal.timeout(input.timeoutMs ?? 60000),
   })
   const args = JSON.parse(call.arguments) as { briefs?: unknown }
   const raw: unknown[] = args.briefs === undefined || args.briefs === null ? [] : (Array.isArray(args.briefs) ? args.briefs : [args.briefs])
-  const roster = new Set(input.characters.map(c => c.name))
+  const ids = new Set(input.characters.map(c => c.id))
   return raw.flatMap(x => {
     const o = (x ?? {}) as Record<string, unknown>
     const title = typeof o.title === 'string' ? o.title.trim() : ''
     if (title === '') return []
-    const participants = [...new Set(strArray(o.participants).filter(n => roster.has(n)))]
+    const participants = [...new Set(strArray(o.participants).filter(n => ids.has(n)))]
     return [{
       title,
       place: typeof o.place === 'string' ? o.place.trim() : '',
       participants,
       facts: strArray(o.facts),
       sequence: parseSequence(o.sequence),
-      perceives: parsePerceives(o.perceives).filter(p => roster.has(p.character)),
+      perceives: parsePerceives(o.perceives).filter(p => ids.has(p.character)),
     }]
   })
 }
@@ -1494,31 +1500,39 @@ export async function jevBriefGate(input: BriefGateInput): Promise<boolean | und
 
 // ---------- 离场补全（§4）：按桌上在用的任务书写记忆 ----------
 
+/** participants 与 perceives[].character 均为角色编号（= 角色目录名）。 */
 export type CompletionBrief = Pick<Brief, 'id' | 'nodeId' | 'judgeMid' | 'title' | 'place' | 'participants' | 'facts' | 'sequence' | 'perceives'>
 
-export const OFFSTORY_MEMORY_TOOL: ToolSpec = {
-  type: 'function',
-  function: {
-    name: 'write_offstory_memory',
-    description: '按任务书写离场记忆：给出实际采用的事实记录、收走的任务书编号、每个角色的离场记忆。',
-    parameters: {
-      type: 'object',
-      properties: {
-        facts: { type: 'array', items: { type: 'string' }, description: '本次实际采用的事实记录；与所收任务书一致或更窄。' },
-        consumedBriefs: { type: 'array', items: { type: 'string' }, description: '本次收走的任务书编号；MUST IN [本次任务书]；为空时不写任何记忆。' },
-        memories: {
-          type: 'array',
-          description: '每个槽位角色一条；character MUST IN [槽位] 且在所收任务书的 participants 中。',
-          items: {
-            type: 'object',
-            properties: { character: { type: 'string', description: '角色名。' }, text: { type: 'string', description: '该角色的离场记忆；人称"你"；只写其视角模型内的内容。' } },
-            required: ['character', 'text'],
+/** write_offstory_memory：character 只认 [槽位] 的编号枚举，代码再兜一道白名单。 */
+export function offstoryMemoryTool(slotIds: readonly string[]): ToolSpec {
+  const idEnum = [...slotIds]
+  return {
+    type: 'function',
+    function: {
+      name: 'write_offstory_memory',
+      description: '按任务书写离场记忆：给出实际采用的事实记录、收走的任务书编号、每个角色编号的离场记忆。',
+      parameters: {
+        type: 'object',
+        properties: {
+          facts: { type: 'array', items: { type: 'string' }, description: '本次实际采用的事实记录；与所收任务书一致或更窄。' },
+          consumedBriefs: { type: 'array', items: { type: 'string' }, description: '本次收走的任务书编号；MUST IN [本次任务书]；为空时不写任何记忆。' },
+          memories: {
+            type: 'array',
+            description: '每个槽位编号一条；character MUST IN [槽位] 且在所收任务书的 participants 中。',
+            items: {
+              type: 'object',
+              properties: {
+                character: { type: 'string', enum: idEnum, description: '角色编号（来自 [槽位]）。' },
+                text: { type: 'string', description: '该编号对应角色的离场记忆；人称"你"；只写其视角模型内的内容。' },
+              },
+              required: ['character', 'text'],
+            },
           },
         },
+        required: ['facts', 'consumedBriefs', 'memories'],
       },
-      required: ['facts', 'consumedBriefs', 'memories'],
     },
-  },
+  }
 }
 
 export interface OffStoryCompletionInput {
@@ -1532,8 +1546,8 @@ export interface OffStoryCompletionInput {
   returnedDialogue: string
   /** 每本任务书各自的一段（同节点只出现一次；已格式化）。 */
   segments: Array<{ nodeId: string; text: string }>
-  /** 要写记忆的角色名单。 */
-  slots: string[]
+  /** 要写记忆的角色：编号 + 当前名。 */
+  slots: Array<{ id: string; name: string }>
   timeoutMs?: number
   trace?: LlmTrace
 }
@@ -1544,15 +1558,15 @@ export interface OffStoryCompletionDraft {
   memories: Array<{ character: string; text: string }>
 }
 
-function briefBlock(b: CompletionBrief): string {
+function briefBlock(b: CompletionBrief, names: ReadonlyMap<string, string>): string {
   const facts = b.facts.map((f, i) => `  ${i + 1}. ${f}`).join('\n')
   const sequence = b.sequence.map(s => `第${s.i}条之后发生第${s.then}条`).join('；')
-  const perceives = b.perceives.map(p => `${p.character}：${p.saw.join('；') || '（无）'}`).join('\n  ')
+  const perceives = b.perceives.map(p => `${p.character}（${names.get(p.character) ?? p.character}）：${p.saw.join('；') || '（无）'}`).join('\n  ')
   return [
     `【${b.id}｜节点 ${b.nodeId}｜判定于第${b.judgeMid}句】`,
     `标题：${b.title}`,
     b.place === '' ? '' : `地点：${b.place}`,
-    `参与者：${b.participants.join('、') || '（无）'}`,
+    `参与者：${b.participants.map(id => `${id}（${names.get(id) ?? id}）`).join('、') || '（无）'}`,
     '事实：',
     facts === '' ? '（无）' : facts,
     sequence === '' ? '' : `顺序：${sequence}`,
@@ -1568,18 +1582,19 @@ export async function askOffStoryCompletion(input: OffStoryCompletionInput): Pro
   const position = input.locations !== undefined
     ? Object.entries(input.locations).map(([k, v]) => `${k}：${v}`)
     : (input.presenceLine === undefined || input.presenceLine === '' ? [] : [input.presenceLine])
+  const names = new Map(input.slots.map(s => [s.id, s.name]))
   const prompt = [
     'ALGORITHM OffStoryMemoryGeneration',
     '',
     'INPUT:',
-    '  [本次任务书]  一本或多本在用任务书：id / nodeId / judgeMid / title / place / participants / facts / sequence / perceives',
+    '  [本次任务书]  一本或多本在用任务书：id / nodeId / judgeMid / title / place / participants（编号）/ facts / sequence / perceives',
     '  [场景地图]',
     '  [位置]',
     '  [剧情原文]    回来范围 + 每本任务书各自的一段',
-    '  [槽位]        需要写记忆的角色名单',
+    '  [槽位]        需要写记忆的角色编号（当前名）',
     '',
     '[本次任务书]',
-    input.briefs.length === 0 ? '（无）' : input.briefs.map(briefBlock).join('\n\n'),
+    input.briefs.length === 0 ? '（无）' : input.briefs.map(b => briefBlock(b, names)).join('\n\n'),
     ...sceneBlock,
     '[位置]',
     input.userSceneNote,
@@ -1588,29 +1603,29 @@ export async function askOffStoryCompletion(input: OffStoryCompletionInput): Pro
     input.returnedDialogue.trim() === '' ? '（回来范围无对话）' : input.returnedDialogue,
     ...input.segments.map(seg => `【任务书段·节点 ${seg.nodeId}】\n${seg.text}`),
     '[槽位]',
-    input.slots.length === 0 ? '（无）' : input.slots.join('\n'),
+    input.slots.length === 0 ? '（无）' : input.slots.map(s => `${s.id}（${s.name}）`).join('\n'),
     '',
     'ASSERT 客观事实层 := [本次任务书] 中全部事实；它是唯一真实层',
     'ASSERT 角色记忆 != 客观事实层',
     '',
     'STEP 1 视角模型',
-    '  FOR EACH 角色 IN [槽位]:',
-    '    视角模型(角色) := [本次任务书].perceives 中属于该角色的条目',
-    '                       ∪ [剧情原文] 中该角色当时能感知到的行（看到 / 听到 / 被当场告知）',
+    '  FOR EACH 编号 IN [槽位]:',
+    '    视角模型(编号) := [本次任务书].perceives 中属于该编号的条目',
+    '                       ∪ [剧情原文] 中该编号对应角色当时能感知到的行（看到 / 听到 / 被当场告知）',
     '    ASSERT 视角模型 不使用 性格 / 外貌 / 情绪 / 动机 / 关系 / 内心',
-    '    ASSERT 视角模型 只回答：该角色能否感知到该内容',
+    '    ASSERT 视角模型 只回答：该编号对应的角色能否感知到该内容',
     '  END FOR',
     '',
     'STEP 2 筛选',
-    '  FOR EACH 角色 IN [槽位]:',
-    '    可接收内容(角色) := 客观事实层 中 符合 视角模型(角色) 的部分',
+    '  FOR EACH 编号 IN [槽位]:',
+    '    可接收内容(编号) := 客观事实层 中 符合 视角模型(编号) 的部分',
     '  END FOR',
     '',
     'STEP 3 生成',
-    '  FOR EACH 角色 IN [槽位]:',
+    '  FOR EACH 编号 IN [槽位]:',
     '    memories.append({',
-    '      character: 角色,',
-    '      text: 以"你"称呼该角色，把 可接收内容(角色) 写成该角色的离场记忆',
+    '      character: 编号,',
+    '      text: 以"你"称呼该编号对应的角色，把 可接收内容(编号) 写成该角色的离场记忆',
     '    })',
     '  END FOR',
     '  长度: 不限',
@@ -1619,15 +1634,15 @@ export async function askOffStoryCompletion(input: OffStoryCompletionInput): Pro
     'STEP 4 收账',
     '  consumedBriefs := 本次采用的任务书 id；MUST IN [本次任务书]',
     '  ASSERT consumedBriefs 为空 → memories = []',
-    '  ASSERT memories[*].character MUST IN [槽位]',
-    '                            AND IN consumedBriefs 对应任务书的 participants',
+    '  ASSERT memories[*].character MUST IN [槽位] 的编号集合',
+    '                            AND IN consumedBriefs 对应任务书的 participants（编号）',
     '  facts := 本次实际采用的事实记录',
     '',
     'FORBIDDEN（仅约束 memories[*].text；不做正面文风引导）:',
     ...STYLE_FORBIDDEN.map(f => `  ${f}`),
     '',
     'CHECK:',
-    '  不得包含 视角模型(角色) 之外的信息（他看不到的、别人私下的、别人视角专有的）',
+    '  不得包含 视角模型(编号) 之外的信息（他看不到的、别人私下的、别人视角专有的）',
     '  不得把客观事实层写成全知叙述',
     '  不得出现本工序的步骤名、检查过程、解释、道歉、修改痕迹',
     '  同一事实在不同角色的记忆中不得互相矛盾',
@@ -1641,7 +1656,7 @@ export async function askOffStoryCompletion(input: OffStoryCompletionInput): Pro
       { role: 'system', content: 'ROLE: 离场记忆生成。按 ALGORITHM 执行，仅提交 write_offstory_memory 工具调用。' },
       { role: 'user', content: prompt },
     ],
-    tools: [OFFSTORY_MEMORY_TOOL],
+    tools: [offstoryMemoryTool(input.slots.map(s => s.id))],
     expectedFunction: 'write_offstory_memory',
     trace: input.trace,
     signal: AbortSignal.timeout(input.timeoutMs ?? 60000),

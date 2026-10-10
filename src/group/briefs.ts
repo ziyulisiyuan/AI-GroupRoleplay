@@ -32,6 +32,7 @@ export interface Brief {
   windowKeys: string[]
   title: string
   place: string
+  /** 参与名单：角色编号（= 角色目录名；改名不改号）。 */
   participants: string[]
   facts: string[]
   sequence: BriefSequenceStep[]
@@ -45,9 +46,9 @@ export type BriefDraft = Pick<Brief, 'title' | 'place' | 'participants' | 'facts
 
 export const briefsPath = (groupDir: string): string => join(groupDir, '任务书.jsonl')
 
-/** 离开窗口的稳定标识：角色 + 离开起点消息号（同一角色的再次离开起点不同，不会撞）。 */
-export function windowKey(character: string, absenceStartId: number): string {
-  return `${character}|${absenceStartId}`
+/** 离开窗口的稳定标识：角色编号（= 角色目录名，改名不改号）+ 离开起点消息号（同一角色的再次离开起点不同，不会撞）。 */
+export function windowKey(id: string, absenceStartId: number): string {
+  return `${id}|${absenceStartId}`
 }
 
 export function strArray(v: unknown): string[] {
@@ -164,21 +165,26 @@ export function claimedWindowKeys(briefs: readonly Brief[]): Set<string> {
   return new Set(briefs.flatMap(b => b.windowKeys))
 }
 
-/** 参与名单沿名字链归一（纸条落盘后角色改名的兼容；去重、空名丢弃）。 */
-export function resolveBriefParticipants(briefs: readonly Brief[], resolve: (name: string) => string): Brief[] {
+/** 旧数据兼容：参与名单 token（编号 / 当前名 / 历史名）归一成编号；翻不出来的整条丢弃，不报错。 */
+export function resolveBriefParticipants(briefs: readonly Brief[], resolve: (token: string) => string | undefined): Brief[] {
   return briefs.map(b => ({
     ...b,
-    participants: [...new Set(b.participants.map(n => resolve(n).trim()).filter(n => n !== ''))],
+    participants: [...new Set(b.participants.flatMap(n => {
+      const id = resolve(n)?.trim() ?? ''
+      return id === '' ? [] : [id]
+    }))],
   }))
 }
 
-/** 窗口键里的角色名沿名字链归一（改名后"这段窗口已被占住"的备忘录仍认得出同一段）。 */
-export function resolveWindowKeys(keys: Iterable<string>, resolve: (name: string) => string): Set<string> {
+/** 旧数据兼容：窗口键里的 token 归一成编号；翻不出来的键丢弃（该窗口视为未被占住）。 */
+export function resolveWindowKeys(keys: Iterable<string>, resolve: (token: string) => string | undefined): Set<string> {
   const out = new Set<string>()
   for (const k of keys) {
     const sep = k.lastIndexOf('|')
     if (sep <= 0) continue
-    out.add(`${resolve(k.slice(0, sep))}${k.slice(sep)}`)
+    const id = resolve(k.slice(0, sep))?.trim() ?? ''
+    if (id === '') continue
+    out.add(`${id}${k.slice(sep)}`)
   }
   return out
 }

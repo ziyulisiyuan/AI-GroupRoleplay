@@ -179,11 +179,12 @@ try {
     assert.equal(sceneEnterMid(lines, S1), 1, '旧场景段仍可计算')
     assert.equal(sceneEnterMid(lines, '场景三'), 0, '找不到该场景 → 0')
 
-    // 名字链归一：参与名单/窗口键在角色改名后仍对得上
-    const stale = [{ ...mkBrief('bRename', 'nRename', 30), participants: ['角色甲', '角色乙', '角色甲'] }]
-    const resolvedB = resolveBriefParticipants(stale, n => (n === '角色甲' ? '角色甲甲' : n))
-    assert.deepEqual(resolvedB[0]?.participants, ['角色甲甲', '角色乙'])
-    assert.deepEqual([...resolveWindowKeys(['角色甲|30', '角色乙|60'], n => (n === '角色甲' ? '角色甲甲' : n))].sort(), ['角色甲甲|30', '角色乙|60'].sort())
+    // 编号化兼容：token（旧显示名/历史名）→ 编号；外号/翻不出的直接丢弃
+    const stale = [{ ...mkBrief('bRename', 'nRename', 30), participants: ['角色甲甲', '角色乙', '红哥'] }]
+    const resolveId = (n: string): string | undefined => (n === '角色甲甲' ? '角色甲' : n === '角色乙' ? '角色乙' : undefined)
+    const resolvedB = resolveBriefParticipants(stale, resolveId)
+    assert.deepEqual(resolvedB[0]?.participants, ['角色甲', '角色乙'], '参与名单按编号归一：旧名→编号、外号丢弃')
+    assert.deepEqual([...resolveWindowKeys(['角色甲甲|30', '角色乙|60', '红哥|90'], resolveId)].sort(), ['角色甲|30', '角色乙|60'].sort(), '窗口键按编号归一：旧名→编号、翻不出丢弃')
 
     const msgs = Array.from({ length: 200 }, (_, i) => mkMsg(i + 1))
     const briefs = [mkBrief('bX', 'nX', 30), mkBrief('bY', 'nY', 60), mkBrief('bX2', 'nX', 30)]
@@ -260,6 +261,9 @@ try {
     }
     assert.ok(briefBody.includes('[剧情原文] #') && briefBody.includes('第1轮'), '剧情原文逐条带行标与轮次（P5/P6）')
     assert.ok(briefBody.includes('状态账本'), '状态记录开：档案带状态账本')
+    assert.ok(briefBody.includes('编号：角色甲｜名字：角色甲'), '档案按编号渲染（编号=角色目录名）')
+    const enumIds = ((briefHit.body as any).tools?.[0]?.function?.parameters?.properties?.briefs?.items?.properties?.participants?.items?.enum ?? []) as string[]
+    assert.deepEqual([...enumIds].sort(), ['角色甲', '角色乙', '角色丙'].sort(), '参与名单只能从角色编号枚举中选')
     assert.ok(briefBody.includes('ALGORITHM OffStoryBriefGeneration') && briefBody.includes('准确优先') && briefBody.includes('FORBIDDEN') && briefBody.includes('[客观注入]'), '任务书提示词：伪代码形态/准确优先/禁令/客观注入语义（P5）')
     assert.equal(((jev.gates[0]?.body as any)?.questions?.briefs?.type), 'noul', '任务书判定是 noul 题（P3）')
     assert.ok(JSON.stringify(jev.gates[0]?.body).includes('[窗口]'), '判定请求体带窗口块')
@@ -367,7 +371,7 @@ try {
     console.log('C) 门控：无快路径不写任务书；状态记录开关决定 schema/档案是否带账本 通过')
   }
 
-  console.log('离场管线自检通过（任务书）：窗口/enterMid/上下文截取 · 分离判定与描绘 · 回来者锚定前置条件 · 回来收账写记忆 · 等待与丢弃 · 已收不可见 · 门控与无快路径 · 改名名字链归一')
+  console.log('离场管线自检通过（任务书）：窗口/enterMid/上下文截取 · 分离判定与描绘 · 回来者锚定前置条件 · 回来收账写记忆 · 等待与丢弃 · 已收不可见 · 门控与无快路径 · 角色编号（目录名）锚定 · 旧名/外号归一与丢弃')
 } finally {
   rmSync(accDir, { recursive: true, force: true })
   rmSync(nrDir, { recursive: true, force: true })
