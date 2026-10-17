@@ -33,17 +33,22 @@ const ToastCtx = createContext<(msg: string) => void>(() => undefined)
 export const useToast = (): ((msg: string) => void) => useContext(ToastCtx)
 
 export function ToastProvider({ children }: { children: React.ReactNode }): React.ReactElement {
-  const [msg, setMsg] = useState<string | null>(null)
+  const [toast, setToast] = useState<{ msg: string; closing: boolean } | null>(null)
   const timer = useRef<number | undefined>(undefined)
+  const fade = useRef<number | undefined>(undefined)
   const show = useCallback((m: string): void => {
-    setMsg(m)
+    setToast({ msg: m, closing: false })
     clearTimeout(timer.current)
-    timer.current = window.setTimeout(() => setMsg(null), 2400)
+    clearTimeout(fade.current)
+    timer.current = window.setTimeout(() => {
+      setToast(t => (t === null ? t : { ...t, closing: true }))
+      fade.current = window.setTimeout(() => setToast(null), 200) // 淡出播完再卸载
+    }, 2400)
   }, [])
   return (
     <ToastCtx.Provider value={show}>
       {children}
-      {msg !== null && <div className="toast">{msg}</div>}
+      {toast !== null && <div className={'toast' + (toast.closing ? ' closing' : '')}>{toast.msg}</div>}
     </ToastCtx.Provider>
   )
 }
@@ -311,12 +316,21 @@ export function Confirm({ open, text, okText = '删除', danger = true, onOk, on
   onOk: () => void
   onClose: () => void
 }): React.ReactElement | null {
-  if (!open) return null
+  const [render, setRender] = useState(open)
+  // 关闭动画期间冻结文案：调用方关闭时通常会清空驱动状态，避免淡出中途文字突变
+  const frozen = useRef(text)
+  if (open) frozen.current = text
+  useEffect(() => {
+    if (open) { setRender(true); return }
+    const t = setTimeout(() => setRender(false), 200)
+    return () => clearTimeout(t)
+  }, [open])
+  if (!render) return null
   return (
-    <div className="dialog">
+    <div className={'dialog' + (open ? '' : ' closing')}>
       <div className="dialog-mask" onClick={onClose} />
       <div className="dialog-box">
-        <div className="dialog-text">{text}</div>
+        <div className="dialog-text">{frozen.current}</div>
         <div className="dialog-btns">
           <button onClick={onClose}>取消</button>
           <button className={'ok' + (danger ? ' danger' : '')} onClick={onOk}>{okText}</button>

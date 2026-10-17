@@ -6,21 +6,23 @@
  * - 消息操作走长按（桌面右键等效）：编辑 / 重掷（仅最后一条角色消息）/ 删除（物理删除，
  *   确认文案按 SPEC 必须说明日志不保留原文）。
  */
-import React, { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
+import React, { memo, useCallback, useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from 'react'
 import { avatarUrl, getJson, getThinking, postJson, postStream, readNdjson, type Ev, type Msg, type Snapshot } from './api.ts'
 import { applyRules } from './regex.ts'
+import { subscribeTurn, getTurn, turnBegin, turnSpeaker, turnDelta, turnReplyDone, turnEnd, turnPatch, turnSetStatus, cachedSnapshot, cacheSnapshot } from './turn.ts'
 import { Avatar, Confirm, Modal, NavBar, useLongPress, useToast } from './ui.tsx'
 import { ArrowDownToLine, Check, CheckSquare, Copy, Ellipsis, Lightbulb, MapPin, Pencil, RefreshCw, Trash2, X } from './icons.tsx'
+
+/** 每群当前挂载的刷新入口：流在旧闭包里收尾时，要刷新"现在挂着的那个实例"，而不是已卸载的旧实例 */
+const activeRefresh = new Map<string, () => Promise<void>>()
 
 interface Props { group: string; onBack: () => void; onOpenInfo: () => void }
 
 export function ChatView({ group, onBack, onOpenInfo }: Props): React.ReactElement {
   const toast = useToast()
-  const [snap, setSnap] = useState<Snapshot | null>(null)
+  const [snap, setSnap] = useState<Snapshot | null>(() => cachedSnapshot(group) ?? null)
   const [avatarV, setAvatarV] = useState(0)
-  const [status, setStatus] = useState('')
   const [input, setInput] = useState(() => loadDraft(group))
-  const [busy, setBusy] = useState(false)
   const [menuMsg, setMenuMsg] = useState<Msg | null>(null)
   const [editMsg, setEditMsg] = useState<Msg | null>(null)
   const [editText, setEditText] = useState('')
@@ -29,13 +31,14 @@ export function ChatView({ group, onBack, onOpenInfo }: Props): React.ReactEleme
   const [selected, setSelected] = useState<Set<number>>(new Set())
   const [batchConfirm, setBatchConfirm] = useState(false)
   const [deleting, setDeleting] = useState(false)
-  /** 乐观回显：引擎在 Jev 判定通过后才落盘用户消息（SPEC §1.1），本地先挂同款气泡，快照刷新后撤下。 */
-  const [pending, setPending] = useState<Msg | null>(null)
-  /** 本轮对话暂存（speaker 追加 / delta 填充 / reply 标记完成不删除）——接力 A>B>C 期间顺序单调，快照刷新后整体替换。 */
-  const [turnMsgs, setTurnMsgs] = useState<Array<{ key: number; name: string; text: string; done: boolean }>>([])
-  const turnKey = useRef(0)
-  /** 重掷进行中：被重掷的旧回复（引擎在原 id 上物理改写）在快照刷新前先从列表隐藏，避免新旧同屏。 */
-  const [rerollId, setRerollId] = useState<number | null>(null)
+  /**
+   * 本轮状态（busy/流式暂存/乐观回显/状态行）保存在模块级 store 里：
+   * 离开页面再回来时能接上仍在进行的生成，而不是气泡凭空消失。
+   */
+  const turn = useSyncExternalStore(
+    useCallback(cb => subscribeTurn(group, cb), [group]),
+    () => getTurn(group),
+  )
   /** 思维链只读弹窗：该条角色消息生成时的思考内容（'' = 无记录，null = 加载中）。 */
   const [thinkingMsg, setThinkingMsg] = useState<Msg | null>(null)
   const [thinkingText, setThinkingText] = useState<string | null>(null)
@@ -55,13 +58,27 @@ export function ChatView({ group, onBack, onOpenInfo }: Props): React.ReactEleme
 
   const refresh = useCallback(async (): Promise<void> => {
     try {
-      setSnap(await getJson<Snapshot>(`/api/group/${encodeURIComponent(group)}`))
+      const s = await getJson<Snapshot>(`/api/group/${encodeURIComponent(group)}`)
+      cacheSnapshot(group, s) // 下次进入先展示旧快照，避免"加载中"闪屏
+      // 中途重进/收尾时快照里已有真实用户消息：撤下乐观回显，避免同一条消息显示两遍
+      const t = getTurn(group)
+      const lastUser = [...s.messages].reverse().find(m => m.role === 'user')
+      if (t.pending !== null && lastUser !== undefined && lastUser.text === t.pending.text && lastUser.id > t.pendingBase) {
+        turnPatch(group, { pending: null, pendingBase: 0 })
+      }
+      setSnap(s)
     } catch (e) {
       toast(e instanceof Error ? e.message : String(e))
     }
   }, [group, toast])
 
   useEffect(() => { void refresh() }, [refresh])
+
+  // 注册当前挂载实例的刷新入口（卸载即摘除）；流结束时按它刷新"现在看得见的页面"
+  useEffect(() => {
+    activeRefresh.set(group, refresh)
+    return () => { if (activeRefresh.get(group) === refresh) activeRefresh.delete(group) }
+  }, [group, refresh])
 
   // 头像可能刚在聊天信息页里换过——每次回到本页都轻量重验一次
   useEffect(() => { setAvatarV(v => v + 1) }, [group])
@@ -94,7 +111,7 @@ export function ChatView({ group, onBack, onOpenInfo }: Props): React.ReactEleme
     const el = scroller.current
     if (el === null || !pinned.current) return
     el.scrollTop = el.scrollHeight
-  }, [snap, pending, turnMsgs, rerollId])
+  }, [snap, turn.msgs, turn.pending, turn.rerollId])
 
   const onScroll = useCallback((): void => {
     const el = scroller.current
@@ -103,54 +120,49 @@ export function ChatView({ group, onBack, onOpenInfo }: Props): React.ReactEleme
   }, [])
 
   const run = useCallback(async (path: string, body: Record<string, string | boolean>): Promise<void> => {
-    setBusy(true)
-    setTurnMsgs([]) // 新一轮：清空上轮暂存
+    turnBegin(group) // 忙 + 清空上轮暂存（状态写进模块级 store，离开页面也不丢）
     try {
       const res = await postStream(group, path, body)
       await readNdjson(res, (ev: Ev) => {
-        if (ev.type === 'speaker') {
-          const key = ++turnKey.current
-          setTurnMsgs(t => [...t, { key, name: ev.name, text: '', done: false }])
-          setStatus('')
-        }
-        else if (ev.type === 'delta') setTurnMsgs(t => { if (t.length === 0) return t; const c = t.slice(); const last = c[c.length - 1]!; c[c.length - 1] = { ...last, text: last.text + ev.text }; return c })
-        else if (ev.type === 'route') setStatus(`── ${ev.picked} 接话（${ev.reason}）${ev.fallback ? '〔降级〕' : ''}`)
-        else if (ev.type === 'reply') setTurnMsgs(t => { if (t.length === 0) return t; const c = t.slice(); const last = c[c.length - 1]!; c[c.length - 1] = { ...last, done: true }; return c })
-        else if (ev.type === 'ledger') setStatus(`〔记账〕${ev.text}`)
-        else if (ev.type === 'info' && ev.text !== '总管判断谁接话…') setStatus(ev.text) // 判定等待提示不展示（乐观回显已覆盖这段空窗）
+        if (ev.type === 'speaker') turnSpeaker(group, ev.name)
+        else if (ev.type === 'delta') turnDelta(group, ev.text)
+        else if (ev.type === 'route') turnSetStatus(group, `── ${ev.picked} 接话（${ev.reason}）${ev.fallback ? '〔降级〕' : ''}`)
+        else if (ev.type === 'reply') turnReplyDone(group)
+        else if (ev.type === 'ledger') turnSetStatus(group, `〔记账〕${ev.text}`)
+        else if (ev.type === 'info' && ev.text !== '总管判断谁接话…') turnSetStatus(group, ev.text) // 判定等待提示不展示（乐观回显已覆盖这段空窗）
       })
     } catch (e) {
-      setPending(null) // 发送失败：乐观气泡立刻撤下
+      turnPatch(group, { pending: null }) // 发送失败：乐观气泡立刻撤下
       toast(e instanceof Error ? e.message : String(e))
-    } finally {
-      setBusy(false)
     }
     // 流结束才重拉快照：后台记账/现场所见此刻才落盘（SPEC §7.5）；
     // 快照到位（重掷已改写/新消息已在内）后，同一提交里撤下乐观气泡、整轮暂存与重掷隐藏——无空窗、无重复。
-    await refresh()
-    setTurnMsgs([])
-    setPending(null)
-    setRerollId(null)
+    // 用"当前挂载实例"的刷新入口：用户中途离开又回来时，旧闭包的 setSnap 已经失效，不能只刷旧实例。
+    await (activeRefresh.get(group) ?? refresh)()
+    turnEnd(group)
   }, [group, refresh, toast])
 
   const send = useCallback((): void => {
     const text = input.trim()
-    if (text === '' || busy || snap === null) return
+    if (text === '' || turn.busy || snap === null) return
     setInput('')
     saveDraft(group, '') // 已发出：草稿清掉，别在重启后复活
     if (textareaRef.current !== null) textareaRef.current.style.height = 'auto'
     pinned.current = true
     const objective = objectiveMode
-    setPending({
-      type: 'msg', id: -1, role: 'user', name: snap.userName || '你', text,
-      round: 0, visible_to: 'all', ts: new Date().toISOString(),
-      ...(objective ? { objective: true } : {}),
+    turnPatch(group, {
+      pending: {
+        type: 'msg', id: -1, role: 'user', name: snap.userName || '你', text,
+        round: 0, visible_to: 'all', ts: new Date().toISOString(),
+        ...(objective ? { objective: true } : {}),
+      },
+      pendingBase: snap.messages.at(-1)?.id ?? 0,
     })
     const scene = pendingScene
     setPendingScene(null)
     setObjectiveMode(false)
     void run('/message', { text, ...(scene !== null ? { scene } : {}), ...(objective ? { objective: true } : {}) })
-  }, [input, busy, snap, run, pendingScene, objectiveMode])
+  }, [input, turn.busy, snap, run, group, pendingScene, objectiveMode])
 
   const autoGrow = useCallback((): void => {
     const el = textareaRef.current
@@ -278,38 +290,42 @@ export function ChatView({ group, onBack, onOpenInfo }: Props): React.ReactEleme
       />
       <div className="scroll chat-scroll" ref={scroller} onScroll={onScroll}>
         {snap === null && <div className="empty">加载中……</div>}
-        {snap !== null && snap.messages.length === 0 && turnMsgs.length === 0 && pending === null && (
+        {snap !== null && snap.messages.length === 0 && turn.msgs.length === 0 && turn.pending === null && (
           <div className="empty">还没有消息——在下面说第一句吧</div>
         )}
         {snap?.messages.map(m => {
-          if (m.id === rerollId) return null // 重掷中：旧回复暂隐（引擎将在原 id 上改写）
+          if (m.id === turn.rerollId) return null // 重掷中：旧回复暂隐（引擎将在原 id 上改写）
           const mine = m.role === 'user'
           return (
           <MessageRow
             key={m.id}
             msg={m} mine={mine} avatar={avatarFor(m.name, mine)}
             onMenu={setMenuMsg}
-            onAvatar={selectMode ? undefined : url => openAvatar(m.name, url)}
+            onAvatar={selectMode ? undefined : openAvatar}
             selectMode={selectMode}
             picked={selected.has(m.id)}
             onToggle={togglePicked}
           />
           )
         })}
-        {pending !== null && (
+        {turn.pending !== null && (
           <MessageRow
-            msg={pending} mine avatar={avatarFor(pending.name, true)}
+            msg={turn.pending} mine avatar={avatarFor(turn.pending.name, true)}
             onMenu={m => { if (m.id >= 0) setMenuMsg(m) }}
-            onAvatar={url => openAvatar(pending.name, url)}
+            onAvatar={openAvatar}
             selectMode={false} picked={false} onToggle={() => undefined}
           />
         )}
-        {turnMsgs.map(tm => (
+        {turn.msgs.map(tm => (
           <div className="msg-row in" key={tm.key}>
             <TapAvatar name={tm.name} url={avatarFor(tm.name, false)} size={40} onTap={url => openAvatar(tm.name, url)} />
             <div className="msg-main">
               <div className="msg-name">{tm.name}</div>
-              <div className="bubble">{applyRules(tm.text)}{!tm.done && <span className="cursor" />}</div>
+              <div className="bubble">
+                {tm.text === '' && !tm.done
+                  ? <span className="typing" aria-label="正在输入"><i /><i /><i /></span>
+                  : <>{applyRules(tm.text)}{!tm.done && <span className="cursor" />}</>}
+              </div>
             </div>
           </div>
         ))}
@@ -326,13 +342,13 @@ export function ChatView({ group, onBack, onOpenInfo }: Props): React.ReactEleme
           </div>
         ) : (
           <>
-            {status !== '' && <div className="composer-status">{status}</div>}
-            {status === '' && pendingScene !== null && <div className="composer-status">本轮将前往：{pendingScene}</div>}
+            {turn.status !== '' && <div className="composer-status">{turn.status}</div>}
+            {turn.status === '' && pendingScene !== null && <div className="composer-status">本轮将前往：{pendingScene}</div>}
             <div className="composer-bar">
               <button
                 className={'composer-btn' + (pendingScene !== null || objectiveMode ? ' armed' : '')}
                 aria-label={objectiveMode ? '取消客观注入' : pendingScene !== null ? '取消前往地点' : '插入'}
-                disabled={busy}
+                disabled={turn.busy}
                 onClick={() => {
                   if (objectiveMode) { setObjectiveMode(false); return }
                   if (pendingScene !== null) { setPendingScene(null); return }
@@ -346,12 +362,12 @@ export function ChatView({ group, onBack, onOpenInfo }: Props): React.ReactEleme
                 className="composer-input"
                 rows={1}
                 value={input}
-                disabled={busy}
-                placeholder={busy ? '生成中……' : objectiveMode ? '输入要注入的客观内容……' : '对大家说……'}
+                disabled={turn.busy}
+                placeholder={turn.busy ? '生成中……' : objectiveMode ? '输入要注入的客观内容……' : '对大家说……'}
                 onChange={e => { setInput(e.target.value); saveDraft(group, e.target.value); autoGrow() }}
                 onKeyDown={onKeyDown}
               />
-              <button className="composer-send" disabled={busy || input.trim() === ''} onClick={send}>发送</button>
+              <button className="composer-send" disabled={turn.busy || input.trim() === ''} onClick={send}>发送</button>
             </div>
           </>
         )}
@@ -406,8 +422,9 @@ export function ChatView({ group, onBack, onOpenInfo }: Props): React.ReactEleme
         <button className="menu-item" onClick={() => enterSelect(menuMsg)}>
           <CheckSquare size={18} /> 批量删除
         </button>
-        {menuMsg !== null && menuMsg.id === lastCharId && (
-          <button className="menu-item" onClick={() => { setRerollId(menuMsg.id); setMenuMsg(null); void run('/roll', {}) }}>
+        {/* 生成中不允许重掷：再开一条流会与当前轮次写同一份日志 */}
+        {menuMsg !== null && menuMsg.id === lastCharId && !turn.busy && (
+          <button className="menu-item" onClick={() => { turnPatch(group, { rerollId: menuMsg.id }); setMenuMsg(null); void run('/roll', {}) }}>
             <RefreshCw size={18} /> 重掷这条回复
           </button>
         )}
@@ -471,13 +488,14 @@ function TapAvatar({ name, url, size, onTap }: { name: string; url: string | und
   )
 }
 
-/** 单条消息行（hooks 必须在组件里调用，不能在 map 循环里）。 */
-function MessageRow({ msg, mine, avatar, onMenu, onAvatar, selectMode, picked, onToggle }: {
+/** 单条消息行（hooks 必须在组件里调用，不能在 map 循环里）。
+ *  memo：流式输出只重绘变化的那一行，历史消息不跟着每个 token 重渲染。 */
+const MessageRow = memo(function MessageRow({ msg, mine, avatar, onMenu, onAvatar, selectMode, picked, onToggle }: {
   msg: Msg
   mine: boolean
   avatar: string | undefined
   onMenu: (m: Msg) => void
-  onAvatar?: (url: string) => void
+  onAvatar?: (name: string, url: string) => void
   selectMode: boolean
   picked: boolean
   onToggle: (id: number) => void
@@ -490,7 +508,7 @@ function MessageRow({ msg, mine, avatar, onMenu, onAvatar, selectMode, picked, o
       onClick={() => { if (selectMode) onToggle(msg.id) }}
     >
       {selectMode && <div className={'check-box sel-box' + (picked ? ' on' : '')}><Check size={16} /></div>}
-      <TapAvatar name={msg.name} url={avatar} size={40} onTap={onAvatar} />
+      <TapAvatar name={msg.name} url={avatar} size={40} onTap={onAvatar === undefined ? undefined : url => onAvatar(msg.name, url)} />
       <div className="msg-main">
         {!mine && <div className="msg-name">{msg.name}</div>}
         {/* 显示层替换：只改你看到的文字，模型上下文/记忆/判定始终是原文 */}
@@ -498,7 +516,7 @@ function MessageRow({ msg, mine, avatar, onMenu, onAvatar, selectMode, picked, o
       </div>
     </div>
   )
-}
+})
 
 /* ---------- 输入框草稿（按群聊，跟这台设备走） ---------- */
 /**

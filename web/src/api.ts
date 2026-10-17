@@ -124,6 +124,12 @@ export function avatarUrl(group: string, kind: 'group' | 'user' | `char:${string
 
 /** 群列表行：主页预览需要每群的最后一条消息。 */
 export interface GroupRow { name: string; preview: string; ts: number; pinned: boolean }
+
+/** 主页列表缓存：返回主页先展示上次结果，后台再刷（避免每次回来闪"加载中"） */
+let groupRowsCache: GroupRow[] | null = null
+export const cachedGroupRows = (): GroupRow[] | null => groupRowsCache
+export const clearGroupRowsCache = (): void => { groupRowsCache = null }
+
 export async function loadGroupRows(): Promise<GroupRow[]> {
   const { groups } = await getJson<{ groups: string[] }>('/api/groups')
   const rows = await Promise.all(groups.map(async name => {
@@ -140,7 +146,9 @@ export async function loadGroupRows(): Promise<GroupRow[]> {
       return { name, preview: '（打开失败）', ts: 0, pinned: false }
     }
   }))
-  return rows.sort((a, b) => (b.pinned ? 1 : 0) - (a.pinned ? 1 : 0) || b.ts - a.ts)
+  const sorted = rows.sort((a, b) => (b.pinned ? 1 : 0) - (a.pinned ? 1 : 0) || b.ts - a.ts)
+  groupRowsCache = sorted
+  return sorted
 }
 
 /** 思维链（只给人看）：某条角色消息生成时的思考内容；空串 = 无记录。 */

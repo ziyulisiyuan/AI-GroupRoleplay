@@ -44,7 +44,23 @@ img { display: block; }
   to { opacity: 1; transform: translateX(0); }
 }
 
-.scroll { flex: 1; min-height: 0; overflow-y: auto; -webkit-overflow-scrolling: touch; overscroll-behavior: contain; }
+/* 页面内层级切换（全局规则/聊天信息子页）：轻微上浮 + 淡入。
+   与整页 page-in 的横向滑动叠加时不抢戏；只动 transform/opacity。 */
+.view-enter { animation: view-in var(--t-view) ease-out; }
+@keyframes view-in {
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.scroll { flex: 1; min-height: 0; overflow-y: auto; overflow-x: hidden; -webkit-overflow-scrolling: touch; overscroll-behavior: contain; }
+
+/* 可点元素的按压/状态过渡（0.12s：按下即显、松开柔和回弹；只做颜色与透明度） */
+.cell, .menu-item, .pick-row, .check-cell, .danger-row, .mem-del, .field-action,
+.provider-pick, .navbar-btn, .navbar-text-btn, .tab,
+.batch-bar button, .dialog-btns button, .btn-plain, .composer-send, .composer-btn,
+.cropper-actions button {
+  transition: background-color 0.12s ease, opacity 0.12s ease, color 0.12s ease;
+}
 
 /* 导航栏 */
 .navbar {
@@ -136,6 +152,7 @@ img { display: block; }
   color: var(--text-1);
 }
 button.cell:active, .cell.tap:active { background: var(--bg-press); }
+.cell.tap { cursor: pointer; }
 .cell:not(:last-child)::after {
   content: "";
   position: absolute;
@@ -147,7 +164,7 @@ button.cell:active, .cell.tap:active { background: var(--bg-press); }
   transform: scaleY(0.5);
 }
 .cell-title { flex: 1; min-width: 0; }
-.cell-title .main { font-size: var(--fs-cell); color: var(--text-1); }
+.cell-title .main { font-size: var(--fs-cell); color: var(--text-1); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .cell-title .sub { font-size: var(--fs-sub); color: var(--text-2); margin-top: 3px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .cell-value { font-size: var(--fs-sub); color: var(--text-2); max-width: 45%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .cell-chevron { color: var(--text-3); flex: none; display: flex; }
@@ -166,7 +183,7 @@ button.cell:active, .cell.tap:active { background: var(--bg-press); }
   user-select: none;
 }
 .avatar img { width: 100%; height: 100%; object-fit: cover; }
-.avatar-pick { position: relative; flex: none; border-radius: var(--r-avatar); }
+.avatar-pick { position: relative; flex: none; border-radius: var(--r-avatar); cursor: pointer; }
 .avatar-pick .avatar-pick-mask {
   position: absolute; inset: 0;
   border-radius: var(--r-avatar);
@@ -222,7 +239,8 @@ button.cell:active, .cell.tap:active { background: var(--bg-press); }
 .hint { padding: var(--s-3) var(--s-4); font-size: var(--fs-cap); color: var(--text-2); line-height: 1.7; }
 
 /* 复选单元 */
-.check-cell { width: 100%; display: flex; align-items: center; gap: var(--s-3); min-height: var(--cell-h); padding: 0 var(--s-4); font-size: var(--fs-cell); position: relative; }
+.check-cell { width: 100%; display: flex; align-items: center; gap: var(--s-3); min-height: var(--cell-h); padding: 0 var(--s-4); font-size: var(--fs-cell); position: relative; cursor: pointer; }
+.check-cell:active { background: var(--bg-press); }
 .check-cell:not(:last-child)::after { content: ""; position: absolute; left: var(--s-4); right: 0; bottom: 0; height: 1px; background: var(--line); transform: scaleY(0.5); }
 .check-box {
   width: 22px; height: 22px;
@@ -244,7 +262,7 @@ button.cell:active, .cell.tap:active { background: var(--bg-press); }
 .msg-row .sel-box { margin-top: 10px; flex: none; }
 .msg-row.picked .bubble { outline: 2px solid var(--brand); outline-offset: -2px; }
 .msg-main { max-width: calc(100% - 104px); min-width: 0; }
-.msg-name { font-size: var(--fs-cap); color: var(--text-2); margin: 0 var(--s-1) 3px; }
+.msg-name { font-size: var(--fs-cap); color: var(--text-2); margin: 0 var(--s-1) 3px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .msg-row.out .msg-name { display: none; }
 .bubble {
   position: relative;
@@ -269,6 +287,16 @@ button.cell:active, .cell.tap:active { background: var(--bg-press); }
 .msg-row.out .bubble::after { right: -3px; border-radius: 0 0 0 2px; background: var(--bubble-out); }
 .bubble .cursor { display: inline-block; width: 2px; height: 1em; background: var(--text-1); vertical-align: -0.15em; margin-left: 1px; animation: blink 0.8s step-end infinite; }
 @keyframes blink { 50% { opacity: 0; } }
+
+/* 等待首个 token 的三点指示（替代空气泡） */
+.typing { display: inline-flex; align-items: center; gap: 4px; height: 1em; }
+.typing i { width: 5px; height: 5px; border-radius: 50%; background: var(--text-3); animation: typing 1.2s ease-in-out infinite; }
+.typing i:nth-child(2) { animation-delay: 0.15s; }
+.typing i:nth-child(3) { animation-delay: 0.3s; }
+@keyframes typing {
+  0%, 60%, 100% { opacity: 0.25; transform: translateY(0); }
+  30% { opacity: 0.9; transform: translateY(-3px); }
+}
 
 /* 输入区：普通文档流钉在页面底部。键盘的处理交给浏览器自身的页面压缩
    （压缩式浏览器：输入框天然贴在键盘上沿）；不做任何 JS 位移。 */
@@ -348,6 +376,7 @@ button.cell:active, .cell.tap:active { background: var(--bg-press); }
 
 /* 可点头像（聊天页）：设了图片才可点，点了放大查看 */
 .avatar-btn { flex: none; padding: 0; border: none; background: none; cursor: zoom-in; }
+.avatar-btn:active { opacity: 0.85; }
 .avatar-view { display: block; width: 100%; border-radius: var(--r-btn); }
 
 /* 拨片开关（状态记录）：关=灰轨白钮，开=品牌绿轨白钮 */
@@ -422,7 +451,7 @@ button.cell:active, .cell.tap:active { background: var(--bg-press); }
   animation: dialog-in var(--t-view) var(--ease-kb);
 }
 .dialog.closing .modal-box { animation: dialog-out var(--t-view) ease-in forwards; }
-.modal-title { flex: none; text-align: center; font-size: var(--fs-cap); color: var(--text-2); padding: var(--s-4) var(--s-4) var(--s-1); }
+.modal-title { flex: none; text-align: center; font-size: var(--fs-cap); color: var(--text-2); padding: var(--s-4) var(--s-4) var(--s-1); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .modal-body { overflow-y: auto; padding-bottom: var(--s-2); }
 .menu-item {
   display: flex; align-items: center; gap: var(--s-3);
@@ -435,6 +464,8 @@ button.cell:active, .cell.tap:active { background: var(--bg-press); }
 }
 .menu-item:active { background: var(--bg-press); }
 .menu-item.danger { color: var(--danger); }
+/* 菜单项之间的发丝分隔（微信动作面板观感） */
+.modal-body > .menu-item + .menu-item { border-top: 1px solid var(--line); }
 
 .toast {
   position: fixed;
@@ -453,22 +484,39 @@ button.cell:active, .cell.tap:active { background: var(--bg-press); }
   animation: fade-in var(--t-view) ease-out;
   pointer-events: none;
 }
+.toast.closing { animation: fade-out 0.2s ease-in forwards; }
 
 /* 聊天信息页顶部块 */
 .info-top { background: var(--bg-cell); padding: var(--s-4); display: flex; flex-direction: column; gap: var(--s-4); }
 .info-top-name { flex: 1; min-width: 0; }
-.info-top-name .n { font-size: var(--fs-nav); font-weight: 500; }
+.info-top-name .n { font-size: var(--fs-nav); font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .info-top-name .e { font-size: var(--fs-cap); color: var(--text-2); margin-top: 4px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .member-row { display: flex; flex-wrap: wrap; gap: var(--s-3); }
-.member { display: flex; flex-direction: column; align-items: center; gap: 4px; width: 48px; }
+.member { display: flex; flex-direction: column; align-items: center; gap: 4px; width: 48px; cursor: pointer; transition: opacity 0.12s ease; }
+.member:active { opacity: 0.7; }
 .member .member-name { font-size: 11px; color: var(--text-2); max-width: 48px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 /* 运行日志 */
 .log-row { background: var(--bg-cell); border-bottom: 1px solid var(--line); }
+.log-row summary { list-style: none; cursor: pointer; }
+.log-row summary::-webkit-details-marker { display: none; }
 .log-head { display: flex; align-items: baseline; gap: var(--s-2); padding: 10px var(--s-4); font-size: var(--fs-sub); }
 .log-head .t { color: var(--text-3); font-size: var(--fs-cap); flex: none; }
 .log-head .p { color: var(--brand); flex: none; font-weight: 500; }
 .log-head .s { color: var(--text-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; }
+/* 可展开提示：收起时朝下，展开时朝上 */
+.log-head::after {
+  content: "";
+  flex: none;
+  width: 7px;
+  height: 7px;
+  margin-left: var(--s-2);
+  border-right: 1.5px solid var(--text-3);
+  border-bottom: 1.5px solid var(--text-3);
+  transform: rotate(45deg) translateY(-2px);
+  transition: transform var(--t-view) ease;
+}
+.log-row[open] .log-head::after { transform: rotate(-135deg) translateY(-2px); }
 .log-row details summary { list-style: none; }
 .log-row pre {
   white-space: pre-wrap;
@@ -553,3 +601,4 @@ button.cell:active, .cell.tap:active { background: var(--bg-press); }
   color: var(--danger);
   font-size: var(--fs-cell);
 }
+.danger-row:active { background: var(--bg-press); }

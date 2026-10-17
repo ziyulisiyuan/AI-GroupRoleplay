@@ -3,7 +3,7 @@
  * 主页对齐微信首屏：顶部"主页面"+搜索/添加，群聊一行一条（头像/预览/时间）。
  */
 import React, { useCallback, useEffect, useState } from 'react'
-import { enc, getJson, loadGroupRows, postJson, putJson, type GroupRow, type ModelsInfo, type RuleItem } from './api.ts'
+import { enc, getJson, loadGroupRows, cachedGroupRows, clearGroupRowsCache, postJson, putJson, type GroupRow, type ModelsInfo, type RuleItem } from './api.ts'
 import { applyRules, isValidPattern, loadRules, newRuleId, saveRules, type RegexRule } from './regex.ts'
 import { Avatar, Cell, Cells, Field, Modal, NavBar, TabBarBar, ToastProvider, useToast } from './ui.tsx'
 import { ChatView } from './chat.tsx'
@@ -65,7 +65,7 @@ function listTime(ts: number): string {
 
 function HomeView({ onOpen, onNew }: { onOpen: (g: string) => void; onNew: () => void }): React.ReactElement {
   const toast = useToast()
-  const [rows, setRows] = useState<GroupRow[] | null>(null)
+  const [rows, setRows] = useState<GroupRow[] | null>(() => cachedGroupRows())
   const [q, setQ] = useState<string | null>(null)
 
   const load = useCallback(async (): Promise<void> => {
@@ -122,10 +122,22 @@ function HomeView({ onOpen, onNew }: { onOpen: (g: string) => void; onNew: () =>
 
 /* ---------- Tab 2：全局（二级页：全局规则 / 正则替换） ---------- */
 
+type RuleView = { k: 'hub' } | { k: 'ruleList' } | { k: 'regex' } | { k: 'ruleEdit'; id: string | null; seed?: RuleItem }
+
+/** 全局规则列表缓存：列表→编辑不重复拉取，返回列表也不闪空 */
+let rulesCache: RuleItem[] | null = null
+
 function RulesTab(): React.ReactElement {
-  const [view, setView] = useState<{ k: 'hub' } | { k: 'ruleList' } | { k: 'regex' } | { k: 'ruleEdit'; id: string | null }>({ k: 'hub' })
-  if (view.k === 'ruleList') return <RuleListView onBack={() => setView({ k: 'hub' })} onEdit={id => setView({ k: 'ruleEdit', id })} />
-  if (view.k === 'ruleEdit') return <RuleEditView id={view.id} onBack={() => setView({ k: 'ruleList' })} />
+  const [view, setView] = useState<RuleView>({ k: 'hub' })
+  // seed：把列表里刚点的那条规则直接带进编辑页，首帧就是正确内容（不闪加载/空表单）
+  if (view.k === 'ruleList') {
+    return <RuleListView onBack={() => setView({ k: 'hub' })}
+      onEdit={rule => setView({ k: 'ruleEdit', id: rule?.id ?? null, ...(rule === null ? {} : { seed: rule }) })} />
+  }
+  // key：从一条规则跳到另一条/新建时强制重挂载，避免沿用上一条的本地草稿
+  if (view.k === 'ruleEdit') {
+    return <RuleEditView key={view.id ?? 'new'} id={view.id} seed={view.seed} onBack={() => setView({ k: 'ruleList' })} />
+  }
   if (view.k === 'regex') return <RegexView onBack={() => setView({ k: 'hub' })} />
   return (
     <>
@@ -142,12 +154,14 @@ function RulesTab(): React.ReactElement {
 
 /* ---------- 全局规则列表：多条并存，每条独立启停（拨片；name/enabled 是纯前端标签） ---------- */
 
-function RuleListView({ onBack, onEdit }: { onBack: () => void; onEdit: (id: string | null) => void }): React.ReactElement {
+function RuleListView({ onBack, onEdit }: { onBack: () => void; onEdit: (rule: RuleItem | null) => void }): React.ReactElement {
   const toast = useToast()
-  const [rules, setRules] = useState<RuleItem[] | null>(null)
+  const [rules, setRules] = useState<RuleItem[] | null>(() => rulesCache)
   const load = useCallback(async (): Promise<void> => {
     try {
-      setRules((await getJson<{ rules: RuleItem[] }>('/api/rules')).rules)
+      const list = (await getJson<{ rules: RuleItem[] }>('/api/rules')).rules
+      rulesCache = list
+      setRules(list)
     } catch (e) {
       toast(e instanceof Error ? e.message : String(e))
     }
@@ -155,6 +169,7 @@ function RuleListView({ onBack, onEdit }: { onBack: () => void; onEdit: (id: str
   useEffect(() => { void load() }, [load])
   const persist = async (next: RuleItem[]): Promise<void> => {
     setRules(next)
+    rulesCache = next
     try {
       await putJson('/api/rules', { rules: next })
     } catch (e) {
@@ -164,13 +179,13 @@ function RuleListView({ onBack, onEdit }: { onBack: () => void; onEdit: (id: str
   return (
     <>
       <NavBar title="全局规则" onBack={onBack} />
-      <div className="scroll">
+      <div className="scroll view-enter">
         <Cells>
           <button className="cell" onClick={() => onEdit(null)}>
             <div className="cell-title"><div className="main" style={{ color: 'var(--brand)' }}>＋ 添加全局规则</div></div>
           </button>
           {rules?.map(r => (
-            <button key={r.id} className="cell" onClick={() => onEdit(r.id)}>
+            <button key={r.id} className="cell" onClick={() => onEdit(r)}>
               <div className="cell-title">
                 <div className="main">{r.name}</div>
                 <div className="sub">{r.text.trim() !== '' ? r.text.trim().split('\n')[0] : '（空）'}</div>
@@ -192,20 +207,24 @@ function RuleListView({ onBack, onEdit }: { onBack: () => void; onEdit: (id: str
 
 /* ---------- 全局规则编辑（页面跳转而非弹窗）：名称 + 正文 + 删除 ---------- */
 
-function RuleEditView({ id, onBack }: { id: string | null; onBack: () => void }): React.ReactElement {
+function RuleEditView({ id, seed, onBack }: { id: string | null; seed?: RuleItem; onBack: () => void }): React.ReactElement {
   const toast = useToast()
-  const [rules, setRules] = useState<RuleItem[] | null>(null)
-  const [name, setName] = useState('')
-  const [text, setText] = useState('')
+  const [rules, setRules] = useState<RuleItem[] | null>(() => rulesCache)
+  /** 首帧直接用列表带过来的规则（seed）渲染；完整列表后台载入，仅用于整表保存 */
+  const [name, setName] = useState(seed?.name ?? '')
+  const [text, setText] = useState(seed?.text ?? '')
   /** 载入时的原文：只有改动过才显示保存键（真机反馈：常驻保存键是噪音） */
-  const [initial, setInitial] = useState<{ name: string; text: string } | null>(null)
+  const [initial, setInitial] = useState<{ name: string; text: string } | null>(
+    id === null ? { name: '', text: '' } : (seed === undefined ? null : { name: seed.name, text: seed.text }),
+  )
   const [busy, setBusy] = useState(false)
   useEffect(() => {
     void (async () => {
       try {
         const list = (await getJson<{ rules: RuleItem[] }>('/api/rules')).rules
+        rulesCache = list
         setRules(list)
-        if (id === null) { setInitial({ name: '', text: '' }); return }
+        if (id === null || seed !== undefined) return // 内容已就位：列表只用于保存
         const r = list.find(x => x.id === id)
         if (r === undefined) { toast('规则不存在'); onBack(); return }
         setName(r.name)
@@ -213,10 +232,10 @@ function RuleEditView({ id, onBack }: { id: string | null; onBack: () => void })
         setInitial({ name: r.name, text: r.text })
       } catch (e) {
         toast(e instanceof Error ? e.message : String(e))
-        onBack()
+        if (seed === undefined) onBack()
       }
     })()
-  }, [id, toast, onBack])
+  }, [id, seed, toast, onBack])
   const dirty = initial !== null && (name !== initial.name || text !== initial.text)
   const save = async (): Promise<void> => {
     if (rules === null || busy) return
@@ -227,6 +246,7 @@ function RuleEditView({ id, onBack }: { id: string | null; onBack: () => void })
         ? [...rules, { id: `r${Date.now().toString(36)}`, name: name.trim(), enabled: true, text }]
         : rules.map(r => (r.id === id ? { ...r, name: name.trim(), text } : r))
       await putJson('/api/rules', { rules: next })
+      rulesCache = next
       onBack()
     } catch (e) {
       toast(e instanceof Error ? e.message : String(e))
@@ -238,7 +258,9 @@ function RuleEditView({ id, onBack }: { id: string | null; onBack: () => void })
     if (rules === null || id === null || busy) return
     setBusy(true)
     try {
-      await putJson('/api/rules', { rules: rules.filter(r => r.id !== id) })
+      const next = rules.filter(r => r.id !== id)
+      await putJson('/api/rules', { rules: next })
+      rulesCache = next
       onBack()
     } catch (e) {
       toast(e instanceof Error ? e.message : String(e))
@@ -246,16 +268,25 @@ function RuleEditView({ id, onBack }: { id: string | null; onBack: () => void })
       setBusy(false)
     }
   }
+  // 规则载入完成前不渲染表单：否则会先闪一帧空表单（看起来像"添加规则"页）
+  if (initial === null) {
+    return (
+      <>
+        <NavBar title={id === null ? '添加全局规则' : '编辑全局规则'} onBack={onBack} />
+        <div className="scroll"><div className="empty">加载中……</div></div>
+      </>
+    )
+  }
   return (
     <>
       <NavBar
         title={id === null ? '添加全局规则' : '编辑全局规则'}
         onBack={onBack}
         right={dirty
-          ? <button className="navbar-text-btn" disabled={busy} onClick={() => void save()}>保存</button>
+          ? <button className="navbar-text-btn" disabled={busy || rules === null} onClick={() => void save()}>保存</button>
           : undefined}
       />
-      <div className="scroll" style={{ display: 'flex', flexDirection: 'column' }}>
+      <div className="scroll view-enter" style={{ display: 'flex', flexDirection: 'column' }}>
         <Cells>
           <Field label="名称" value={name} onChange={setName} placeholder="规则的显示名（只影响列表，不进入角色提示词）" />
           <Field label="规则正文" value={text} onChange={setText} multiline rows={16} placeholder="（只写这条规则的内容；只有开启的规则才会注入角色）" />
@@ -315,7 +346,7 @@ function RegexView({ onBack }: { onBack: () => void }): React.ReactElement {
   return (
     <>
       <NavBar title="正则替换" onBack={onBack} />
-      <div className="scroll">
+      <div className="scroll view-enter">
         <Cells>
           <button className="cell" onClick={() => setEditing({ id: null, pattern: '', replacement: '', name: '', enabled: true })}>
             <div className="cell-title"><div className="main" style={{ color: 'var(--brand)' }}>＋ 添加正则</div></div>
@@ -386,9 +417,12 @@ const EFFORT_LABEL: Record<string, string> = {
   max: 'max',
 }
 
+/** 模型配置缓存：切回本 Tab 先展示上次结果，再静默刷新 */
+let modelsCache: ModelsInfo | null = null
+
 function ModelsView(): React.ReactElement {
   const toast = useToast()
-  const [info, setInfo] = useState<ModelsInfo | null>(null)
+  const [info, setInfo] = useState<ModelsInfo | null>(() => modelsCache)
   const [openCustom, setOpenCustom] = useState(false)
   const [draft, setDraft] = useState({ baseUrl: '', model: '', apiKey: '', reasoningEffort: 'high', maxTokens: '' })
   const [jevKey, setJevKey] = useState('')
@@ -401,7 +435,9 @@ function ModelsView(): React.ReactElement {
 
   const load = useCallback(async (): Promise<void> => {
     try {
-      setInfo(await getJson<ModelsInfo>('/api/models'))
+      const next = await getJson<ModelsInfo>('/api/models')
+      modelsCache = next
+      setInfo(next)
     } catch (e) {
       toast(e instanceof Error ? e.message : String(e))
     }
@@ -553,11 +589,13 @@ function ModelsView(): React.ReactElement {
                   {fetching ? '查询中…' : '获取列表'}
                 </button>
               </div>
-              {/* 思考档位：模型定下后才出现，值由用户自选（off = 不发该字段，不认它的模型也能用） */}
+              {/* 思考档位：模型定下后才出现。只读展示——点"选择"在弹窗里改，避免看起来能打字其实无效 */}
               {draft.model.trim() !== '' && (
                 <div className="field-row">
-                  <Field label="思考档位" value={EFFORT_LABEL[draft.reasoningEffort] ?? draft.reasoningEffort}
-                    onChange={() => undefined} />
+                  <div className="field" style={{ flex: 1, minWidth: 0 }}>
+                    <div className="field-label">思考档位</div>
+                    <div className="field-input">{EFFORT_LABEL[draft.reasoningEffort] ?? draft.reasoningEffort}</div>
+                  </div>
                   <button className="field-action" onClick={() => setEffortOpen(true)}>选择</button>
                 </div>
               )}
@@ -659,6 +697,7 @@ function NewGroupView({ onBack, onCreated }: { onBack: () => void; onCreated: (g
       await postJson<{ ok: boolean; name: string }>('/api/groups', {
         name: name.trim(), era, world, tone, scenes, scene: active,
       })
+      clearGroupRowsCache() // 新群还没进主页缓存：下次回主页重新拉（先显示旧列表再补齐）
       onCreated(name.trim())
     } catch (e) {
       toast(e instanceof Error ? e.message : String(e))
@@ -682,7 +721,12 @@ function NewGroupView({ onBack, onCreated }: { onBack: () => void; onCreated: (g
             <div className="cell-title"><div className="main" style={{ color: 'var(--brand)' }}>＋ 新建场景</div></div>
           </button>
           {scenes.map(s => (
-            <button key={s.name} className="cell" onClick={() => setActive(s.name)}>
+            // div 而非 button：内部还有"移除"按钮，button 不能嵌套（HTML 解析会提前闭合外层）
+            <div key={s.name} className="cell tap" role="button" tabIndex={0} onClick={() => setActive(s.name)}
+              onKeyDown={e => {
+                if (e.target !== e.currentTarget) return // 内层"移除"按钮自己的键盘事件
+                if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setActive(s.name) }
+              }}>
               <div className="cell-title">
                 <div className="main">{s.name}{active === s.name ? '（开局）' : ''}</div>
                 {s.description !== '' && <div className="sub">{s.description}</div>}
@@ -692,7 +736,7 @@ function NewGroupView({ onBack, onCreated }: { onBack: () => void; onCreated: (g
                 setScenes(list => list.filter(x => x.name !== s.name))
                 setActive(a => (a === s.name ? (scenes.find(x => x.name !== s.name)?.name ?? '') : a))
               }}>移除</button>
-            </button>
+            </div>
           ))}
         </Cells>
         <button className="btn-primary" disabled={busy || name.trim() === ''} onClick={() => void create()}>创建</button>

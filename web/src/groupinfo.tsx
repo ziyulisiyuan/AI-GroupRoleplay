@@ -7,10 +7,11 @@
  */
 import React, { useCallback, useEffect, useRef, useState } from 'react'
 import {
-  avatarUrl, delJson, enc, getJson, postJson, putJson,
+  avatarUrl, delJson, enc, getJson, postJson, putJson, clearGroupRowsCache,
   type Draft, type JudgeRow, type MemoryEntry, type Snapshot,
 } from './api.ts'
 import { Avatar, AvatarPicker, Cell, Cells, CheckCell, Confirm, Field, Modal, NavBar, useLongPress, useToast } from './ui.tsx'
+import { getTurn, forgetSnapshot, cachedSnapshot, cacheSnapshot } from './turn.ts'
 import type { Scene } from './api.ts'
 
 export const LEDGER_KEYS = ['生理状态', '心理状态', '外观状态', '位置状态', '性格演变', '姓名变化', '人物关系变化'] as const
@@ -27,13 +28,15 @@ const VIEW_TITLES: Record<Exclude<InfoView, { char: string } | { charSub: string
 
 export function InfoRoot({ group, onExit, onDeleted }: { group: string; onExit: () => void; onDeleted: () => void }): React.ReactElement {
   const [stack, setStack] = useState<InfoView[]>(['hub'])
-  const [snap, setSnap] = useState<Snapshot | null>(null)
+  const [snap, setSnap] = useState<Snapshot | null>(() => cachedSnapshot(group) ?? null)
   const [avatarV, setAvatarV] = useState(1)
   const toast = useToast()
 
   const refresh = useCallback(async (): Promise<void> => {
     try {
-      setSnap(await getJson<Snapshot>(`/api/group/${enc(group)}`))
+      const s = await getJson<Snapshot>(`/api/group/${enc(group)}`)
+      cacheSnapshot(group, s) // 聊天页共用：返回聊天时立即有最新快照
+      setSnap(s)
     } catch (e) {
       toast(e instanceof Error ? e.message : String(e))
     }
@@ -51,11 +54,15 @@ export function InfoRoot({ group, onExit, onDeleted }: { group: string; onExit: 
   const title = typeof top === 'string' ? VIEW_TITLES[top]
     : 'char' in top ? (top.char === '' ? '新建角色' : '角色资料')
       : top.page === 'profile' ? '个人资料' : top.page === 'memory' ? '记忆' : '状态账本'
+  /** 子页切换：换 key 重挂载滚动容器——滚动位回到顶部，并重放一次入场动画 */
+  const viewKey = typeof top === 'string' ? top
+    : 'char' in top ? `char:${top.char}`
+      : `sub:${top.charSub}:${top.page}`
 
   return (
     <div className="page page-enter">
       <NavBar title={title} onBack={pop} />
-      <div className="scroll">
+      <div className="scroll view-enter" key={viewKey}>
         {top === 'hub' && <HubView group={group} snap={snap} avatarV={avatarV} bump={bump} go={push} refresh={refresh} onDeleted={onDeleted} />}
         {top === 'settings' && <SettingsView group={group} snap={snap} onSaved={refresh} />}
         {top === 'me' && <MeView group={group} snap={snap} avatarV={avatarV} bump={bump} onSaved={refresh} />}
@@ -69,7 +76,11 @@ export function InfoRoot({ group, onExit, onDeleted }: { group: string; onExit: 
             : <CharHubView key={top.char} group={group} dirName={top.char} snap={snap} avatarV={avatarV} bump={bump} go={push} />
         )}
         {typeof top !== 'string' && 'page' in top && top.page === 'profile' && (
-          <CharProfileView key={`p-${top.charSub}`} group={group} dirName={top.charSub} scenes={snap?.scenes ?? []} locations={snap?.locations ?? {}} onChanged={refresh} />
+          <CharProfileView
+            key={`p-${top.charSub}`} group={group} dirName={top.charSub}
+            currentName={snap?.characters.find(c => c.dirName === top.charSub)?.name ?? top.charSub}
+            scenes={snap?.scenes ?? []} locations={snap?.locations ?? {}} onChanged={refresh}
+          />
         )}
         {typeof top !== 'string' && 'page' in top && top.page === 'memory' && (
           <CharMemoryView key={`m-${top.charSub}`} group={group} dirName={top.charSub} />
@@ -106,6 +117,7 @@ function HubView({ group, snap, avatarV, bump, go, refresh, onDeleted }: {
     setBusy(true)
     try {
       await putJson(`/api/group/${enc(group)}/pin`, { on: !pinned })
+      clearGroupRowsCache() // 置顶会改主页排序：回主页时重排
       await refresh()
     } catch (e) {
       toast(e instanceof Error ? e.message : String(e))
@@ -115,9 +127,13 @@ function HubView({ group, snap, avatarV, bump, go, refresh, onDeleted }: {
   }
   const clearRecords = async (): Promise<void> => {
     if (busy) return
+    // 生成中的一轮还在写日志：先等它结束，避免清空后被后台写回
+    if (getTurn(group).busy) { toast('角色还在生成，等这一轮结束再清空'); return }
     setBusy(true)
     try {
       await postJson(`/api/group/${enc(group)}/clear-records`, {})
+      forgetSnapshot(group) // 旧快照已失效：避免再次进入聊天页先闪一眼清空前的内容
+      clearGroupRowsCache() // 主页预览（最后一条消息）已变
       onDeleted() // 清空后回到主页：聊天页与新快照在下次进入时重建
     } catch (e) {
       toast(e instanceof Error ? e.message : String(e))
@@ -127,9 +143,12 @@ function HubView({ group, snap, avatarV, bump, go, refresh, onDeleted }: {
   }
   const deleteGroup = async (): Promise<void> => {
     if (busy) return
+    if (getTurn(group).busy) { toast('角色还在生成，等这一轮结束再删除'); return }
     setBusy(true)
     try {
       await delJson(`/api/group/${enc(group)}`)
+      forgetSnapshot(group)
+      clearGroupRowsCache() // 主页列表里不应再留这个群
       toast('群聊已删除')
       onDeleted()
     } catch (e) {
@@ -240,10 +259,13 @@ async function putBytesAvatar(path: string, blob: Blob): Promise<void> {
 
 function SettingsView({ group, snap, onSaved }: { group: string; snap: Snapshot | null; onSaved: () => Promise<void> }): React.ReactElement {
   const toast = useToast()
-  const [era, setEra] = useState<string | null>(null)
-  const [world, setWorld] = useState('')
-  const [tone, setTone] = useState('')
-  const [initial, setInitial] = useState<{ era: string; world: string; tone: string } | null>(null)
+  // 首帧就用快照里的值（快照通常已经在了），不再先渲染空表单
+  const [era, setEra] = useState<string | null>(snap?.era ?? null)
+  const [world, setWorld] = useState(snap?.world ?? '')
+  const [tone, setTone] = useState(snap?.tone ?? '')
+  const [initial, setInitial] = useState<{ era: string; world: string; tone: string } | null>(
+    snap === null ? null : { era: snap.era, world: snap.world, tone: snap.tone },
+  )
   useEffect(() => {
     if (snap !== null && era === null) {
       setEra(snap.era); setWorld(snap.world); setTone(snap.tone)
@@ -261,6 +283,8 @@ function SettingsView({ group, snap, onSaved }: { group: string; snap: Snapshot 
       toast(e instanceof Error ? e.message : String(e))
     }
   }
+  // 快照未到/未回填前不渲染表单：避免空字段闪帧
+  if (initial === null) return <div className="empty">加载中……</div>
   return (
     <>
       <Cells>
@@ -307,6 +331,8 @@ function MeView({ group, snap, avatarV, bump, onSaved }: {
       toast(e instanceof Error ? e.message : String(e))
     }
   }
+  // 载入完成前不渲染表单：避免先闪一帧空字段
+  if (initial === null) return <div className="empty">加载中……</div>
   return (
     <>
       <div className="info-top" style={{ alignItems: 'center' }}>
@@ -415,6 +441,8 @@ function ScenesView({ group, snap, onChanged }: {
     const s = lpTarget.current
     if (s === null) return
     suppressClick.current = true
+    // 兜底自动复位：长按后没有跟随 click（部分浏览器/右键路径）时，避免下一次点按被误吞
+    window.setTimeout(() => { suppressClick.current = false }, 500)
     setEditing(s)
     setEditDesc(s.description)
   })
@@ -555,9 +583,11 @@ function CharHubView({ group, dirName, snap, avatarV, bump, go }: {
 
 /** 个人资料：五项初始定义（新建模式下即创建表单）。新建时从地图选定初始所在场景；
  *  编辑页只显示目前所在场景（引擎维护的实时位置，presence 行派生），只读。 */
-function CharProfileView({ group, dirName, scenes, locations, onChanged, onCreated }: {
+function CharProfileView({ group, dirName, currentName, scenes, locations, onChanged, onCreated }: {
   group: string
   dirName: string
+  /** 引擎侧的当前生效名（位置表的键）；编辑姓名草稿时不跟着变 */
+  currentName?: string
   scenes: Scene[]
   locations: Record<string, string>
   onChanged: () => Promise<void>
@@ -565,6 +595,7 @@ function CharProfileView({ group, dirName, scenes, locations, onChanged, onCreat
 }): React.ReactElement {
   const toast = useToast()
   const isNew = dirName === ''
+  const liveName = currentName ?? dirName
   const [draft, setDraft] = useState<Draft>(EMPTY_DRAFT)
   /** 载入快照：只有改动过才可保存（与全局规则页一致的"无改动不打扰"） */
   const [initial, setInitial] = useState<Draft>(EMPTY_DRAFT)
@@ -610,12 +641,13 @@ function CharProfileView({ group, dirName, scenes, locations, onChanged, onCreat
     }
   }
 
-  /** 手动改这个角色的位置（引擎维护的实时位置，presence 行派生）。 */
+  /** 手动改这个角色的位置（引擎维护的实时位置，presence 行派生）。
+   *  用当前生效名而不是表单里的草稿名：改了姓名还没保存时，位置表里仍是旧名。 */
   const moveTo = async (scene: string): Promise<void> => {
     try {
-      await putJson(`/api/group/${enc(group)}/location`, { character: draft.name, scene })
+      await putJson(`/api/group/${enc(group)}/location`, { character: liveName, scene })
       setLocOpen(false)
-      toast(`${draft.name} → ${scene}`)
+      toast(`${liveName} → ${scene}`)
       await onChanged()
     } catch (e) {
       toast(e instanceof Error ? e.message : String(e))
@@ -623,7 +655,7 @@ function CharProfileView({ group, dirName, scenes, locations, onChanged, onCreat
   }
 
   if (!loaded) return <div className="empty">加载中……</div>
-  const currentLoc = locations[draft.name]
+  const currentLoc = locations[liveName]
   return (
     <>
       <Cells>
