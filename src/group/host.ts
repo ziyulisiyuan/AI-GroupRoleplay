@@ -14,6 +14,7 @@ import { roleplayInstruction } from '../host.ts'
 import { LEDGER_KEYS, ledgerPrompt, personalityPrompt, relationshipsPrompt, pickLedgerFields, type CharacterFiles } from './status.ts'
 import { parseRemoteList, type RemoteLink } from './presence.ts'
  import type { Brief, BriefDraft } from './briefs.ts'
+ import type { MidCheckRule } from './midcheck.ts'
  import { parsePerceives, parseSequence, strArray } from './briefs.ts'
 
 /** assembleGroup 的可选输入（避免位置参数越堆越长）。 */
@@ -26,6 +27,8 @@ export interface AssembleInput {
   suppressedMids?: ReadonlySet<number>
   /** §4.2 #4：由 buildMemory 产出的记忆注入片段 */
   memoryText?: string
+  /** 个人知识库（知识库.md，用户写的白板）：只注入本角色；位置刻意放在中段（见下） */
+  knowledge?: string
   /** §3.1.1：用户自己的设定 */
   userPersona?: UserPersona
   /** §3.1.2：工作区根目录 规则.md 的正文（用户自写的约束词；空 = 不注入） */
@@ -50,7 +53,7 @@ export function assembleGroup(
   history: MsgLine[],
   input: AssembleInput = {},
 ): { system: string; messages: Array<{ role: 'user' | 'assistant'; content: string }> } {
-  const { files, memoryText = '', userPersona, rules = '', presentNames, remote = [], overhear = [], appearances, scenes, activeScene } = input
+  const { files, memoryText = '', knowledge = '', userPersona, rules = '', presentNames, remote = [], overhear = [], appearances, scenes, activeScene } = input
   const personality = files !== undefined ? personalityPrompt(files.personality) : ''
   const relationships = files !== undefined ? relationshipsPrompt(files.relationships) : ''
 
@@ -105,6 +108,10 @@ export function assembleGroup(
     '只有现场的人能直接看到这里发生的一切；通道接入者只感知其通道传到的部分；这些人之外的角色不知道这里发生了什么。',
   ].filter(s => s !== '')
   const presenceSection = presentNames === undefined ? '' : sceneLines.join('\n')
+  // 个人知识库（角色目录 知识库.md）：用户自由书写的白板，只属于这个角色。
+  // [WHY] 位置刻意放在**中段**（记忆之后、世界/地图/规则之前）：它不是规则、不承载强制约束，
+  // 用户也不希望它抢注意力——长上下文的中间是最弱的注意力区，首尾留给身份、场景与规则。
+  const knowledgeSection = knowledge.trim() !== '' ? `【你的知识库】\n${knowledge.trim()}` : ''
   const system = [
     `你扮演「${persona.name}」。`,
     ...fields,
@@ -112,6 +119,7 @@ export function assembleGroup(
     presenceSection,
     user !== '' ? user : '',
     memoryText !== '' ? memoryText : '',
+    knowledgeSection !== '' ? knowledgeSection : '',
     ...world,
     mapSection !== '' ? mapSection : '',
     rulesSection,
@@ -390,8 +398,9 @@ function asArray<T>(value: unknown): T[] {
  * unlinkedKnowsMin：知情判定的场外门槛——不在现场、也没有接入/单向感知链路的角色，必须过更高的把握
  *   才写进 visible_to。写进去就撤不掉（消息出生快照没有改写路径），所以别让单次概率尖峰把场外无关角色拉进名单。
  * briefMin：任务书判定（离场管线 §2/§11.3）——本次离场是否留底任务书；默认 0.5。
+ * midCheckMin：中间判定（§6.1e）——每条规则的 noul 过这条线才把它的第二段发回角色改稿；默认 0.6。
  */
-export const JEV_THRESHOLDS = { confidenceMin: 0.45, perceiveMin: 0.7, interactMin: 0.7, interactMax: 0.3, presentKnowsMin: 0.23, gateKeep: 0.5, unlinkedKnowsMin: 0.65, toldMin: 0.5, extraRoundMin: 0.39, briefMin: 0.5 }
+export const JEV_THRESHOLDS = { confidenceMin: 0.45, perceiveMin: 0.7, interactMin: 0.7, interactMax: 0.3, presentKnowsMin: 0.23, gateKeep: 0.5, unlinkedKnowsMin: 0.65, toldMin: 0.5, extraRoundMin: 0.39, briefMin: 0.5, midCheckMin: 0.6 }
 
 /** 知情判定门槛分三档：现场者用 presentKnowsMin（人在跟前，只有接近明确否定才排除）；
  *  有感知链路者（接入/单向感知）用 gateKeep；两者都不是的场外角色用 unlinkedKnowsMin。 */
@@ -916,6 +925,66 @@ export async function jevExtraRounds(input: {
     input.log?.({ character: input.character, error: String(e instanceof Error ? e.message : e) })
     if (process.env.DSH_DEBUG === '1') console.error('[jevExtraRounds] 逐轮判定失败（不移植）:', e)
     return undefined
+  }
+}
+
+// ---------- 中间判定（SPEC §6.1e）：草稿生成之后，逐条规则各问一次 Jev ----------
+
+/** 命中后发回角色的改稿指令开头（用户口径：只加这一句，其余全靠每条规则自己的第二段）。 */
+export const MID_CHECK_LEAD = '以下要求你的输出未满足，请据此重写，只输出改后的内容：'
+
+/** 一条规则的判定结果（判定.jsonl 用：原始概率或失败原因）。 */
+export interface MidCheckVerdict {
+  name: string
+  noul?: number
+  error?: string
+}
+
+/**
+ * 中间判定：每条启用的规则**各发一次** systemone 调用（并发、互不共享题面——
+ * 一条规则只带自己那句话，判定之间不互相污染）。state 只有两样东西：
+ * 角色这段草稿，以及用户最近一句（判定"这段输出有没有踩线"所需的全部上下文）。
+ * 命中（noul ≥ midCheckMin）的规则把第二段拼成一条改稿指令；没有命中 = 空串（草稿即最终输出）。
+ * 单条失败按"未命中"处理——判定是可选层，任何失败都不许卡住剧情。
+ */
+export async function jevMidChecks(input: {
+  llm: { baseUrl: string; apiKey: string; model: string }
+  /** 角色的中间输出（草稿）原文。 */
+  draft: string
+  /** 用户最近一句（没有就不给）。 */
+  userText: string
+  rules: ReadonlyArray<MidCheckRule>
+  timeoutMs?: number
+}): Promise<{ verdicts: MidCheckVerdict[]; hits: string[]; prompt: string }> {
+  if (input.rules.length === 0) return { verdicts: [], hits: [], prompt: '' }
+  const state = [
+    input.userText.trim() === '' ? '' : `[用户刚说的]\n${input.userText}`,
+    '[角色的输出]',
+    input.draft,
+  ].filter(s => s !== '').join('\n\n')
+  const settled = await Promise.all(input.rules.map(async (r): Promise<{ rule: MidCheckRule; noul?: number; error?: string }> => {
+    try {
+      const answers = await jevDecide({
+        llm: input.llm,
+        state,
+        questions: { violation: { type: 'noul', instructions: `本段输出是否违反了${r.check}` } },
+        timeoutMs: input.timeoutMs,
+      })
+      const a = answers['violation']
+      if (a?.type !== 'noul') return { rule: r, error: '缺少 noul 答案' }
+      return { rule: r, noul: a.noul }
+    } catch (e) {
+      return { rule: r, error: e instanceof Error ? e.message : String(e) }
+    }
+  }))
+  const hit = settled.filter(s => s.noul !== undefined && s.noul >= JEV_THRESHOLDS.midCheckMin)
+  const prompt = hit.length === 0
+    ? ''
+    : [MID_CHECK_LEAD, ...hit.map(s => `- ${s.rule.fix.trim()}`)].join('\n')
+  return {
+    verdicts: settled.map(s => ({ name: s.rule.name, ...(s.noul === undefined ? {} : { noul: s.noul }), ...(s.error === undefined ? {} : { error: s.error }) })),
+    hits: hit.map(s => s.rule.name),
+    prompt,
   }
 }
 

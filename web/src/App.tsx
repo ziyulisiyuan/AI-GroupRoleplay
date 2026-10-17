@@ -3,8 +3,8 @@
  * 主页对齐微信首屏：顶部"主页面"+搜索/添加，群聊一行一条（头像/预览/时间）。
  */
 import React, { useCallback, useEffect, useState } from 'react'
-import { enc, getJson, loadGroupRows, cachedGroupRows, clearGroupRowsCache, postJson, putJson, type GroupRow, type ModelsInfo, type RuleItem } from './api.ts'
-import { applyRules, isValidPattern, loadRules, newRuleId, saveRules, type RegexRule } from './regex.ts'
+import { enc, getJson, loadGroupRows, cachedGroupRows, clearGroupRowsCache, postJson, putJson, type GroupRow, type MidCheckItem, type ModelsInfo, type RuleItem } from './api.ts'
+import { MidCheckEditPage, MidCheckListPage, RegexPage, RuleEditPage, RuleListPage } from './rulesui.tsx'
 import { Avatar, Cell, Cells, Field, Modal, NavBar, TabBarBar, ToastProvider, useToast } from './ui.tsx'
 import { ChatView } from './chat.tsx'
 import { InfoRoot } from './groupinfo.tsx'
@@ -120,25 +120,36 @@ function HomeView({ onOpen, onNew }: { onOpen: (g: string) => void; onNew: () =>
   )
 }
 
-/* ---------- Tab 2：全局（二级页：全局规则 / 正则替换） ---------- */
+/* ---------- Tab 2：全局（二级页：全局规则 / 正则替换 / Jev中间判定） ----------
+   三个页面与聊天信息里的「独立…」页共用同一套实现（rulesui.tsx）——这里只差 endpoint 与文案。 */
 
 type RuleView = { k: 'hub' } | { k: 'ruleList' } | { k: 'regex' } | { k: 'ruleEdit'; id: string | null; seed?: RuleItem }
-
-/** 全局规则列表缓存：列表→编辑不重复拉取，返回列表也不闪空 */
-let rulesCache: RuleItem[] | null = null
+  | { k: 'midList' } | { k: 'midEdit'; id: string | null; seed?: MidCheckItem }
 
 function RulesTab(): React.ReactElement {
   const [view, setView] = useState<RuleView>({ k: 'hub' })
-  // seed：把列表里刚点的那条规则直接带进编辑页，首帧就是正确内容（不闪加载/空表单）
+  const hub = (): void => setView({ k: 'hub' })
+  // seed：把列表里刚点的那条直接带进编辑页，首帧就是正确内容（不闪加载/空表单）
   if (view.k === 'ruleList') {
-    return <RuleListView onBack={() => setView({ k: 'hub' })}
-      onEdit={rule => setView({ k: 'ruleEdit', id: rule?.id ?? null, ...(rule === null ? {} : { seed: rule }) })} />
+    return <RuleListPage frame="page" title="全局规则" addLabel="＋ 添加全局规则"
+      emptyHint="（还没有全局规则——点上方「＋ 添加全局规则」创建）" endpoint="/api/rules" onBack={hub}
+      onEdit={r => setView({ k: 'ruleEdit', id: r?.id ?? null, ...(r === null ? {} : { seed: r }) })} />
   }
   // key：从一条规则跳到另一条/新建时强制重挂载，避免沿用上一条的本地草稿
   if (view.k === 'ruleEdit') {
-    return <RuleEditView key={view.id ?? 'new'} id={view.id} seed={view.seed} onBack={() => setView({ k: 'ruleList' })} />
+    return <RuleEditPage key={view.id ?? 'new'} frame="page" endpoint="/api/rules" id={view.id} seed={view.seed}
+      titleNew="添加全局规则" titleEdit="编辑全局规则" onBack={() => setView({ k: 'ruleList' })} />
   }
-  if (view.k === 'regex') return <RegexView onBack={() => setView({ k: 'hub' })} />
+  if (view.k === 'midList') {
+    return <MidCheckListPage frame="page" title="Jev中间判定" addLabel="＋ 新建 Jev 中间判定"
+      emptyHint="（还没有判定——点上方「＋ 新建 Jev 中间判定」创建）" endpoint="/api/mid-checks" onBack={hub}
+      onEdit={c => setView({ k: 'midEdit', id: c?.id ?? null, ...(c === null ? {} : { seed: c }) })} />
+  }
+  if (view.k === 'midEdit') {
+    return <MidCheckEditPage key={view.id ?? 'new'} frame="page" endpoint="/api/mid-checks" id={view.id} seed={view.seed}
+      titleNew="新建 Jev 中间判定" titleEdit="编辑 Jev 中间判定" onBack={() => setView({ k: 'midList' })} />
+  }
+  if (view.k === 'regex') return <RegexPage frame="page" title="正则替换" addLabel="＋ 添加正则" onBack={hub} />
   return (
     <>
       <NavBar title="全局" />
@@ -146,255 +157,9 @@ function RulesTab(): React.ReactElement {
         <Cells>
           <Cell title="全局规则" arrow onTap={() => setView({ k: 'ruleList' })} />
           <Cell title="正则替换" arrow onTap={() => setView({ k: 'regex' })} />
+          <Cell title="Jev中间判定" arrow onTap={() => setView({ k: 'midList' })} />
         </Cells>
       </div>
-    </>
-  )
-}
-
-/* ---------- 全局规则列表：多条并存，每条独立启停（拨片；name/enabled 是纯前端标签） ---------- */
-
-function RuleListView({ onBack, onEdit }: { onBack: () => void; onEdit: (rule: RuleItem | null) => void }): React.ReactElement {
-  const toast = useToast()
-  const [rules, setRules] = useState<RuleItem[] | null>(() => rulesCache)
-  const load = useCallback(async (): Promise<void> => {
-    try {
-      const list = (await getJson<{ rules: RuleItem[] }>('/api/rules')).rules
-      rulesCache = list
-      setRules(list)
-    } catch (e) {
-      toast(e instanceof Error ? e.message : String(e))
-    }
-  }, [toast])
-  useEffect(() => { void load() }, [load])
-  const persist = async (next: RuleItem[]): Promise<void> => {
-    setRules(next)
-    rulesCache = next
-    try {
-      await putJson('/api/rules', { rules: next })
-    } catch (e) {
-      toast(e instanceof Error ? e.message : String(e))
-    }
-  }
-  return (
-    <>
-      <NavBar title="全局规则" onBack={onBack} />
-      <div className="scroll view-enter">
-        <Cells>
-          <button className="cell" onClick={() => onEdit(null)}>
-            <div className="cell-title"><div className="main" style={{ color: 'var(--brand)' }}>＋ 添加全局规则</div></div>
-          </button>
-          {rules?.map(r => (
-            <button key={r.id} className="cell" onClick={() => onEdit(r)}>
-              <div className="cell-title">
-                <div className="main">{r.name}</div>
-                <div className="sub">{r.text.trim() !== '' ? r.text.trim().split('\n')[0] : '（空）'}</div>
-              </div>
-              <span
-                className={'switch' + (r.enabled ? ' on' : '')}
-                onClick={e => { e.stopPropagation(); void persist(rules.map(x => (x.id === r.id ? { ...x, enabled: !x.enabled } : x))) }}
-              >
-                <span className="knob" />
-              </span>
-            </button>
-          ))}
-          {rules !== null && rules.length === 0 && <div className="hint">（还没有全局规则——点上方「＋ 添加全局规则」创建）</div>}
-        </Cells>
-      </div>
-    </>
-  )
-}
-
-/* ---------- 全局规则编辑（页面跳转而非弹窗）：名称 + 正文 + 删除 ---------- */
-
-function RuleEditView({ id, seed, onBack }: { id: string | null; seed?: RuleItem; onBack: () => void }): React.ReactElement {
-  const toast = useToast()
-  const [rules, setRules] = useState<RuleItem[] | null>(() => rulesCache)
-  /** 首帧直接用列表带过来的规则（seed）渲染；完整列表后台载入，仅用于整表保存 */
-  const [name, setName] = useState(seed?.name ?? '')
-  const [text, setText] = useState(seed?.text ?? '')
-  /** 载入时的原文：只有改动过才显示保存键（真机反馈：常驻保存键是噪音） */
-  const [initial, setInitial] = useState<{ name: string; text: string } | null>(
-    id === null ? { name: '', text: '' } : (seed === undefined ? null : { name: seed.name, text: seed.text }),
-  )
-  const [busy, setBusy] = useState(false)
-  useEffect(() => {
-    void (async () => {
-      try {
-        const list = (await getJson<{ rules: RuleItem[] }>('/api/rules')).rules
-        rulesCache = list
-        setRules(list)
-        if (id === null || seed !== undefined) return // 内容已就位：列表只用于保存
-        const r = list.find(x => x.id === id)
-        if (r === undefined) { toast('规则不存在'); onBack(); return }
-        setName(r.name)
-        setText(r.text)
-        setInitial({ name: r.name, text: r.text })
-      } catch (e) {
-        toast(e instanceof Error ? e.message : String(e))
-        if (seed === undefined) onBack()
-      }
-    })()
-  }, [id, seed, toast, onBack])
-  const dirty = initial !== null && (name !== initial.name || text !== initial.text)
-  const save = async (): Promise<void> => {
-    if (rules === null || busy) return
-    if (name.trim() === '') { toast('名称不能为空'); return }
-    setBusy(true)
-    try {
-      const next = id === null
-        ? [...rules, { id: `r${Date.now().toString(36)}`, name: name.trim(), enabled: true, text }]
-        : rules.map(r => (r.id === id ? { ...r, name: name.trim(), text } : r))
-      await putJson('/api/rules', { rules: next })
-      rulesCache = next
-      onBack()
-    } catch (e) {
-      toast(e instanceof Error ? e.message : String(e))
-    } finally {
-      setBusy(false)
-    }
-  }
-  const remove = async (): Promise<void> => {
-    if (rules === null || id === null || busy) return
-    setBusy(true)
-    try {
-      const next = rules.filter(r => r.id !== id)
-      await putJson('/api/rules', { rules: next })
-      rulesCache = next
-      onBack()
-    } catch (e) {
-      toast(e instanceof Error ? e.message : String(e))
-    } finally {
-      setBusy(false)
-    }
-  }
-  // 规则载入完成前不渲染表单：否则会先闪一帧空表单（看起来像"添加规则"页）
-  if (initial === null) {
-    return (
-      <>
-        <NavBar title={id === null ? '添加全局规则' : '编辑全局规则'} onBack={onBack} />
-        <div className="scroll"><div className="empty">加载中……</div></div>
-      </>
-    )
-  }
-  return (
-    <>
-      <NavBar
-        title={id === null ? '添加全局规则' : '编辑全局规则'}
-        onBack={onBack}
-        right={dirty
-          ? <button className="navbar-text-btn" disabled={busy || rules === null} onClick={() => void save()}>保存</button>
-          : undefined}
-      />
-      <div className="scroll view-enter" style={{ display: 'flex', flexDirection: 'column' }}>
-        <Cells>
-          <Field label="名称" value={name} onChange={setName} placeholder="规则的显示名（只影响列表，不进入角色提示词）" />
-          <Field label="规则正文" value={text} onChange={setText} multiline rows={16} placeholder="（只写这条规则的内容；只有开启的规则才会注入角色）" />
-        </Cells>
-        {id !== null && (
-          <div style={{ padding: '0 var(--s-4) var(--s-3)' }}>
-            <button style={{ color: 'var(--danger)', fontSize: 'var(--fs-sub)' }} disabled={busy} onClick={() => void remove()}>删除这条规则</button>
-          </div>
-        )}
-      </div>
-    </>
-  )
-}
-
-/* ---------- 正则替换（显示层：只改你看到的文字，不影响模型与记忆） ---------- */
-
-function RegexView({ onBack }: { onBack: () => void }): React.ReactElement {
-  const toast = useToast()
-  const [rules, setRules] = useState<RegexRule[]>(() => loadRules())
-  const [editing, setEditing] = useState<{ id: string | null; pattern: string; replacement: string; name: string; enabled: boolean } | null>(null)
-
-  const persist = (next: RegexRule[]): void => {
-    setRules(next)
-    saveRules(next)
-  }
-
-  const submit = (): void => {
-    if (editing === null) return
-    const pattern = editing.pattern.trim()
-    if (pattern === '') {
-      toast('匹配内容不能为空')
-      return
-    }
-    if (!isValidPattern(pattern)) {
-      toast('正则写法有误，请检查')
-      return
-    }
-    const rule: RegexRule = {
-      id: editing.id ?? newRuleId(),
-      pattern,
-      replacement: editing.replacement,
-      name: editing.name.trim() || pattern,
-      enabled: editing.enabled,
-    }
-    persist(editing.id === null ? [...rules, rule] : rules.map(r => (r.id === editing.id ? rule : r)))
-    setEditing(null)
-    toast('已保存（只影响显示）')
-  }
-
-  const remove = (): void => {
-    if (editing?.id === null || editing === null) return
-    persist(rules.filter(r => r.id !== editing.id))
-    setEditing(null)
-    toast('已删除')
-  }
-
-  return (
-    <>
-      <NavBar title="正则替换" onBack={onBack} />
-      <div className="scroll view-enter">
-        <Cells>
-          <button className="cell" onClick={() => setEditing({ id: null, pattern: '', replacement: '', name: '', enabled: true })}>
-            <div className="cell-title"><div className="main" style={{ color: 'var(--brand)' }}>＋ 添加正则</div></div>
-          </button>
-          {rules.map(r => (
-            <button key={r.id} className="cell" onClick={() => setEditing({ id: r.id, pattern: r.pattern, replacement: r.replacement, name: r.name, enabled: r.enabled })}>
-              <div className="cell-title">
-                <div className="main">{r.name}</div>
-                <div className="sub">{r.pattern} → {r.replacement === '' ? '（删除）' : r.replacement}</div>
-              </div>
-              <span
-                className={'switch' + (r.enabled ? ' on' : '')}
-                onClick={e => { e.stopPropagation(); persist(rules.map(x => (x.id === r.id ? { ...x, enabled: !x.enabled } : x))) }}
-              >
-                <span className="knob" />
-              </span>
-            </button>
-          ))}
-          {rules.length === 0 && <div className="hint">（还没有规则）</div>}
-        </Cells>
-      </div>
-
-      <Modal open={editing !== null} onClose={() => setEditing(null)} title={editing?.id == null ? '添加正则' : '编辑正则'}>
-        <div className="field">
-          <div className="field-label">匹配（正则）</div>
-          <input className="field-input" value={editing?.pattern ?? ''} placeholder="如：tt"
-            onChange={e => setEditing(s => (s === null ? s : { ...s, pattern: e.target.value }))} />
-        </div>
-        <div className="field">
-          <div className="field-label">替换为</div>
-          <input className="field-input" value={editing?.replacement ?? ''} placeholder="如：你好（留空 = 删掉匹配到的内容）"
-            onChange={e => setEditing(s => (s === null ? s : { ...s, replacement: e.target.value }))} />
-        </div>
-        <div className="field">
-          <div className="field-label">正则命名</div>
-          <input className="field-input" value={editing?.name ?? ''} placeholder="如：口令替换"
-            onChange={e => setEditing(s => (s === null ? s : { ...s, name: e.target.value }))} />
-        </div>
-        <div style={{ display: 'flex', gap: 'var(--s-2)', padding: '0 var(--s-4) var(--s-2)' }}>
-          <button className="btn-plain" style={{ flex: 1, width: 'auto', margin: 0 }} onClick={() => setEditing(null)}>取消</button>
-          <button className="btn-primary" style={{ flex: 1, width: 'auto', margin: 0 }} onClick={submit}>保存</button>
-        </div>
-        {editing?.id != null && (
-          <div style={{ padding: '0 var(--s-4) var(--s-3)' }}>
-            <button style={{ color: 'var(--danger)', fontSize: 'var(--fs-sub)' }} onClick={remove}>删除这条规则</button>
-          </div>
-        )}
-      </Modal>
     </>
   )
 }

@@ -56,6 +56,8 @@ export interface MemoryEntry { index: number; source: string; round: number; tex
 export type JudgeRow = { ts?: string; phase?: string } & Record<string, unknown>
 /** 全局规则条目（name/enabled 是前端标签，只有 text 注入角色）。 */
 export interface RuleItem { id: string; name: string; enabled: boolean; text: string }
+/** Jev 中间判定规则（两段固定格式：check = 题面填空，fix = 命中后发回角色的改稿要求）。 */
+export interface MidCheckItem { id: string; name: string; enabled: boolean; check: string; fix: string }
 
 export const enc = encodeURIComponent
 
@@ -151,8 +153,14 @@ export async function loadGroupRows(): Promise<GroupRow[]> {
   return sorted
 }
 
-/** 思维链（只给人看）：某条角色消息生成时的思考内容；空串 = 无记录。 */
-export async function getThinking(group: string, id: number): Promise<string> {
-  const j = await getJson<{ thinking: string }>(`/api/group/${enc(group)}/message/${id}/thinking`)
-  return j.thinking ?? ''
+/** 思维链（只给人看）：before = 循环前（草稿生成），after = 循环后（判定命中后改稿）；空串 = 该段无记录。 */
+export async function getThinking(group: string, id: number): Promise<{ before: string; after: string }> {
+  const j = await getJson<{ thinking: string; after?: string }>(`/api/group/${enc(group)}/message/${id}/thinking`)
+  return { before: j.thinking ?? '', after: j.after ?? '' }
+}
+
+/** 有「循环后」思维链的消息 id：长按菜单据此决定要不要给出这一项（没改过稿就没有）。 */
+export async function listThinkingAfter(group: string): Promise<number[]> {
+  const j = await getJson<{ after: number[] }>(`/api/group/${enc(group)}/thinking`)
+  return Array.isArray(j.after) ? j.after : []
 }

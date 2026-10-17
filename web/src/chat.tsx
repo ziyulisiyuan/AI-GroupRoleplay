@@ -7,7 +7,7 @@
  *   确认文案按 SPEC 必须说明日志不保留原文）。
  */
 import React, { memo, useCallback, useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from 'react'
-import { avatarUrl, getJson, getThinking, postJson, postStream, readNdjson, type Ev, type Msg, type Snapshot } from './api.ts'
+import { avatarUrl, getJson, getThinking, listThinkingAfter, postJson, postStream, readNdjson, type Ev, type Msg, type Snapshot } from './api.ts'
 import { applyRules } from './regex.ts'
 import { subscribeTurn, getTurn, turnBegin, turnSpeaker, turnDelta, turnReplyDone, turnEnd, turnPatch, turnSetStatus, cachedSnapshot, cacheSnapshot } from './turn.ts'
 import { Avatar, Confirm, Modal, NavBar, useLongPress, useToast } from './ui.tsx'
@@ -39,9 +39,12 @@ export function ChatView({ group, onBack, onOpenInfo }: Props): React.ReactEleme
     useCallback(cb => subscribeTurn(group, cb), [group]),
     () => getTurn(group),
   )
-  /** 思维链只读弹窗：该条角色消息生成时的思考内容（'' = 无记录，null = 加载中）。 */
+  /** 思维链只读弹窗：循环前 = 草稿生成、循环后 = 判定命中后改稿（'' = 无记录，null = 加载中）。 */
   const [thinkingMsg, setThinkingMsg] = useState<Msg | null>(null)
-  const [thinkingText, setThinkingText] = useState<string | null>(null)
+  const [thinkingStage, setThinkingStage] = useState<'循环前' | '循环后'>('循环前')
+  const [thinkingData, setThinkingData] = useState<{ before: string; after: string } | null>(null)
+  /** 有「循环后」思维链的消息 id：没改过稿就没有这一项，菜单里干脆不显示（免得点开是空的）。 */
+  const [afterIds, setAfterIds] = useState<ReadonlySet<number>>(new Set())
   /** 头像查看弹窗：点消息头像放大看图（未设置头像的消息没有此入口）。 */
   const [viewAvatar, setViewAvatar] = useState<{ name: string; url: string } | null>(null)
   const openAvatar = useCallback((name: string, url: string): void => { setViewAvatar({ name, url }) }, [])
@@ -70,6 +73,9 @@ export function ChatView({ group, onBack, onOpenInfo }: Props): React.ReactEleme
     } catch (e) {
       toast(e instanceof Error ? e.message : String(e))
     }
+    try {
+      setAfterIds(new Set(await listThinkingAfter(group))) // 只影响长按菜单里的一个入口，失败无所谓
+    } catch { /* 忽略：菜单少一项不影响剧情 */ }
   }, [group, toast])
 
   useEffect(() => { void refresh() }, [refresh])
@@ -268,18 +274,20 @@ export function ChatView({ group, onBack, onOpenInfo }: Props): React.ReactEleme
     } else fallback()
   }, [toast])
 
-  /** 查看思维链（只读）：取本条消息生成时的思考内容；失败/无记录都有明确提示。 */
-  const openThinking = useCallback(async (m: Msg): Promise<void> => {
+  /** 查看思维链（只读）：两段一次取回，弹窗按阶段取其中一段；失败/无记录都有明确提示。 */
+  const openThinking = useCallback(async (m: Msg, stage: '循环前' | '循环后'): Promise<void> => {
     setMenuMsg(null)
     setThinkingMsg(m)
-    setThinkingText(null)
+    setThinkingStage(stage)
+    setThinkingData(null)
     try {
-      setThinkingText(await getThinking(group, m.id))
+      setThinkingData(await getThinking(group, m.id))
     } catch (e) {
-      setThinkingText('')
+      setThinkingData({ before: '', after: '' })
       toast(e instanceof Error ? e.message : String(e))
     }
   }, [group, toast])
+  const thinkingText = thinkingData === null ? null : (thinkingStage === '循环前' ? thinkingData.before : thinkingData.after)
 
   return (
     <div className="page chat-page page-enter">
@@ -299,7 +307,7 @@ export function ChatView({ group, onBack, onOpenInfo }: Props): React.ReactEleme
           return (
           <MessageRow
             key={m.id}
-            msg={m} mine={mine} avatar={avatarFor(m.name, mine)}
+            msg={m} mine={mine} avatar={avatarFor(m.name, mine)} scope={group}
             onMenu={setMenuMsg}
             onAvatar={selectMode ? undefined : openAvatar}
             selectMode={selectMode}
@@ -310,7 +318,7 @@ export function ChatView({ group, onBack, onOpenInfo }: Props): React.ReactEleme
         })}
         {turn.pending !== null && (
           <MessageRow
-            msg={turn.pending} mine avatar={avatarFor(turn.pending.name, true)}
+            msg={turn.pending} mine avatar={avatarFor(turn.pending.name, true)} scope={group}
             onMenu={m => { if (m.id >= 0) setMenuMsg(m) }}
             onAvatar={openAvatar}
             selectMode={false} picked={false} onToggle={() => undefined}
@@ -324,7 +332,7 @@ export function ChatView({ group, onBack, onOpenInfo }: Props): React.ReactEleme
               <div className="bubble">
                 {tm.text === '' && !tm.done
                   ? <span className="typing" aria-label="正在输入"><i /><i /><i /></span>
-                  : <>{applyRules(tm.text)}{!tm.done && <span className="cursor" />}</>}
+                  : <>{applyRules(tm.text, group)}{!tm.done && <span className="cursor" />}</>}
               </div>
             </div>
           </div>
@@ -412,8 +420,13 @@ export function ChatView({ group, onBack, onOpenInfo }: Props): React.ReactEleme
           <Copy size={18} /> 复制
         </button>
         {menuMsg !== null && menuMsg.role === 'character' && (
-          <button className="menu-item" onClick={() => { void openThinking(menuMsg) }}>
-            <Lightbulb size={18} /> 查看思维链
+          <button className="menu-item" onClick={() => { void openThinking(menuMsg, '循环前') }}>
+            <Lightbulb size={18} /> 查看循环前思维链
+          </button>
+        )}
+        {menuMsg !== null && menuMsg.role === 'character' && afterIds.has(menuMsg.id) && (
+          <button className="menu-item" onClick={() => { void openThinking(menuMsg, '循环后') }}>
+            <Lightbulb size={18} /> 查看循环后思维链
           </button>
         )}
         <button className="menu-item" onClick={() => { setDelMsg(menuMsg); setMenuMsg(null) }}>
@@ -444,11 +457,12 @@ export function ChatView({ group, onBack, onOpenInfo }: Props): React.ReactEleme
       </Modal>
 
       {/* 思维链（只读悬浮）：该条角色消息生成时的思考内容——只给人看，不进记忆、任何角色不可见 */}
-      <Modal open={thinkingMsg !== null} onClose={() => setThinkingMsg(null)} title={thinkingMsg === null ? '' : `${thinkingMsg.name} 的思维链`}>
+      <Modal open={thinkingMsg !== null} onClose={() => setThinkingMsg(null)}
+        title={thinkingMsg === null ? '' : `${thinkingMsg.name} 的思维链（${thinkingStage}）`}>
         {thinkingText === null && <div className="hint">加载中……</div>}
         {thinkingText !== null && (
           thinkingText.trim() === ''
-            ? <div className="hint">（这条发言没有记录到思维链——模型未输出思考内容）</div>
+            ? <div className="hint">{thinkingStage === '循环前' ? '（这条发言没有记录到思维链——模型未输出思考内容）' : '（这条发言没有经过改稿——判定未命中任何规则）'}</div>
             : <div className="thinking-body">{thinkingText}</div>
         )}
       </Modal>
@@ -490,10 +504,12 @@ function TapAvatar({ name, url, size, onTap }: { name: string; url: string | und
 
 /** 单条消息行（hooks 必须在组件里调用，不能在 map 循环里）。
  *  memo：流式输出只重绘变化的那一行，历史消息不跟着每个 token 重渲染。 */
-const MessageRow = memo(function MessageRow({ msg, mine, avatar, onMenu, onAvatar, selectMode, picked, onToggle }: {
+const MessageRow = memo(function MessageRow({ msg, mine, avatar, scope, onMenu, onAvatar, selectMode, picked, onToggle }: {
   msg: Msg
   mine: boolean
   avatar: string | undefined
+  /** 显示层正则的作用域（群名）：全局规则 + 本群独立规则叠加。 */
+  scope: string
   onMenu: (m: Msg) => void
   onAvatar?: (name: string, url: string) => void
   selectMode: boolean
@@ -512,7 +528,7 @@ const MessageRow = memo(function MessageRow({ msg, mine, avatar, onMenu, onAvata
       <div className="msg-main">
         {!mine && <div className="msg-name">{msg.name}</div>}
         {/* 显示层替换：只改你看到的文字，模型上下文/记忆/判定始终是原文 */}
-        <div className="bubble">{msg.objective === true && <span className="obj-tag">[客观注入]</span>}{applyRules(msg.text)}</div>
+        <div className="bubble">{msg.objective === true && <span className="obj-tag">[客观注入]</span>}{applyRules(msg.text, scope)}</div>
       </div>
     </div>
   )

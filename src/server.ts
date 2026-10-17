@@ -15,13 +15,14 @@ import { config } from './config.ts'
 import { discoverApiKey, discoverModels } from './llm/discover.ts'
 import { GroupSession, listGroups, type SessionEvent } from './group/engine.ts'
 import {
-  createCharacter, createGroup, isValidName, readCharacterDraft, saveGroupSettings, saveUserPersona, updateCharacter,
+  createCharacter, createGroup, isValidName, readCharacterDraft, readKnowledge, saveGroupSettings, saveKnowledge, saveUserPersona, updateCharacter,
   type CharacterDraft,
 } from './group/scaffold.ts'
 import { loadGroupSettings, loadUserPersona } from './group/persona.ts'
 import { createScene, listScenes, saveSceneDescription } from './group/scene.ts'
-import { getThinking } from './group/thinking.ts'
+import { getThinking, listThinkingAfterIds } from './group/thinking.ts'
 import { ensureRuleMigration, loadRuleList, saveRuleList } from './group/rules.ts'
+import { loadMidCheckList, saveMidCheckList } from './group/midcheck.ts'
 import { loadSettings, saveSettings, resolveLlm, healOrphanSettingsBackup, type Provider } from './settings.ts'
 import { registerStatic } from './server-static.ts'
 
@@ -218,6 +219,32 @@ app.put('/api/group/:name/scenes/:scene', async c => {
   return c.json({ ok: true })
 })
 
+// ---------- 本群独立规则 / 独立 Jev 判定（只作用于这个群；与全局那份叠加生效） ----------
+// 全局规则（/api/rules、/api/mid-checks）作用于所有群；这里两份存在群目录里，只有本群读到。
+// 引擎每轮现读文件（reloadBooks / judgeDraft），所以这里改完下一句就生效；仍丢弃会话让快照立刻反映。
+
+app.get('/api/group/:name/rules', c => c.json({ rules: loadRuleList(groupDir(c.req.param('name'))) }))
+
+app.put('/api/group/:name/rules', async c => {
+  const dir = groupDir(c.req.param('name'))
+  if (!existsSync(dir)) return c.json({ error: '群聊不存在' }, 400)
+  const body = await c.req.json<Record<string, unknown>>().catch(() => ({}) as Record<string, unknown>)
+  saveRuleList(Array.isArray(body.rules) ? body.rules : [], dir)
+  sessions.delete(c.req.param('name'))
+  return c.json({ ok: true })
+})
+
+app.get('/api/group/:name/mid-checks', c => c.json({ checks: loadMidCheckList(groupDir(c.req.param('name'))) }))
+
+app.put('/api/group/:name/mid-checks', async c => {
+  const dir = groupDir(c.req.param('name'))
+  if (!existsSync(dir)) return c.json({ error: '群聊不存在' }, 400)
+  const body = await c.req.json<Record<string, unknown>>().catch(() => ({}) as Record<string, unknown>)
+  saveMidCheckList(Array.isArray(body.checks) ? body.checks : [], dir)
+  sessions.delete(c.req.param('name'))
+  return c.json({ ok: true })
+})
+
 // 用户设定（自由格式单文件）：角色与总管都会读到
 app.get('/api/group/:name/user', c => {
   const dir = groupDir(c.req.param('name'))
@@ -252,6 +279,26 @@ function validDirName(dir: string): string {
   if (!isValidName(dir)) throw new Error('非法角色目录名')
   return dir
 }
+
+// ---------- 个人知识库（知识库.md，角色目录内）：用户白板，只注入该角色自己 ----------
+
+function characterDirOf(group: string, dir: string): string {
+  return join(groupDir(group), '角色', validDirName(dir))
+}
+
+app.get('/api/group/:name/character/:dir/knowledge', c => {
+  const dir = characterDirOf(c.req.param('name'), c.req.param('dir'))
+  if (!existsSync(dir)) return c.json({ error: '角色不存在' }, 404)
+  return c.json({ text: readKnowledge(dir) })
+})
+
+app.put('/api/group/:name/character/:dir/knowledge', async c => {
+  const dir = characterDirOf(c.req.param('name'), c.req.param('dir'))
+  if (!existsSync(dir)) return c.json({ error: '角色不存在' }, 404)
+  const body = await c.req.json<Record<string, unknown>>().catch(() => ({}) as Record<string, unknown>)
+  saveKnowledge(dir, String(body.text ?? ''))
+  return c.json({ ok: true })
+})
 
 app.post('/api/group/:name/character', async c => {
   const body = await c.req.json<Record<string, unknown>>().catch(() => ({} as Record<string, unknown>))
@@ -341,8 +388,13 @@ app.delete('/api/group/:name/character/:dir/memory/:index', c => {
 app.get('/api/group/:name/message/:id/thinking', c => {
   const id = Number(c.req.param('id'))
   if (!Number.isInteger(id)) return c.json({ error: '非法消息号' }, 400)
-  return c.json({ thinking: getThinking(groupDir(c.req.param('name')), id) ?? '' })
+  const dir = groupDir(c.req.param('name'))
+  // 两段：循环前 = 草稿生成的思考（旧数据只有这一段）；循环后 = 判定命中后重写时的思考（没有 = 空串）
+  return c.json({ thinking: getThinking(dir, id) ?? '', after: getThinking(dir, id, '循环后') ?? '' })
 })
+
+/** 有「循环后」思维链的消息 id：前端据此决定长按菜单里要不要给这一项（一次取回，不在列表里逐条问）。 */
+app.get('/api/group/:name/thinking', c => c.json({ after: listThinkingAfterIds(groupDir(c.req.param('name'))) }))
 
 // ---------- 头像（§7.2）：纯显示，永不进任何模型/总管输入 ----------
 
@@ -415,6 +467,17 @@ app.put('/api/rules', async c => {
   const body = await c.req.json<Record<string, unknown>>().catch(() => ({}) as Record<string, unknown>)
   saveRuleList(Array.isArray(body.rules) ? body.rules : [])
   sessions.clear() // 规则对所有群生效：丢弃全部缓存会话
+  return c.json({ ok: true })
+})
+
+// ---------- Jev 中间判定（全局；每条规则两段固定格式，启用者才参与判定） ----------
+
+app.get('/api/mid-checks', c => c.json({ checks: loadMidCheckList() }))
+
+app.put('/api/mid-checks', async c => {
+  const body = await c.req.json<Record<string, unknown>>().catch(() => ({}) as Record<string, unknown>)
+  saveMidCheckList(Array.isArray(body.checks) ? body.checks : [])
+  sessions.clear() // 判定规则对所有群生效：丢弃全部缓存会话（引擎每轮现读文件，这里让快照也立刻反映）
   return c.json({ ok: true })
 })
 

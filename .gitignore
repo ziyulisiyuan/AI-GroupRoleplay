@@ -19,6 +19,7 @@ docs/宣传视频/
 # ZCode 沙箱权限诊断/修复的本地产物
 .acl-recovery/
 规则.jsonl
+中间判定.jsonl
 
 # PC 端静态服务构建产物（registerStatic 用，可重建）
 dist/
@@ -29,3 +30,6 @@ graphite/
 
 # 本地方案稿/进行中的设计文档（用户决定不入库）
 .local-plans/
+
+# 临时调试工具（文件头自注「临时工具，不入库」）
+scripts/dump-prompts.ts

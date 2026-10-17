@@ -28,6 +28,12 @@ const backup = hadSettings ? fsReadFileSync(settingsFile, 'utf8') : undefined
 // 备份落盘：进程被硬崩溃打死时 finally 不会执行，磁盘上的孤儿备份供 server/cli 启动时自愈
 writeFileSync(settingsFile + '.selfcheck-bak', backup ?? '', 'utf8')
 // 规则夹具（临时写、finally 恢复）：带标记的规则文本用于钉"规则只进角色生成上下文"的注入边界
+// 中间判定规则（工作区根的真实用户数据）：自检期间必须为零——有启用规则时每条回复都会多打一次 Jev，
+// 判定调用次数全部对不上。跑完原样还原（禁用则直接删掉）。
+const midFile = join(config.root, '中间判定.jsonl')
+const hadMid = existsSync(midFile)
+const midBackup = hadMid ? fsReadFileSync(midFile, 'utf8') : undefined
+if (hadMid) rmSync(midFile, { force: true })
 const rulesFile = join(config.root, '规则.md')
 const hadRules = existsSync(rulesFile)
 const rulesBackup = hadRules ? fsReadFileSync(rulesFile, 'utf8') : undefined
@@ -1317,4 +1323,6 @@ try {
   else if (existsSync(rulesFile)) rmSync(rulesFile, { force: true })
   if (hadRulesList) writeFileSync(rulesListFile, rulesListBackup ?? '', 'utf8')
   else if (existsSync(rulesListFile)) rmSync(rulesListFile, { force: true })
+  if (hadMid) writeFileSync(midFile, midBackup ?? '', 'utf8')
+  else if (existsSync(midFile)) rmSync(midFile, { force: true })
 }

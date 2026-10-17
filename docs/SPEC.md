@@ -31,7 +31,9 @@
    perceive, (b) retelling grants (§5.7), (c) the entry sequence (§5.8 scene snapshot at entry;
    §5.9 off-story completion at return), (d) explicit user operations, (e) objective injection (§4.6: user-declared
    narrator-level facts, transplanted verbatim to the scene's present by record). Directors never
-   write memory text.
+   write memory text. User-authored definition material (角色.md, 性格.md, 人物关系.md, 知识库.md)
+   and the user's rules (规则.jsonl) are not ledger entries and sit outside this invariant — they
+   are inputs the user writes, not things a model "remembers".
 5. **[INV] Group isolation** at three layers: session, routing roster, storage paths.
 6. **[INV] `角色.md` is a user asset with zero runtime write paths.** Only the editor
    (`src/group/scaffold.ts`) writes it.
@@ -60,8 +62,9 @@
 ## 1. Runtime shape
 
 Participants: 1 user + N characters (0 is legal; `speak` prompts to create one first) + 1
-director split across: a fast decision model (Jev, §6.1a), a slow bookkeeper (deepseek, §6.1b),
-a fallback full director (deepseek, §6.1c), and a correction window (§6.3).
+director split across: a fast decision model (Jev, §6.1a — the same model also runs the per-rule
+mid-checks of §6.1e), a slow bookkeeper (deepseek, §6.1b), a fallback full director (deepseek,
+§6.1c), and a correction window (§6.3).
 
 ### 1.1 Turn lifecycle (user public speech)
 
@@ -114,11 +117,18 @@ a fallback full director (deepseek, §6.1c), and a correction window (§6.3).
 8. Append the `route` row and emit the route event. If the picked speaker has no speech rights
    (not in 现场 ∪ 接入 — e.g. single-direction overhearers), emit an info prompt and end the turn
    without calling the character model (the gated bookkeeper may still run on the user message).
-9. `speakAs`: assemble inputs (§6.2) → stream tokens (`delta` events) → `stripNameEcho` →
+9. `speakAs`: assemble inputs (§6.2) → **if no mid-check rule is enabled, stream the reply
+   exactly as before (nothing is buffered, nothing is replayed — zero added latency)** → otherwise
+   generate a **draft** (buffered, never shown, never
+   persisted) → **mid-checks** (§6.1e): one parallel Jev call per enabled rule; a hit (noul ≥ 0.6)
+   contributes that rule's second section to a rewrite instruction → if anything hit, **one**
+   rewrite call over the unchanged context + draft + instruction (streamed live); otherwise the
+   draft is replayed as `delta` events at a fixed pace (~150 token/s, §6.1e) → `stripNameEcho` →
    **merged post-reply judgment** (`jevAfterReply`, one call: reply knowledge audience + status
    gate + retelling triggers + relay; independent of the user message's judgment) → append the
-   character `msg` line (listeners = [self, audience]) → `reply` event. Empty input or an empty
-   reply yields an info event and no msg line.
+   character `msg` line (listeners = [self, audience]) → `reply` event. **Only the final text is
+   ever written**: the draft never reaches 剧情.jsonl, any ledger, any later context, or the relay.
+   Empty input or an empty reply yields an info event and no msg line.
 10. Relay (fast path only): the merged judgment's `next_speaker` (§6.1a) picks the next speaker
     with **the user as a candidate**. Retelling triggers from the reply are granted (§5.7) before
     the next hop speaks. A character → append route row and loop back to step 9 (hops + 1). The
@@ -147,8 +157,9 @@ a fallback full director (deepseek, §6.1c), and a correction window (§6.3).
 - **删除群聊 (delete group)**: `DELETE /api/group/{name}` destroys the group directory
   (irrecoverable; frontend confirms first).
 - **`roll()`**: regenerate the last character message from the same visible input minus that
-  message, temperature 1.0; the log's msg line is **rewritten in place** and memory entries
-  referencing the message are rewritten to the new text (§5.6).
+  message, temperature 1.0; the reroll goes through the **same** draft → mid-check → rewrite chain
+  (§6.1e) and only the resulting final text is written. The log's msg line is **rewritten in
+  place** and memory entries referencing the message are rewritten to the new text (§5.6).
 - **`editMessage(id)`**: the log's msg line is **rewritten in place** with the new wording;
   memory entries (and their ledger rows) referencing the message are rewritten to the new text
   (§5.6).
@@ -206,11 +217,14 @@ a fallback full director (deepseek, §6.1c), and a correction window (§6.3).
 ```
 <workspace>/
   规则.jsonl                  # global rules (multi, per-rule toggle) written by the user; enabled ones injected into all characters
+  中间判定.jsonl              # mid-check rules (§3.7a): two fixed sections per rule; enabled ones judge every draft
   settings.yaml               # provider list + activeId + routerId (gitignored; holds credentials)
   .env                        # optional keys (see §2); gitignored
   groups/                     # user data, gitignored
     <群聊名>/
       群设定.yaml             # era / world / tone / scene（初始当前场景）
+      规则.jsonl              # 本群独立规则（§3.7）：只注入本群角色，与全局规则叠加
+      中间判定.jsonl          # 本群独立中间判定（§3.7a）：只在本群判定，与全局规则叠加
       场景/                    # 地图：一个场景一个 md 文件（§3.5a）
       用户.md                 # user persona (frontmatter name + free prose)
       在场.yaml               # scene cache derived from presence rows (§3.9)
@@ -226,6 +240,7 @@ a fallback full director (deepseek, §6.1c), and a correction window (§6.3).
           性格.md             # user initial personality only (AI never writes)
           人物关系.md         # user initial relationships only (AI never writes)
           状态.yaml           # status ledger: fixed seven fields (§3.4a)
+          知识库.md           # personal knowledge base: user whiteboard, injected only into this character (§3.4)
           记忆.jsonl          # knowledge ledger: verbatim transplants (§5)
 ```
 
@@ -259,7 +274,8 @@ humans can audit what the backend actually decided instead of guessing from the 
 Phases: `主判定` (the per-turn Jev fast path — **two rows**: segment 1 = scene/positions/links/
 `knows`/`told`/`stateDirty`, and the routing segment = picked + confidence, §6.1a; both carry
 `elapsedMs` and `answers` — every question's raw answer including probabilities),
-`回复判定` (the merged post-reply call: audience, told, gate, relay), `额外记忆判定` (stage-2:
+`中间判定` (per-draft mid-checks: every rule's raw noul plus the assembled rewrite instruction,
+§6.1e), `回复判定` (the merged post-reply call: audience, told, gate, relay), `额外记忆判定` (stage-2:
 candidate rounds, granted rounds), `总管路由` (fallback director result), `记账` (gate skip note
 or per-entry deepseek bookkeeping outcome), `现场所见` (scene-perception snapshot: targets and
 summary, or trigger note, or failure), `任务书判定` (separation gate: windows, answer, threshold),
@@ -271,9 +287,11 @@ logged with their reason. Served to the frontend via `GET /api/group/{name}/judg
 
 ### 3.2b 思维链.jsonl (thinking log; humans only)
 
-One line per character reply: `{"id","name","round","ts","thinking"}` — the model's reasoning
-output (`reasoning_content`, or `reasoning` on relays that use that field) captured verbatim via a
-side channel during streaming and keyed by the message id. Like 判定.jsonl it **never enters any
+Up to two lines per character reply: `{"id","name","round","ts","stage","thinking"}` with
+`stage` = `循环前` (the draft generation) or `循环后` (the rewrite after a mid-check hit) — the
+model's reasoning output (`reasoning_content`, or `reasoning` on relays that use that field)
+captured verbatim via a side channel and keyed by message id **and stage**. Rows written by older
+builds carry no `stage`; they read as `循环前` and need no migration. Like 判定.jsonl it **never enters any
 character, director, or bookkeeper context** — it is not part of 剧情.jsonl, rebuild, ledgers, or
 memory; its only reader is the human-facing `GET /api/group/{name}/message/{id}/thinking`
 endpoint. Lifecycle: appended when the reply is recorded; **overwritten on reroll** (same id — the
@@ -310,6 +328,7 @@ generation kept) so a phone's disk cannot be filled.
 | 角色.md | editor only | frontmatter `name`(default = dirName), `appearance`; body = background. The character's **编号 (ID) is `dirName`**: display name edits never change it |
 | 性格.md | editor only | `# 性格` + user initial personality. No AI-written section. |
 | 人物关系.md | editor only | `# 人物关系` + user initial notes. No AI-written entries. |
+| 知识库.md | editor only | free text: the user's whiteboard of what **this** character knows or may treat as known. No format, no constraints. Injected **only** into this character's own prompt, mid-prompt on purpose (§6.2); no judge, director, bookkeeper or other character ever reads it, and `rebuild` never touches it. |
 | 状态.yaml | Host only (director snapshots §6.1b/§6.1c, user PUT §7.2) | status ledger, fixed seven fields (§3.4a) |
 | 记忆.jsonl | Host (transplant + grants + snapshot + retracts), user (panel) | one JSON object per line: `{"source","mid"?:n,"round":n,"text"}` (fixed key order) |
 
@@ -395,6 +414,32 @@ correction-window prompts do not consume it. A `规则.md` (single-file format) 
 Re-read every turn. No size budget per rule: injected verbatim `[WHY]` the user accepts the
 per-turn cost rather than losing rules; it is the only injected section without a size limit
 (§5.5 bounds memory only).
+
+**Per-group variant (独立规则).** `groups/<群>/规则.jsonl` has the same format and toggles, but it
+is read from the group directory: its enabled texts are injected **in addition to** the global ones
+(global first, then the group's, joined by a blank line). A group without the file simply gets the
+global rules; other groups never read it.
+
+### 3.7a 中间判定.jsonl (Jev mid-check rules)
+
+One line per rule at the workspace root, `{"id","name","enabled","check","fix"}` (deterministic key
+order). A rule is **two fixed sections**:
+
+- `check` — the fill-in blank of a fixed sentence: the Jev question is literally
+  `本段输出是否违反了{check}`. The sentence shape is fixed on purpose: it makes the user phrase a
+  *violation*, which is what a `noul` can answer.
+- `fix` — sent back to the character **only when its judgment hits** (`noul ≥ 0.6`, §6.1e), as
+  part of the rewrite instruction.
+
+`name`/`enabled` are frontend-only labels (same semantics as 全局规则 §3.7). Only **enabled** rules
+whose `check` **and** `fix` are both non-empty take part in judging; anything else is skipped
+silently. Unlike 全局规则 the text is never injected into any long-lived prompt — it is consumed
+only at the mid-check step of a turn. The file is read fresh on every character output, so edits
+apply to the next output.
+
+**Per-group variant (独立Jev判定).** `groups/<群>/中间判定.jsonl` has the same format; its enabled
+rules judge **that group's** drafts in addition to the global ones (the effective list is global
+first, then the group's — §6.1e). Other groups never read it.
 
 ### 3.8 settings.yaml
 
@@ -869,6 +914,33 @@ text → even pick excluding the last speaker.
 `record_scene` tool; used only by §5.8. Observable-only constraints are part of the tool
 description and the prompt; both must stay intact.
 
+### 6.1e Mid-checks (`jevMidChecks`)
+
+Runs between the draft and whatever is finally said (§1.1 step 9), one Jev call **per enabled rule**
+(§3.7a) — parallel, and each call carries **one rule only**; rules never share a question, so one
+rule's wording cannot bias another's answer. Each call's `state` is exactly the draft plus the
+user's latest line (nothing else — memory, ledgers and history are not sent), and its single
+`noul` question is `本段输出是否违反了{check}`.
+
+- Hit = `noul ≥ JEV_THRESHOLDS.midCheckMin` (0.6). Every hit's `fix` is collected, in rule order,
+  under one leading sentence: `以下要求你的输出未满足，请据此重写，只输出改后的内容：` — that
+  single sentence is the only wrapper; nothing else is added, so user-written instructions are not
+  duplicated.
+- Hits → **one** rewrite call: the character's unchanged assembled context, the draft as the
+  assistant turn, and the instruction as the next user turn. Its stream is the visible output.
+- **Zero enabled rules = the short-circuit**: the step is skipped entirely — the turn takes the
+  plain streaming path (no buffering, no replay, no extra wait), identical to the pre-mid-check
+  engine. The same rule applies to `roll()`.
+- No hits / no `routerId` / every call failed → the draft **is** the final output; it is
+  replayed as `delta` events at a fixed pace (~150 token/s, Chinese ≈ 1.5 chars/token) so the chat
+  renders exactly as for a live stream — no new event type, no visible rule name.
+- Exactly one rewrite pass; the result is **not** re-judged. A failed or empty rewrite falls back
+  to the draft. The draft is never written to 剧情.jsonl, ledgers, contexts or `visible_to`;
+  `jevAfterReply` (§6.1a) judges the final text only.
+- Per rule, the verdict (raw `noul` or error) and the assembled instruction are logged to
+  `判定.jsonl` (`中间判定`, §3.2a). There is **no concurrency cap**: N enabled rules = N parallel
+  calls.
+
 ### 6.2 Character turn assembly (`assembleGroup`)
 
 System sections in order (empty sections skipped): 你扮演「{name}」; appearance + background;
@@ -881,7 +953,9 @@ overhearing; **overhearers are never listed to scene members**; an appearance li
 personality/status-ledger stay hidden `[WHY]` people in a conversation see each other's looks,
 but physical changes are inferred from context rather than read from others' ledgers); user
 persona; memory injection
-(`buildMemory`, §5.5); era/world; the **map section** (`【场景】`: the active scene plus every
+(`buildMemory`, §5.5); the **personal knowledge base** (`知识库.md`, §3.4 — placed here on purpose,
+mid-prompt: it is not a rule and must not compete for attention, and no other section consumes it);
+era/world; the **map section** (`【场景】`: the active scene plus every
 scene's full description — the world's places are fixed data, never guessed); rules; closing
 instruction (`roleplayInstruction`: the output
 is the character's reaction — usually with spoken lines, but pure action/expression/silence is a
@@ -949,14 +1023,19 @@ stale-entry heal (§5.3).
 | `PUT /api/group/{name}/settings` · `GET\|PUT /api/group/{name}/user` | group settings; user persona (sessions dropped on change) |
 | `POST /api/group/{name}/character` · `GET\|PUT /api/group/{name}/character/{dir}` | create / read / update character initial definition (`:dir` validated by `isValidName`; update refuses duplicate names and writes a `rename` row) |
 | `POST /api/group/{name}/message/{id}/edit` · `.../delete` | edit (physical rewrite + memory rewrite) / delete (physical removal + memory + thinking cleanup) |
-| `GET /api/group/{name}/message/{id}/thinking` | the reply's thinking chain (思维链.jsonl, §3.2b; humans only; empty string = no record) |
+| `GET /api/group/{name}/message/{id}/thinking` | the reply's thinking chains (思维链.jsonl, §3.2b; humans only): `{thinking, after}` = 循环前 / 循环后, empty string = no record for that stage |
+| `GET /api/group/{name}/thinking` | `{after:[id]}` — message ids that have a 循环后 record; the chat menu hides that entry when the id is absent |
 | `GET\|POST /api/group/{name}/character/{dir}/memory` · `DELETE .../memory/{index}` | memory view / add (`用户指定`) / retract by index |
 | `GET\|PUT /api/group/{name}/avatar` · `GET\|PUT /api/group/{name}/user/avatar` · `GET\|PUT /api/group/{name}/character/{dir}/avatar` | avatars — display-only, never sent to any model or director. PUT body = raw image bytes (JPEG/PNG/WebP/GIF, magic-byte checked, ≤2 MiB; the client downscales to a square JPEG before upload). GET → 404 = unset. Storage: `头像.dat` in the group dir (group avatar) / character dir (character avatar), `用户头像.dat` in the group dir (user persona avatar) |
 | `GET\|PUT /api/group/{name}/character/{dir}/ledger` | status ledger read / whole-snapshot user update |
+| `GET\|PUT /api/group/{name}/character/{dir}/knowledge` | personal knowledge base (§3.4): `{text}`; PUT replaces the whole whiteboard (empty = cleared). Read only by that character's own prompt assembly |
 | `GET\|POST /api/group/{name}/scenes` · `PUT .../scenes/{scene}` | scene map: list / create (name immutable once created, no delete) / edit description |
 | `GET\|POST /api/group/{name}/director` | correction window history / speak |
 | `POST /api/group/{name}/scene` · `PUT /api/group/{name}/location` | manual position control (no model call): switch the **current scene** (the user moves, companions stay put, destination occupants become present; new entrants still get the scene-perception snapshot, and the off-story pipeline is **not** triggered — §5.9) · set one character's location (`scene` = a created scene name, or `其他`/empty = off-map). Presence rows record the reason (`手动切换场景` / `手动调整位置`) |
 | `GET\|PUT /api/rules` | global rules list (`{rules:[{id,name,enabled,text}]}`; PUT saves the whole list, name/enabled are frontend labels) |
+| `GET\|PUT /api/mid-checks` | Jev mid-check rules (§3.7a): `{checks:[{id,name,enabled,check,fix}]}`; PUT saves the whole list (empty `check`/`fix` = the rule never judges), and drops cached sessions so the next snapshot reflects it |
+| `GET\|PUT /api/group/{name}/rules` | this group's own 规则 (§3.7): same shape as `/api/rules`; injected only into this group's characters, in addition to the global rules |
+| `GET\|PUT /api/group/{name}/mid-checks` | this group's own 中间判定 (§3.7a/§6.1e): same shape as `/api/mid-checks`; merged after the global list, applied only to this group |
 | `GET\|POST /api/models` · `PUT\|DELETE /api/models/{id}` · `POST /api/models/{id}/activate` · `PUT /api/models/router` | provider management; deleting the active provider falls back to the first; the router endpoint sets/clears the fast-path provider (deleting that provider clears it too) |
 | `POST /api/models/discover` | body `{baseUrl, apiKey?}` (`apiKey` empty = reuse the active provider's stored key, **only when `baseUrl` matches that provider's stored URL** — a stored key is never sent to a caller-supplied other address; mismatch requires a typed key, so the non-echoing key field needs no re-typing when editing the provider) → `{models:[string]}`: the **server** (never the browser — CORS, and the key must not reach page scope) calls the provider's `GET {baseUrl}/models` so the model-ID field can offer a picker; failures → the provider's own reason as an error |
 
@@ -1016,6 +1095,13 @@ rename without the frontend twin breaks the UI silently):
   compatibility and is also not rendered.
 - Per-message edit/delete and reroll are physical operations; the delete confirm must keep
   saying the text is removed from the log.
+- **Jev中间判定** (global page, §3.7a): the hub's third entry. The first section's lead-in is
+  fixed and non-editable (the rule must stay a yes/no question); the second section is the
+  revision instruction. Mid-checks are **silent**: no rule name, probability, prompt or draft is
+  ever surfaced in the chat — only the final text renders, and a non-rewritten reply simply
+  streams as usual. The three global pages and the three per-group pages (聊天信息 → 独立规则 /
+  独立正则 / 独立Jev判定) share **one implementation** (`web/src/rulesui.tsx`); they differ only in
+  the endpoint/storage scope and labels — never fork the UI.
 - The models panel edits API keys only; providers are managed by editing settings.yaml.
   On the Android app (§12) the group data and
   `settings.yaml` live in app-private storage with **no external editor path**, so the panel
@@ -1056,10 +1142,13 @@ theme only — deliberate). Desktop widths letterbox the app into a centered 520
 
 - **Shell** (`App.tsx`): three bottom tabs — 主页面 (group list: avatar / last-message preview /
   relative time (pinned groups sort first), per-group snapshots fetched for previews; pull-less reload on mount; search
-  filter; ＋ → new-group page) · **全局** (a two-entry hub: 全局规则 = a list of named rules with
+  filter; ＋ → new-group page) · **全局** (a three-entry hub: 全局规则 = a list of named rules with
   per-rule enable pills; ＋ 添加全局规则 and tapping a rule page-navigate to a name + text editor
   with delete; save/toggle = PUT /api/rules with the whole list; **正则替换** = display-layer
-  rewrite rules, see below) · 模型配置 (custom
+  rewrite rules, see below; **Jev中间判定** = the mid-check rules of §3.7a — same list/editor shape,
+  but the body is two fixed sections: the first renders as the non-editable lead-in
+  `本段输出是否违反了` plus a fill-in field, the second a free-text revision instruction; save and
+  the per-rule enable pill go through PUT /api/mid-checks) · 模型配置 (custom
   dialogue provider + optional Jev key, per §7.5 amendment). View stack: chat, chat-info, new group.
   The **new-group page** builds the map at creation: scene rows (名称 + 描述, added/removed
   locally) with one checked as the 初始当前场景; creation POSTs `{name, era, world, tone, scenes, scene}`.
@@ -1069,7 +1158,9 @@ theme only — deliberate). Desktop widths letterbox the app into a centered 520
   Each rule carries an enable pill; disabled rules are skipped at render time (missing field in
   old localStorage entries reads as enabled).
   Rule text, memories, ledgers, judgments and everything the characters see stay verbatim; the
-  message editor shows the raw text. Rules live in `localStorage` on the device, are validated
+  message editor shows the raw text. **Scopes**: the global list applies everywhere; a per-group
+  list (`groupchat.regex:<群名>`, edited from 聊天信息 → 独立正则) applies only inside that group —
+  both chains run, global first. Rules live in `localStorage` on the device, are validated
   before saving (invalid patterns rejected), support `$1` back-references, and an empty
   replacement deletes the match.
 - **Chat** (`chat.tsx`): chat column shows messages + streaming text only (§7.5 decision); no
@@ -1083,8 +1174,9 @@ theme only — deliberate). Desktop widths letterbox the app into a centered 520
   `[客观注入]` prefix in the bubble (display only). User = green bubbles right with own avatar; characters = white
   bubbles left with avatar and name label; tapping a message avatar that has an image set opens a
   read-only viewer modal (fallback letter avatars are not clickable). Long-press (450 ms; desktop right-click) opens an
-  action sheet: 修改 / 复制 / 查看思维链 (character messages only — read-only floating modal with
-  that reply's thinking chain, §3.2b) / 删除 / 批量删除 (+ 重掷这条回复 on the last character message). 批量删除
+  action sheet: 修改 / 复制 / 查看循环前思维链 / 查看循环后思维链 (character messages only — the
+  same read-only floating modal, §3.2b; the 循环后 entry is omitted for replies that were not
+  rewritten) / 删除 / 批量删除 (+ 重掷这条回复 on the last character message). 批量删除
   enters a select mode: checkboxes beside rows, tapping toggles, the composer is replaced by a
   取消 / 删除（N） bar, one confirm (text states the text is removed from the log) then the
   selected messages are deleted sequentially. **During a turn** the messages after the last
@@ -1103,14 +1195,18 @@ theme only — deliberate). Desktop widths letterbox the app into a centered 520
   layout viewport unchanged (e.g. iOS Safari) would cover the composer — accepted: the fleet is
   Android + desktop.
 - **聊天信息** (`groupinfo.tsx`, the ⋯ button): avatar block (group avatar + member avatars +
-  我 — tapping the 我 avatar opens 我的设定, the user persona + user avatar page) and six
-  pages — 群聊设定 · 我的设定 (user persona + user avatar; reached from the 我 avatar, no hub row) · 纠正窗口 (rendered
+  我 — tapping the 我 avatar opens 我的设定, the user persona + user avatar page) and these
+  pages — 群聊设定 · **独立规则 / 独立正则 / 独立Jev判定** (three rows directly under 群聊设定: the
+  same list + editor as the global pages of §7.5, but scoped to this group — rules and mid-checks
+  are stored in the group directory, the regex list is `localStorage` keyed by group name; the
+  editor is inline, so the page title switches between 新建…/编辑… and 保存 is the bottom button) ·
+  我的设定 (user persona + user avatar; reached from the 我 avatar, no hub row) · 纠正窗口 (rendered
   as a chat: user green bubbles right, 总管 white bubbles left with name label, applied summary
   under the reply) ·
   **场景** (map page: create-scene form + list; **tapping a scene switches the current scene to
   it** — the user moves, companions stay put, destination occupants become present; **long-press**
   edits its description in a modal — names are immutable and scenes cannot be deleted) ·
-  角色 (list → character page = 个人资料 draft form + 记忆 panel + 状态账本 section;
+  角色 (list → character page = 个人资料 draft form + 个人知识库 whiteboard + 记忆 panel + 状态账本 section;
   the form shows 目前所在场景 — the engine-maintained location from the presence row;
   **tapping it opens a scene picker that moves that character** (a created scene, or 其他 = off-map);
   scene membership is fully derived from the location table, so there is no separate
@@ -1156,7 +1252,7 @@ Convention [INV 11]: fixtures are temporary and always deleted. Offline checks n
 | script | kind | pins |
 |---|---|---|
 | `selfcheck:llm` | online | channel/model/thinking params/stream parsing/tool-call fallback |
-| `selfcheck:m1` | offline | file loading/injection · heuristic routing · name normalization · assembly |
+| `selfcheck:m1` | offline | file loading/injection · heuristic routing · name normalization · assembly · personal knowledge base (own character only, mid-prompt, absent without the file) |
 | `selfcheck:m2` | offline | ledger determinism/idempotence · snapshot semantics · ledger normalization · memory retracts · 角色.md immutability · physical edit/delete/reroll (log = current snapshot, id never reused) |
 | `selfcheck:m3` | offline | visibility filtering · transplant idempotence (verbatim entries) · injection budget · message window = CONTEXT_WINDOW |
 | `selfcheck:scaffold` | offline | group/character creation products load · updates keep user content · name validation · empty rules inject nothing |
@@ -1167,6 +1263,7 @@ Convention [INV 11]: fixtures are temporary and always deleted. Offline checks n
 | `selfcheck:router` | offline | Jev hit (two segments: scene/positions/links/knowledge first, then the routing pick over the post-move roster) / three-layer derivation / knowledge audience (incl. overhearers) / `told` stage-1 + `state_dirty` parsing (missing = safe side) · low-confidence, out-of-roster → route-only fallback with raw answers logged · scene/knowledge salvage when route unusable · `jevExtraRounds` stage-2 thresholds / failure grants nothing · `missingRounds`/`transplantRounds` units (verbatim, mid, own-speech prefix) · end-to-end merged judgment (1 call/reply) · extra-memory grant (end-append order, ledger rows, idempotence on re-telling) · gate (zero deepseek calls when clean, exactly one when dirty) · bookkeeper has no roster authority (overreach discarded) · objective injection (knows/told not asked · audience = present by record · remote/overhear excluded · 客观 entry carries mid, living-ledger rewrite · pipeline unchanged) · status-record switch (off = state_dirty not asked, dirty reply records nothing, `route_and_remember` schema omits the ledger field, fallback director's ledger discarded · flips resume immediately) · scene-perception snapshot (entrant detection, injection before entrant speaks via relay) · manual paths snapshot only (off-story pipeline not triggered) · judgment log (判定.jsonl rows with phases + raw answers + elapsed) · relay (user turn / cumulative decay: ×0 right after a speech — no consecutive output, that judgment does not advance the multiplier; `RELAY_DECAY` applied at every other judgment, cumulative across re-speeches; no hard cap, the undecaying user weight ends the chain; hard block hands the floor back to the user on just-spoke re-picks and all-zero distributions) · fallback = single full director · unconfigured = fast path off |
 | `selfcheck:scene` | offline | scene file layer (create / duplicate reject / description editable / name immutable / invalid name) · group creation builds the map + initial scene · character 初始场景 placement · ⊘ manual move skips scene_change (questions assert) and still moves · destination occupants present by record and hear the arrival line · followers placed, leavers fall to their location answer (其他 clears) · judged move (confidence-guarded) · strict no-move · objective injection (location/scene_change still asked, knows/told not · audience = active scene's present · other scenes excluded) · dialogue entrant lands post-snapshot (not in visible_to) with the scene snapshot injected · colocated-by-record characters are not scene-snapshot targets · scene snapshot carries the active scene's description only (other scenes excluded) · map full text + active scene injected into characters · user walking back to residents: no new snapshot and no off-story memory without an in-use brief (§5.9) · manual scene switch / character-location move / correction-window scene change all land in the location table |
 | `selfcheck:briefs` | offline | off-story pipeline (任务书 §5.9): window keys / `enterMid` / context budgets incl. the §5.6 example and per-node dedupe · separation gate (noul, `briefMin`, no `routerId` = no brief) · brief persistence (fields, `在用`, `windowKeys`) · return completion (slot candidates, wrong-character drop, consumed briefs retired with `usedTs`/`usedBy`, wait-before-speak, consumed briefs never re-enter a request body) · status-record gating (tool schema and dossier ledger field) · manual moves do not trigger |
+| `selfcheck:midcheck` | offline | mid-check rules (§3.7a/§6.1e): two-section round-trip (key order, enabled + both-sections filter) · **zero enabled rules = direct output** (no Jev calls, no buffering, no replay — pinned by elapsed time) · one Jev call **per rule** with one question each (no shared task statement) and the draft + user line as state · only hit `fix` sections enter the rewrite instruction, under the single fixed lead sentence · rewrite carries the unchanged context, the draft as assistant and the instruction as user · the draft never reaches 剧情.jsonl · both thinking stages land · a failed judgment falls back to the draft · per-group rules and mid-checks (`groups/<群>/规则.jsonl` / `中间判定.jsonl`) apply to that group only and never leak into another group |
 | `acceptance-*` (m1–m5, isolation, models, context-edit, presence, director) | online | end-to-end behaviors per milestone; re-run after any fast-path or memory change |
 
 `DSH_DEBUG=1` prints director/judge failure causes.
@@ -1185,6 +1282,9 @@ Convention [INV 11]: fixtures are temporary and always deleted. Offline checks n
 | three sequential LLM calls per turn: two judge segments (scene/positions/links/knowledge → route) + the character | each Jev segment is a few hundred ms and priced by input only; bookkeeping runs in the background after the reply |
 | fast-path probability jitter (routing/scene/knowledge) | conservative thresholds (ambiguity = keep/return to user); scene/knowledge judgments survive route failures; correction window fixes wrong calls; `JEV_TIMEOUT_MS` |
 | reply knowledge judgment delays the `reply` event by one sub-second call | brief cursor linger; failure keeps the keyword rule (no added risk) |
+| every character output pays one extra Jev call **per enabled mid-check rule**, plus one full generation when anything hits | rules are optional and per-rule; each Jev call is priced by input only and carries just the draft + the user line; with no rules configured the turn costs exactly what it did before |
+| the draft is buffered, so a reply appears only after generation (and any rewrite) finishes | the chat shows the typing indicator throughout; a non-rewritten draft is replayed at ~150 token/s so the pacing matches a live stream |
+| a rewrite can drift from the draft (over-correction) | the instruction is one fixed sentence plus the user's own sections; the rewrite keeps the full context; a failed/empty rewrite falls back to the draft; exactly one pass, never re-judged |
 | background bookkeeping finishes after the stream closes | its ledger notes are not streamed; files are authoritative and visible on refresh |
 | relay chains can burn tokens | no hard cap by design: ×0 forbids immediate repeats, each speaker's cumulative multiplier decays `RELAY_DECAY` per judgment (re-speaking never resets it) while the user's never decays; chains end on the user pick, low confidence, relay failure, or an empty reply; background bookkeeping does not block |
 | user edits/deletes/rerolls physically rewrite 剧情.jsonl — the original wording is unrecoverable | accepted by design: the log is the current context snapshot (user decision); 状态.yaml / 记忆.jsonl keep their own accounting, and archived dialogs (director rows) are untouched |

@@ -14,7 +14,9 @@ import { hasGroupSettings, loadCharacters, loadGroupSettings, loadUserPersona, t
 import { loadRules } from './rules.ts'
 import { canWitness, loadScene, perceives, saveScene, type RemoteLink, type SceneAccess } from './presence.ts'
 import { listScenes, type Scene } from './scene.ts'
-import { askBriefWriter, askDirector, askOffStoryCompletion, askSceneSummarizer, assembleGroup, askBookkeeper, jevAfterReply, jevBriefGate, jevExtraRounds, jevPickSpeaker, jevRoute, knowsThreshold, routeNextSpeaker, type JevAfterReplyResult, type RouteResult } from './host.ts'
+import { askBriefWriter, askDirector, askOffStoryCompletion, askSceneSummarizer, assembleGroup, askBookkeeper, jevAfterReply, jevBriefGate, jevExtraRounds, jevMidChecks, jevPickSpeaker, jevRoute, knowsThreshold, routeNextSpeaker, type JevAfterReplyResult, type RouteResult } from './host.ts'
+import { readKnowledge } from './scaffold.ts'
+import { loadMidChecksFor } from './midcheck.ts'
 import { turnFromMessages } from '../host.ts'
 import { resolveRouter } from '../settings.ts'
 import { LEDGER_KEYS, loadFiles, saveMemory, savePersonality, saveRelationships, saveStatus, type CharacterFiles } from './status.ts'
@@ -79,7 +81,7 @@ export class GroupSession {
     this.characters = loadCharacters(groupDir)
     this.settings = loadGroupSettings(groupDir)
     this.userPersona = loadUserPersona(groupDir)
-    this.rules = loadRules()
+    this.rules = this.ruleTexts()
     const saved = loadScene(groupDir)
     // 场景来源优先级：日志里最后一次 presence 行（事实源）→ 在场.yaml → 地图初始状态 → 全员现场
     // 名字经名字链（rename 行）归一到当前名（含位置表的键）：位置表、在场/离场与窗口起点都以当前名为准
@@ -858,9 +860,41 @@ export class GroupSession {
    */
   private reloadBooks(): void {
     this.books.clear()
-    this.rules = loadRules()
+    this.rules = this.ruleTexts()
     this.userPersona = loadUserPersona(this.groupDir)
     this.settings = loadGroupSettings(this.groupDir)
+  }
+
+  /** 生效规则文本 = 全局规则（作用于所有群）+ 本群独立规则（只作用于本群）；各自只取启用的。 */
+  private ruleTexts(): string {
+    return [loadRules(), loadRules(this.groupDir)].map(s => s.trim()).filter(s => s !== '').join('\n\n')
+  }
+
+  /**
+   * 中间判定（SPEC §6.1e）：草稿生成之后，每条启用的规则各发一次 Jev（并发、互不共享题面）。
+   * 返回要发回角色的改稿指令；空串 = 未命中 / 没有规则 / 未配置快路径 / 全部失败——
+   * 一律按"草稿即最终输出"处理：判定是可选层，任何失败都不许卡住剧情。
+   */
+  private async judgeDraft(speaker: string, draft: string, history: readonly MsgLine[]): Promise<string> {
+    const rules = loadMidChecksFor(this.groupDir)
+    if (rules.length === 0) return ''
+    const llm = resolveRouter()
+    if (llm === undefined) {
+      this.judgeLog({ phase: '中间判定', speaker, note: '未配置快路径（Jev）：跳过中间判定，草稿即最终输出', rules: rules.map(r => r.name) })
+      return ''
+    }
+    const userText = [...history].reverse().find(m => m.role === 'user')?.text ?? ''
+    const t0 = Date.now()
+    const r = await jevMidChecks({ llm, draft, userText, rules, timeoutMs: config.jevTimeoutMs })
+    this.judgeLog({
+      phase: '中间判定',
+      speaker,
+      verdicts: r.verdicts,
+      hits: r.hits,
+      prompt: r.prompt,
+      elapsedMs: Date.now() - t0,
+    })
+    return r.prompt
   }
 
   /** 重掷上一条角色发言。 */
@@ -879,6 +913,7 @@ export class GroupSession {
       {
         files,
         suppressedMids: this.suppressedMids(last.name),
+        knowledge: readKnowledge(join(this.groupDir, '角色', persona.dirName)), // 个人知识库：只给这个角色
         memoryText: files !== undefined ? buildMemory(this.store, last.name, files.memory) : '',
         userPersona: this.userPersona,
         rules: this.rules,
@@ -890,18 +925,50 @@ export class GroupSession {
       },
     )
     yield { type: 'speaker', name: last.name }
-    let full = ''
+    const chat = system === '' ? messages : [{ role: 'system' as const, content: system }, ...messages]
     let thinking = ''
-    for await (const delta of turnFromMessages(system === '' ? messages : [{ role: 'system', content: system }, ...messages], { temperature: 1.0, onReasoning: t => { thinking += t }, trace: this.traceTo('重掷') })) {
-      full += delta
-      yield { type: 'delta', text: delta }
+    let after = ''
+    let full = ''
+    if (loadMidChecksFor(this.groupDir).length === 0) {
+      // 直通：一条启用规则都没有 = 没有判定可等——照旧边生成边流式。
+      for await (const delta of turnFromMessages(chat, { temperature: 1.0, onReasoning: t => { thinking += t }, trace: this.traceTo('重掷') })) {
+        full += delta
+        yield { type: 'delta', text: delta }
+      }
+      full = stripNameEcho(full, last.name)
+    } else {
+      // 草稿（SPEC §1.2）：重掷与正常输出走同一条链——先攒完整段、再过中间判定，最终输出才落盘。
+      let draft = ''
+      for await (const delta of turnFromMessages(chat, { temperature: 1.0, onReasoning: t => { thinking += t }, trace: this.traceTo('重掷') })) {
+        draft += delta
+      }
+      draft = stripNameEcho(draft, last.name)
+      full = draft
+      let revised = false
+      const prompt = draft.trim() === ''
+        ? ''
+        : await this.judgeDraft(last.name, draft, this.store.effectiveMessages().filter(m => m.id !== last.id))
+      if (prompt !== '') {
+        try {
+          let text = ''
+          for await (const delta of turnFromMessages([...chat, { role: 'assistant' as const, content: draft }, { role: 'user' as const, content: prompt }], { temperature: 1.0, onReasoning: t => { after += t }, trace: this.traceTo('重掷·修订') })) {
+            text += delta
+            yield { type: 'delta', text: delta }
+          }
+          text = stripNameEcho(text, last.name)
+          if (text.trim() !== '') { full = text; revised = true }
+        } catch (e) {
+          // 改稿失败不能丢掉这一轮：草稿即最终输出。
+          this.judgeLog({ phase: '中间判定', speaker: last.name, note: '改稿失败——保留草稿作为最终输出', error: String(e instanceof Error ? e.message : e) })
+        }
+      }
+      if (!revised && full.trim() !== '') for await (const chunk of simulatedDeltas(full)) yield { type: 'delta', text: chunk }
     }
-    full = stripNameEcho(full, last.name)
     if (full.trim() !== '') {
       this.store.rewriteMessage(last.id, full) // 当前上下文快照：日志行就地更新
       this.rewriteMemoryFor(last.id) // 活账本：生效文本变了，引用它的记忆条目同步改写
-      // 思维链：重掷按 id 覆盖（旧思维对应的发言已不存在）；新模型没输出思考 = 清除旧记录
-      try { recordThinking(this.groupDir, last.id, last.name, last.round, thinking) } catch { /* 记录失败不影响重掷 */ }
+      // 思维链：重掷按 id 覆盖两段（旧思维对应的发言已不存在）；新模型没输出思考 = 清除旧记录
+      try { recordThinking(this.groupDir, last.id, last.name, last.round, thinking, after) } catch { /* 记录失败不影响重掷 */ }
     }
     yield { type: 'reply', name: last.name, text: full }
   }
@@ -1336,6 +1403,7 @@ export class GroupSession {
     const { system, messages } = assembleGroup(persona, this.settings, history, {
       files,
       suppressedMids: this.suppressedMids(name),
+      knowledge: readKnowledge(join(this.groupDir, '角色', persona.dirName)), // 个人知识库：只给这个角色
       memoryText: buildMemory(this.store, name, files.memory),
       userPersona: this.userPersona,
       rules: this.rules,
@@ -1352,14 +1420,48 @@ export class GroupSession {
       return { text: '' }
     }
     yield { type: 'speaker', name }
-    let full = ''
+    const chat = system === '' ? messages : [{ role: 'system' as const, content: system }, ...messages]
     let thinking = ''
+    let after = ''
     let finishReason: string | undefined
-    for await (const delta of turnFromMessages(system === '' ? messages : [{ role: 'system', content: system }, ...messages], { onReasoning: t => { thinking += t }, onFinish: r => { finishReason = r }, trace: this.traceTo('角色生成') })) {
-      full += delta
-      yield { type: 'delta', text: delta }
+    let full = ''
+    if (loadMidChecksFor(this.groupDir).length === 0) {
+      // ── 直通：一条启用规则都没有 = 没有判定可等——照旧边生成边流式（不攒稿、不模拟、零额外等待）。
+      for await (const delta of turnFromMessages(chat, { onReasoning: t => { thinking += t }, onFinish: r => { finishReason = r }, trace: this.traceTo('角色生成') })) {
+        full += delta
+        yield { type: 'delta', text: delta }
+      }
+      full = stripNameEcho(full, name)
+    } else {
+      // ── 草稿（SPEC §1.1）：先攒完整段、不上屏——它在中间判定之前只是中间产物，永不落盘。
+      let draft = ''
+      for await (const delta of turnFromMessages(chat, { onReasoning: t => { thinking += t }, onFinish: r => { finishReason = r }, trace: this.traceTo('角色生成') })) {
+        draft += delta
+      }
+      draft = stripNameEcho(draft, name)
+      // ── 中间判定（§6.1e）：命中 → 带上全部命中规则的第二段重写一次（只此一次）；
+      //    未命中 / 失败 → 草稿即最终输出，按固定节奏回放上屏。
+      full = draft
+      let revised = false
+      if (draft.trim() !== '') {
+        const prompt = await this.judgeDraft(name, draft, history)
+        if (prompt !== '') {
+          try {
+            let text = ''
+            for await (const delta of turnFromMessages([...chat, { role: 'assistant' as const, content: draft }, { role: 'user' as const, content: prompt }], { onReasoning: t => { after += t }, trace: this.traceTo('角色生成·修订') })) {
+              text += delta
+              yield { type: 'delta', text: delta }
+            }
+            text = stripNameEcho(text, name)
+            if (text.trim() !== '') { full = text; revised = true }
+          } catch (e) {
+            // 改稿失败绝不能让这一轮丢掉：草稿本身是完整的，直接当最终输出。
+            this.judgeLog({ phase: '中间判定', speaker: name, note: '改稿失败——保留草稿作为最终输出', error: String(e instanceof Error ? e.message : e) })
+          }
+        }
+      }
+      if (!revised && full.trim() !== '') for await (const chunk of simulatedDeltas(full)) yield { type: 'delta', text: chunk }
     }
-    full = stripNameEcho(full, name)
     let msgId: number | undefined
     let judge: JevAfterReplyResult | undefined
     if (full.trim() !== '') {
@@ -1394,9 +1496,9 @@ export class GroupSession {
       const listeners = [name, ...this.audienceOf(base, msgIdForReply, name)]
       const msg = this.store.append('character', name, full, listeners)
       msgId = msg.id
-      // 思维链（只给人看，永不进任何模型输入）：落盘失败不影响回合（与 judgeLog 同策略）
-      if (thinking.trim() !== '') {
-        try { recordThinking(this.groupDir, msg.id, name, msg.round, thinking) } catch { /* 记录失败不影响剧情 */ }
+      // 思维链（只给人看，永不进任何模型输入）：两段一起落盘，失败不影响回合（与 judgeLog 同策略）
+      if (thinking.trim() !== '' || after.trim() !== '') {
+        try { recordThinking(this.groupDir, msg.id, name, msg.round, thinking, after) } catch { /* 记录失败不影响剧情 */ }
       }
     }
     if (full.trim() === '') {
@@ -1721,6 +1823,20 @@ export class GroupSession {
       }
       if (added.length > 0) this.persistFiles(c.name)
     }
+  }
+}
+
+/** 草稿即最终输出时的回放节奏（SPEC §1.1）：约 150 token/s；中文按 1.5 字/token 折算（约 225 字/秒）。 */
+const SIM_TOKENS_PER_SECOND = 150
+const SIM_CHARS_PER_TOKEN = 1.5
+
+/** 把整段文本按固定节奏切片吐出（模拟流式）：前端仍走同一条 delta 通道，不加任何新协议事件。 */
+async function* simulatedDeltas(text: string): AsyncGenerator<string> {
+  const step = 4
+  const delayMs = Math.max(1, Math.round((step * 1000) / (SIM_TOKENS_PER_SECOND * SIM_CHARS_PER_TOKEN)))
+  for (let i = 0; i < text.length; i += step) {
+    if (i > 0) await new Promise<void>(resolve => setTimeout(resolve, delayMs))
+    yield text.slice(i, i + step)
   }
 }
 

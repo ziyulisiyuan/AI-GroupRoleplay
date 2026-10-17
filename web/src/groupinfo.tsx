@@ -8,22 +8,32 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react'
 import {
   avatarUrl, delJson, enc, getJson, postJson, putJson, clearGroupRowsCache,
-  type Draft, type JudgeRow, type MemoryEntry, type Snapshot,
+  type Draft, type JudgeRow, type MemoryEntry, type MidCheckItem, type RuleItem, type Snapshot,
 } from './api.ts'
 import { Avatar, AvatarPicker, Cell, Cells, CheckCell, Confirm, Field, Modal, NavBar, useLongPress, useToast } from './ui.tsx'
+import { MidCheckEditPage, MidCheckListPage, RegexPage, RuleEditPage, RuleListPage } from './rulesui.tsx'
 import { getTurn, forgetSnapshot, cachedSnapshot, cacheSnapshot } from './turn.ts'
 import type { Scene } from './api.ts'
 
 export const LEDGER_KEYS = ['生理状态', '心理状态', '外观状态', '位置状态', '性格演变', '姓名变化', '人物关系变化'] as const
 
-type InfoView =
+/** 一级页（字符串键）：标题查 VIEW_TITLES；下面的对象键 = 带参数的子页。 */
+type InfoPage =
   | 'hub' | 'settings' | 'me' | 'director' | 'log' | 'scenes'
-  | { char: string }                                        // 角色资料收纳页（'' = 新建角色表单）
-  | { charSub: string; page: 'profile' | 'memory' | 'ledger' }
+  /** 本群独立设置（只作用于这个群；与全局页叠加生效）：规则 / 正则 / Jev 中间判定。 */
+  | 'grules' | 'gregex' | 'gmid'
 
-const VIEW_TITLES: Record<Exclude<InfoView, { char: string } | { charSub: string; page: 'profile' | 'memory' | 'ledger' }>, string> = {
+type InfoView =
+  | InfoPage
+  | { grulesEdit: string | null; seed?: RuleItem }
+  | { gmidEdit: string | null; seed?: MidCheckItem }
+  | { char: string }                                        // 角色资料收纳页（'' = 新建角色表单）
+  | { charSub: string; page: 'profile' | 'memory' | 'ledger' | 'knowledge' }
+
+const VIEW_TITLES: Record<InfoPage, string> = {
   hub: '聊天信息', settings: '群聊设定', me: '我的设定', director: '对总管说（纠正）',
   log: '运行日志', scenes: '场景',
+  grules: '独立规则', gregex: '独立正则', gmid: '独立Jev判定',
 }
 
 export function InfoRoot({ group, onExit, onDeleted }: { group: string; onExit: () => void; onDeleted: () => void }): React.ReactElement {
@@ -52,12 +62,18 @@ export function InfoRoot({ group, onExit, onDeleted }: { group: string; onExit: 
     else onExit()
   }
   const title = typeof top === 'string' ? VIEW_TITLES[top]
-    : 'char' in top ? (top.char === '' ? '新建角色' : '角色资料')
-      : top.page === 'profile' ? '个人资料' : top.page === 'memory' ? '记忆' : '状态账本'
+    : 'grulesEdit' in top ? (top.grulesEdit === null ? '新建独立规则' : '编辑独立规则')
+      : 'gmidEdit' in top ? (top.gmidEdit === null ? '新建独立Jev判定' : '编辑独立Jev判定')
+        : 'char' in top ? (top.char === '' ? '新建角色' : '角色资料')
+          : top.page === 'profile' ? '个人资料'
+            : top.page === 'memory' ? '记忆'
+              : top.page === 'ledger' ? '状态账本' : '个人知识库'
   /** 子页切换：换 key 重挂载滚动容器——滚动位回到顶部，并重放一次入场动画 */
   const viewKey = typeof top === 'string' ? top
-    : 'char' in top ? `char:${top.char}`
-      : `sub:${top.charSub}:${top.page}`
+    : 'grulesEdit' in top ? `grulesEdit:${top.grulesEdit ?? 'new'}`
+      : 'gmidEdit' in top ? `gmidEdit:${top.gmidEdit ?? 'new'}`
+        : 'char' in top ? `char:${top.char}`
+          : `sub:${top.charSub}:${top.page}`
 
   return (
     <div className="page page-enter">
@@ -69,6 +85,27 @@ export function InfoRoot({ group, onExit, onDeleted }: { group: string; onExit: 
         {top === 'director' && <DirectorView group={group} onChanged={refresh} />}
         {top === 'log' && <LogView group={group} />}
         {top === 'scenes' && <ScenesView group={group} snap={snap} onChanged={refresh} />}
+        {top === 'grules' && (
+          <RuleListPage frame="inline" title="独立规则" addLabel="＋ 新建独立规则"
+            emptyHint="（还没有本群规则——点上方「＋ 新建独立规则」创建）"
+            endpoint={`/api/group/${enc(group)}/rules`}
+            onEdit={r => push({ grulesEdit: r?.id ?? null, ...(r === null ? {} : { seed: r }) })} />
+        )}
+        {top === 'gregex' && <RegexPage frame="inline" scope={group} title="独立正则" addLabel="＋ 添加正则" />}
+        {top === 'gmid' && (
+          <MidCheckListPage frame="inline" title="独立Jev判定" addLabel="＋ 新建 Jev 中间判定"
+            emptyHint="（还没有本群判定——点上方「＋ 新建 Jev 中间判定」创建）"
+            endpoint={`/api/group/${enc(group)}/mid-checks`}
+            onEdit={c => push({ gmidEdit: c?.id ?? null, ...(c === null ? {} : { seed: c }) })} />
+        )}
+        {typeof top !== 'string' && 'grulesEdit' in top && (
+          <RuleEditPage key={top.grulesEdit ?? 'new'} frame="inline" endpoint={`/api/group/${enc(group)}/rules`}
+            id={top.grulesEdit} seed={top.seed} titleNew="新建独立规则" titleEdit="编辑独立规则" onBack={pop} />
+        )}
+        {typeof top !== 'string' && 'gmidEdit' in top && (
+          <MidCheckEditPage key={top.gmidEdit ?? 'new'} frame="inline" endpoint={`/api/group/${enc(group)}/mid-checks`}
+            id={top.gmidEdit} seed={top.seed} titleNew="新建独立Jev判定" titleEdit="编辑独立Jev判定" onBack={pop} />
+        )}
         {typeof top !== 'string' && 'char' in top && (
           top.char === ''
             ? <CharProfileView key="new" group={group} dirName="" scenes={snap?.scenes ?? []} locations={snap?.locations ?? {}} onChanged={refresh}
@@ -84,6 +121,9 @@ export function InfoRoot({ group, onExit, onDeleted }: { group: string; onExit: 
         )}
         {typeof top !== 'string' && 'page' in top && top.page === 'memory' && (
           <CharMemoryView key={`m-${top.charSub}`} group={group} dirName={top.charSub} />
+        )}
+        {typeof top !== 'string' && 'page' in top && top.page === 'knowledge' && (
+          <CharKnowledgeView key={`k-${top.charSub}`} group={group} dirName={top.charSub} />
         )}
         {typeof top !== 'string' && 'page' in top && top.page === 'ledger' && (
           <CharLedgerView
@@ -203,6 +243,9 @@ function HubView({ group, snap, avatarV, bump, go, refresh, onDeleted }: {
       </div>
       <Cells>
         <Cell title="群聊设定" arrow onTap={() => go('settings')} />
+        <Cell title="独立规则" arrow onTap={() => go('grules')} />
+        <Cell title="独立正则" arrow onTap={() => go('gregex')} />
+        <Cell title="独立Jev判定" arrow onTap={() => go('gmid')} />
         <button className="cell" disabled={busy} onClick={() => void togglePin()}>
           <div className="cell-title"><div className="main">置顶聊天</div></div>
           <span className={'switch' + (pinned ? ' on' : '')}><span className="knob" /></span>
@@ -574,9 +617,60 @@ function CharHubView({ group, dirName, snap, avatarV, bump, go }: {
       </div>
       <Cells>
         <Cell title="个人资料" arrow onTap={() => go({ charSub: dirName, page: 'profile' })} />
+        <Cell title="个人知识库" arrow onTap={() => go({ charSub: dirName, page: 'knowledge' })} />
         <Cell title="记忆" arrow onTap={() => go({ charSub: dirName, page: 'memory' })} />
         <Cell title="状态账本" arrow onTap={() => go({ charSub: dirName, page: 'ledger' })} />
       </Cells>
+    </>
+  )
+}
+
+/**
+ * 个人知识库：给这个角色的一张白板（用户自由书写，无格式要求）。
+ * 它只注入**该角色自己**的提示词——不进别的角色、不进总管/记账/判定。
+ * 后端文件：角色目录下的 知识库.md（与 角色.md 同级，AI 永不写）。
+ */
+function CharKnowledgeView({ group, dirName }: { group: string; dirName: string }): React.ReactElement {
+  const toast = useToast()
+  const [text, setText] = useState<string | null>(null)
+  const [initial, setInitial] = useState('')
+  const [busy, setBusy] = useState(false)
+  const url = `/api/group/${enc(group)}/character/${enc(dirName)}/knowledge`
+  useEffect(() => {
+    void (async () => {
+      try {
+        const r = await getJson<{ text: string }>(url)
+        setText(r.text)
+        setInitial(r.text)
+      } catch (e) {
+        setText('')
+        setInitial('')
+        toast(e instanceof Error ? e.message : String(e))
+      }
+    })()
+  }, [url, toast])
+  const dirty = text !== null && text !== initial
+  const save = async (): Promise<void> => {
+    if (text === null || busy) return
+    setBusy(true)
+    try {
+      await putJson(url, { text })
+      setInitial(text)
+      toast('已保存')
+    } catch (e) {
+      toast(e instanceof Error ? e.message : String(e))
+    } finally {
+      setBusy(false)
+    }
+  }
+  if (text === null) return <div className="empty">加载中……</div>
+  return (
+    <>
+      <Cells>
+        <Field label="个人知识库" value={text} onChange={setText} multiline rows={18}
+          placeholder="写这个角色掌握的资料、经历、关系、规矩……只给他自己看" />
+      </Cells>
+      <button className="btn-primary" disabled={busy || !dirty} onClick={() => void save()}>保存</button>
     </>
   )
 }

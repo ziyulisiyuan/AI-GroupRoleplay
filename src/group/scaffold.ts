@@ -3,13 +3,34 @@
  * **只有本模块可以写 角色.md** —— 它是用户资产，引擎/总管/rebuild 一律只读。
  * 同时负责建群、建角色、更新群设定。
  */
-import { existsSync, mkdirSync, readdirSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { dump as dumpYaml } from 'js-yaml'
 import { groupSettingsPath, loadCharacter, loadCharacters, userPersonaPath, type GroupSettings, type UserPersona } from './persona.ts'
 import { emptyFiles, loadFiles, saveMemory, savePersonality, saveRelationships, saveStatus } from './status.ts'
 import { createScene, type Scene } from './scene.ts'
 import { StoryStore } from '../store.ts'
+
+/**
+ * 个人知识库（知识库.md，角色目录内）：用户自由书写的一张白板，记录/规定**这个角色**掌握什么知识。
+ * 与 角色.md 同级 —— 用户资产、AI 永不写；引擎每次组装时只读它，且只注入该角色自己的提示词。
+ * rebuild 不碰它（不属于任何派生/重放体系）。
+ */
+export const knowledgePath = (dir: string): string => join(dir, '知识库.md')
+
+/** 读取知识库原文；文件不存在 = 空串（不注入）。 */
+export function readKnowledge(dir: string): string {
+  const file = knowledgePath(dir)
+  if (!existsSync(file)) return ''
+  const raw = readFileSync(file, 'utf8')
+  return (raw.charCodeAt(0) === 0xfeff ? raw.slice(1) : raw).trim()
+}
+
+/** 保存知识库（整篇覆盖；空文本 = 清空，文件保留为空）。 */
+export function saveKnowledge(dir: string, text: string): void {
+  mkdirSync(dir, { recursive: true })
+  writeFileSync(knowledgePath(dir), text.trim() === '' ? '' : text.trimEnd() + '\n', 'utf8')
+}
 
 /** 角色资料草稿（前端编辑器的字段集合）。 */
 export interface CharacterDraft {

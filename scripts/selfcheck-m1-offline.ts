@@ -10,6 +10,7 @@ import { mkdtempSync, rmSync, mkdirSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { loadCharacter, loadCharacters, loadGroupSettings, type CharacterPersona } from '../src/group/persona.ts'
+import { readKnowledge } from '../src/group/scaffold.ts'
 import { loadFiles } from '../src/group/status.ts'
 import { detectMention, dicePick, heuristicPick, resolveCharacterName, type RoutableCharacter } from '../src/group/router.ts'
 import { assembleGroup } from '../src/group/host.ts'
@@ -99,6 +100,23 @@ statusRecord: true
   const firstUser = messages.find(m => m.role === 'user')!
   assert.ok(firstUser.content.includes('你：来了\n角色乙：他人发言1\n角色乙：他人发言2'), '连续 user 侧发言合并为一消息')
 
+  // 5) 个人知识库（知识库.md）：只注入本角色；位置在中段（记忆之后、规则之前）；没文件就不出现
+  writeFileSync(join(groupDir, '角色', '角色甲', '知识库.md'), '（甲的私人资料：只给他自己看）\n')
+  const withKnowledge = assembleGroup(jia, settings, charsHist(), {
+    files,
+    memoryText: '【你已知悉的事】\n- （第1轮得知，亲历）MEM',
+    knowledge: readKnowledge(join(groupDir, '角色', '角色甲')),
+    rules: 'RULE_MARK',
+  })
+  assert.ok(withKnowledge.system.includes('（甲的私人资料：只给他自己看）'), '知识库必须注入本角色')
+  const iKnow = withKnowledge.system.indexOf('【你的知识库】')
+  assert.ok(iKnow > withKnowledge.system.indexOf('MEM'), '位置：记忆之后（中段——它不是规则，不该抢注意力）')
+  assert.ok(iKnow < withKnowledge.system.indexOf('RULE_MARK'), '位置：规则之前')
+  const yi = chars.find(c => c.name === '角色乙')!
+  const otherKnowledge = assembleGroup(yi, settings, charsHist(), { knowledge: readKnowledge(join(groupDir, '角色', '角色乙')) })
+  assert.ok(!otherKnowledge.system.includes('（甲的私人资料：只给他自己看）'), '知识库只属于本角色（别的角色拿不到）')
+  assert.ok(!otherKnowledge.system.includes('【你的知识库】'), '没有文件时整段不出现')
+
   function charsHist(): MsgLine[] {
     const mk = (id: number, role: MsgLine['role'], name: string, text: string): MsgLine =>
       ({ type: 'msg', id, role, name, text, round: 1, visible_to: 'all', ts: '2025-01-01T00:00:00Z' })
@@ -110,7 +128,7 @@ statusRecord: true
     ]
   }
 
-  console.log('M1 离线自检通过：五文件加载/注入 · 路由启发式 · 名字归一 · 群聊组装')
+  console.log('M1 离线自检通过：五文件加载/注入 · 个人知识库（只注入本角色、中段位置） · 路由启发式 · 名字归一 · 群聊组装')
 } finally {
   rmSync(dir, { recursive: true, force: true })
 }

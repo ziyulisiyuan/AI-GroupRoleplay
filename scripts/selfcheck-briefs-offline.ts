@@ -34,6 +34,11 @@ const settingsFile = join(config.root, 'settings.yaml')
 const hadSettings = existsSync(settingsFile)
 const backup = hadSettings ? readFileSync(settingsFile, 'utf8') : undefined
 writeFileSync(settingsFile + '.selfcheck-bak', backup ?? '', 'utf8')
+// 中间判定规则是工作区根的真实用户数据：自检期间必须为零（否则每次回复多打 Jev，调用次数对不上），跑完还原。
+const midFile = join(config.root, '中间判定.jsonl')
+const hadMid = existsSync(midFile)
+const midBackup = hadMid ? readFileSync(midFile, 'utf8') : undefined
+if (hadMid) rmSync(midFile, { force: true })
 const S1 = '场景一'
 const S2 = '场景二'
 const sleep = async (ms: number): Promise<void> => { await new Promise(r => setTimeout(r, ms)) }
@@ -467,4 +472,6 @@ try {
   if (hadSettings) writeFileSync(settingsFile, backup ?? '', 'utf8')
   else if (existsSync(settingsFile)) rmSync(settingsFile, { force: true })
   rmSync(settingsFile + '.selfcheck-bak', { force: true })
+  if (hadMid) writeFileSync(midFile, midBackup ?? '', 'utf8')
+  else if (existsSync(midFile)) rmSync(midFile, { force: true })
 }

@@ -31,7 +31,8 @@
     "accept:presence": "tsx scripts/acceptance-presence.ts",
     "accept:director": "tsx scripts/acceptance-director.ts",
     "selfcheck:scene": "tsx scripts/selfcheck-scene-offline.ts",
-    "selfcheck:briefs": "tsx scripts/selfcheck-briefs-offline.ts"
+    "selfcheck:briefs": "tsx scripts/selfcheck-briefs-offline.ts",
+    "selfcheck:midcheck": "tsx scripts/selfcheck-midcheck-offline.ts"
   },
   "devDependencies": {
     "@types/js-yaml": "^4.0.9",
