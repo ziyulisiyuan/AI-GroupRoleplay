@@ -94,6 +94,7 @@ img { display: block; }
   color: var(--text-1);
 }
 .navbar-btn:active { opacity: 0.5; }
+.navbar-btn:disabled { color: var(--text-3); opacity: 0.55; }
 .navbar-text-btn { font-size: var(--fs-cell); color: var(--brand); padding: var(--s-2); }
 .navbar-text-btn:disabled { color: var(--text-3); }
 .navbar-text-btn:active { opacity: 0.6; }

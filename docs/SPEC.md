@@ -72,7 +72,9 @@ mid-checks of §6.1e), a slow bookkeeper (deepseek, §6.1b), a fallback full dir
 
 1. Drain the background queue (the previous turn's bookkeeping must finish first), then
    `reloadBooks()`: discard in-memory caches; re-read character files, 规则.md, 用户.md, and
-   群设定.yaml from disk. Disk is the source of truth [INV 3].
+   群设定.yaml from disk. Disk is the source of truth [INV 3]. **Then, if the group has at least
+   one character, write an undo snapshot of the story state (§1.4)** — failure only logs; it never
+   blocks the turn.
 2. If the log has no presence line yet, append one for the current scene (reason `初始`).
 3. Fast-path pre-flight (only when `settings.routerId` points at an existing provider) runs in
    **two segments** (§6.1a). Segment 1 (`jevRoute`) answers the three-layer scene corrections
@@ -153,7 +155,9 @@ mid-checks of §6.1e), a slow bookkeeper (deepseek, §6.1b), a fallback full dir
 - **清空记录 (clear records)**: removes every `msg` and `ledger` row from 剧情.jsonl, empties
   each character's 记忆.jsonl and 状态.yaml, and clears 思维链.jsonl. route/presence/director/
   rename rows, 判定.jsonl, 群设定.yaml, character assets and avatars are kept; `header.lastMsgId`
-  is preserved, so message ids are never reused. `POST /api/group/{name}/clear-records`.
+  is preserved, so message ids are never reused. Undo snapshots (§1.4) are **kept**: an undo right
+  after clearing restores the last round's pre-round state (messages included) — a deliberate
+  safety net, not a bug. `POST /api/group/{name}/clear-records`.
 - **删除群聊 (delete group)**: `DELETE /api/group/{name}` destroys the group directory
   (irrecoverable; frontend confirms first).
 - **`roll()`**: regenerate the last character message from the same visible input minus that
@@ -169,6 +173,39 @@ mid-checks of §6.1e), a slow bookkeeper (deepseek, §6.1b), a fallback full dir
   `header.lastMsgId` in §3.2). Deletion means the message never happened.
 - **`correct(text)`** (§6.3): out-of-band conversation with the director; results apply as scene
   corrections, memory retracts/appends, ledger snapshots, and are archived as `director` lines.
+
+- **回退这一轮 (undo the last round)** (§1.4): a user action from the chat header; restores the
+  whole story state to the moment that round started.
+
+### 1.4 Undo (回退)
+
+**Model.** Every turn that starts with characters present writes one **snapshot** of the story
+state before the user message is appended. Undo = take the newest snapshot, overwrite the state
+with it, delete that snapshot; the next-newest snapshot still describes the state before the
+previous round, so clicking again rolls back one more round. Nothing is replayed or inverse-applied
+— a snapshot is a wholesale copy, so it also undoes the user's own edits and deletions made inside
+the round.
+
+**Snapshot contents (story state only).** `剧情.jsonl`, `在场.yaml`, `任务书.jsonl`,
+`思维链.jsonl`, and every existing character's `状态.yaml` / `记忆.jsonl`. Stored gzipped as
+`groups/<群>/.undo/<ms>-r<round>.json.gz`; only the newest `UNDO_KEEP` (10) are kept.
+
+**Never restored (user configuration).** `角色.md`, `性格.md`, `人物关系.md`, `知识库.md`,
+`用户.md`, `群设定.yaml`, `场景/`, avatars, `判定.jsonl`, `模型调用.jsonl`. Undo is about the
+story, not the setup. **Rename exception**: a rename appends a `rename` row to the log while the
+new name lives in `角色.md` (not snapshotted); restoring the old log would drop the name chain and
+orphan the character's history, so rename rows added after the snapshot are **carried into the
+restored log** — the rename itself survives, and old ledger rows still resolve.
+
+**Message ids never regress.** After restore, `header.lastMsgId` is the larger of the snapshot
+value and the current value, so ids used by the undone round are not reused.
+
+**Availability.** `GET /api/group/{name}/undo` → `{can, busy, pending, remaining, round}`.
+`can` is true only when no turn is generating (`busy`), no background job is still writing
+(`pending`), and a snapshot exists. `POST /api/group/{name}/undo` drains the background queue,
+restores, drops the cached session, and returns `{round, text, remaining}` — `text` is the undone
+round's user message (empty if the user deleted it), so the client can refill the composer. A
+concurrent turn → HTTP 409.
 
 ---
 
@@ -225,6 +262,7 @@ mid-checks of §6.1e), a slow bookkeeper (deepseek, §6.1b), a fallback full dir
       群设定.yaml             # era / world / tone / scene（初始当前场景）
       规则.jsonl              # 本群独立规则（§3.7）：只注入本群角色，与全局规则叠加
       中间判定.jsonl          # 本群独立中间判定（§3.7a）：只在本群判定，与全局规则叠加
+      .undo/                  # undo snapshots, one gzipped bundle per round (kept: newest 10) · §1.4
       场景/                    # 地图：一个场景一个 md 文件（§3.5a）
       用户.md                 # user persona (frontmatter name + free prose)
       在场.yaml               # scene cache derived from presence rows (§3.9)
@@ -1007,6 +1045,8 @@ perceived what; the overhear layer is director-and-player only.
 | `POST /api/group/{name}/clear-records` | 清空聊天记录 (see §1.2); operational rows and 判定.jsonl kept |
 | `DELETE /api/group/{name}` | destroy the group directory (frontend confirms; irrecoverable) |
 | `POST /api/group/{name}/roll` | reroll last character message → event stream |
+| `GET /api/group/{name}/undo` | undo availability (§1.4): `{can, busy, pending, remaining, round}` |
+| `POST /api/group/{name}/undo` | roll the last round back (§1.4): restores the newest snapshot and consumes it; returns `{round, text, remaining}`; 409 while a turn is generating |
 | client disconnect | the generator keeps running; bookkeeping still completes |
 
 Events: `{type:"speaker",name}` / `{type:"route",picked,reason,fallback}` /
@@ -1188,6 +1228,12 @@ theme only — deliberate). Desktop widths letterbox the app into a centered 520
   surface as the single transient status line above the composer (updated in place; the judge
   waiting hint is not displayed). NDJSON stream read to end; snapshot re-fetched after the
   stream (§7.5). Auto-scroll pins to bottom only when the user is already at bottom.
+- **Undo button** (chat header, left of ⋯): an undo arrow (§1.4). Grey and non-clickable while a
+  turn is generating, while background jobs are still writing, or when no snapshot remains; the
+  client re-polls `GET .../undo` while `pending` so it re-enables itself when writing finishes.
+  Tapping asks for confirmation (the standard confirm dialog); confirming restores the round,
+  refreshes the snapshot (and the home-list cache) and refills the composer with that round's user
+  message so it can be edited and resent.
 - **Keyboard** (chat): no JS lift at all. The composer is a normal flow element pinned to the
   page bottom; keyboards that compress the layout viewport (the fleet's Android browsers) carry
   it above them naturally. A small visual-viewport listener only guards against whole-document
@@ -1264,6 +1310,7 @@ Convention [INV 11]: fixtures are temporary and always deleted. Offline checks n
 | `selfcheck:scene` | offline | scene file layer (create / duplicate reject / description editable / name immutable / invalid name) · group creation builds the map + initial scene · character 初始场景 placement · ⊘ manual move skips scene_change (questions assert) and still moves · destination occupants present by record and hear the arrival line · followers placed, leavers fall to their location answer (其他 clears) · judged move (confidence-guarded) · strict no-move · objective injection (location/scene_change still asked, knows/told not · audience = active scene's present · other scenes excluded) · dialogue entrant lands post-snapshot (not in visible_to) with the scene snapshot injected · colocated-by-record characters are not scene-snapshot targets · scene snapshot carries the active scene's description only (other scenes excluded) · map full text + active scene injected into characters · user walking back to residents: no new snapshot and no off-story memory without an in-use brief (§5.9) · manual scene switch / character-location move / correction-window scene change all land in the location table |
 | `selfcheck:briefs` | offline | off-story pipeline (任务书 §5.9): window keys / `enterMid` / context budgets incl. the §5.6 example and per-node dedupe · separation gate (noul, `briefMin`, no `routerId` = no brief) · brief persistence (fields, `在用`, `windowKeys`) · return completion (slot candidates, wrong-character drop, consumed briefs retired with `usedTs`/`usedBy`, wait-before-speak, consumed briefs never re-enter a request body) · status-record gating (tool schema and dossier ledger field) · manual moves do not trigger |
 | `selfcheck:midcheck` | offline | mid-check rules (§3.7a/§6.1e): two-section round-trip (key order, enabled + both-sections filter) · **zero enabled rules = direct output** (no Jev calls, no buffering, no replay — pinned by elapsed time) · one Jev call **per rule** with one question each (no shared task statement) and the draft + user line as state · only hit `fix` sections enter the rewrite instruction, under the single fixed lead sentence · rewrite carries the unchanged context, the draft as assistant and the instruction as user · the draft never reaches 剧情.jsonl · both thinking stages land · a failed judgment falls back to the draft · per-group rules and mid-checks (`groups/<群>/规则.jsonl` / `中间判定.jsonl`) apply to that group only and never leak into another group |
+| `selfcheck:undo` | offline | round undo (§1.4): one snapshot per round · wholesale restore (messages/presence/briefs/thinking/status/memory) · a message deleted inside the round comes back · a ledger edited inside the round returns to the snapshot value · configuration files (角色.md/用户.md/知识库.md) are **not** restored · a rename keeps its row and name chain · repeated undo one round at a time · newest `UNDO_KEEP` snapshots only · no snapshot = refused |
 | `acceptance-*` (m1–m5, isolation, models, context-edit, presence, director) | online | end-to-end behaviors per milestone; re-run after any fast-path or memory change |
 
 `DSH_DEBUG=1` prints director/judge failure causes.
@@ -1280,6 +1327,7 @@ Convention [INV 11]: fixtures are temporary and always deleted. Offline checks n
 | streamed replies may echo the speaker name prefix | `stripNameEcho` strips it engine-side |
 | sound-only links may receive visual text | judged by the fast path per message; residual error is bounded by director bookkeeping and the correction window |
 | three sequential LLM calls per turn: two judge segments (scene/positions/links/knowledge → route) + the character | each Jev segment is a few hundred ms and priced by input only; bookkeeping runs in the background after the reply |
+| undo keeps only the newest 10 rounds, and every round start copies the story state (gzipped) | a typical group copies in tens of milliseconds; older snapshots are evicted, and the header button greys out once none remain. Undo never touches user configuration (character sheets, knowledge base, user persona), and a rename made inside the round is kept (its name-chain row is carried over) |
 | fast-path probability jitter (routing/scene/knowledge) | conservative thresholds (ambiguity = keep/return to user); scene/knowledge judgments survive route failures; correction window fixes wrong calls; `JEV_TIMEOUT_MS` |
 | reply knowledge judgment delays the `reply` event by one sub-second call | brief cursor linger; failure keeps the keyword rule (no added risk) |
 | every character output pays one extra Jev call **per enabled mid-check rule**, plus one full generation when anything hits | rules are optional and per-rule; each Jev call is priced by input only and carries just the draft + the user line; with no rules configured the turn costs exactly what it did before |

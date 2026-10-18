@@ -164,3 +164,8 @@ export async function listThinkingAfter(group: string): Promise<number[]> {
   const j = await getJson<{ after: number[] }>(`/api/group/${enc(group)}/thinking`)
   return Array.isArray(j.after) ? j.after : []
 }
+
+/** 回退状态（SPEC §1.4）：can = 现在能回退（没有生成中、没有后台在写、还有快照）。 */
+export interface UndoState { can: boolean; busy: boolean; pending: boolean; remaining: number; round: number | null }
+
+export const getUndoState = (group: string): Promise<UndoState> => getJson<UndoState>(`/api/group/${enc(group)}/undo`)

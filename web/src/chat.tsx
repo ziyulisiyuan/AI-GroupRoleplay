@@ -7,11 +7,11 @@
  *   确认文案按 SPEC 必须说明日志不保留原文）。
  */
 import React, { memo, useCallback, useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from 'react'
-import { avatarUrl, getJson, getThinking, listThinkingAfter, postJson, postStream, readNdjson, type Ev, type Msg, type Snapshot } from './api.ts'
+import { avatarUrl, clearGroupRowsCache, getJson, getThinking, getUndoState, listThinkingAfter, postJson, postStream, readNdjson, type Ev, type Msg, type Snapshot, type UndoState } from './api.ts'
 import { applyRules } from './regex.ts'
 import { subscribeTurn, getTurn, turnBegin, turnSpeaker, turnDelta, turnReplyDone, turnEnd, turnPatch, turnSetStatus, cachedSnapshot, cacheSnapshot } from './turn.ts'
 import { Avatar, Confirm, Modal, NavBar, useLongPress, useToast } from './ui.tsx'
-import { ArrowDownToLine, Check, CheckSquare, Copy, Ellipsis, Lightbulb, MapPin, Pencil, RefreshCw, Trash2, X } from './icons.tsx'
+import { ArrowDownToLine, Check, CheckSquare, Copy, Ellipsis, Lightbulb, MapPin, Pencil, RefreshCw, Trash2, Undo2, X } from './icons.tsx'
 
 /** 每群当前挂载的刷新入口：流在旧闭包里收尾时，要刷新"现在挂着的那个实例"，而不是已卸载的旧实例 */
 const activeRefresh = new Map<string, () => Promise<void>>()
@@ -45,6 +45,9 @@ export function ChatView({ group, onBack, onOpenInfo }: Props): React.ReactEleme
   const [thinkingData, setThinkingData] = useState<{ before: string; after: string } | null>(null)
   /** 有「循环后」思维链的消息 id：没改过稿就没有这一项，菜单里干脆不显示（免得点开是空的）。 */
   const [afterIds, setAfterIds] = useState<ReadonlySet<number>>(new Set())
+  /** 回退状态（SPEC §1.4）：后台还在写时按钮置灰，写完自动变可点。 */
+  const [undo, setUndo] = useState<UndoState | null>(null)
+  const [undoConfirm, setUndoConfirm] = useState(false)
   /** 头像查看弹窗：点消息头像放大看图（未设置头像的消息没有此入口）。 */
   const [viewAvatar, setViewAvatar] = useState<{ name: string; url: string } | null>(null)
   const openAvatar = useCallback((name: string, url: string): void => { setViewAvatar({ name, url }) }, [])
@@ -76,6 +79,9 @@ export function ChatView({ group, onBack, onOpenInfo }: Props): React.ReactEleme
     try {
       setAfterIds(new Set(await listThinkingAfter(group))) // 只影响长按菜单里的一个入口，失败无所谓
     } catch { /* 忽略：菜单少一项不影响剧情 */ }
+    try {
+      setUndo(await getUndoState(group)) // 回退按钮的可用状态
+    } catch { /* 忽略：按钮保持上一次的状态 */ }
   }, [group, toast])
 
   useEffect(() => { void refresh() }, [refresh])
@@ -289,12 +295,46 @@ export function ChatView({ group, onBack, onOpenInfo }: Props): React.ReactEleme
   }, [group, toast])
   const thinkingText = thinkingData === null ? null : (thinkingStage === '循环前' ? thinkingData.before : thinkingData.after)
 
+  /** 回退按钮：本轮还在生成 / 后台还在写 / 没有快照时都不可点。 */
+  const canUndo = undo?.can === true && !turn.busy
+  // 后台写完之前按钮是灰的：隔一会儿再问一次，写完自动恢复可点
+  useEffect(() => {
+    if (undo === null || undo.can || !undo.pending || turn.busy) return
+    const t = window.setTimeout(() => { void getUndoState(group).then(setUndo).catch(() => undefined) }, 1500)
+    return () => window.clearTimeout(t)
+  }, [undo, turn.busy, group])
+
+  /** 回退最近一轮（SPEC §1.4）：整份还原剧情状态；把你那句话填回输入框，改完可直接重发。 */
+  const doUndo = useCallback(async (): Promise<void> => {
+    setUndoConfirm(false)
+    try {
+      const r = await postJson<{ ok: boolean; text?: string; remaining: number }>(`/api/group/${encodeURIComponent(group)}/undo`, {})
+      clearGroupRowsCache() // 主页预览（最后一条消息）已变
+      await refresh()
+      const text = r.text ?? ''
+      if (text !== '') { setInput(text); saveDraft(group, text) }
+      toast('已回退到这一轮开始前')
+    } catch (e) {
+      toast(e instanceof Error ? e.message : String(e))
+    }
+  }, [group, refresh, toast])
+
   return (
     <div className="page chat-page page-enter">
       <NavBar
         title={group}
         onBack={onBack}
-        right={<button className="navbar-btn" onClick={onOpenInfo} aria-label="聊天信息"><Ellipsis size={22} /></button>}
+        right={(
+          <>
+            <button
+              className="navbar-btn" disabled={!canUndo}
+              onClick={() => setUndoConfirm(true)} aria-label="回退这一轮"
+            >
+              <Undo2 size={21} />
+            </button>
+            <button className="navbar-btn" onClick={onOpenInfo} aria-label="聊天信息"><Ellipsis size={22} /></button>
+          </>
+        )}
       />
       <div className="scroll chat-scroll" ref={scroller} onScroll={onScroll}>
         {snap === null && <div className="empty">加载中……</div>}
@@ -471,6 +511,15 @@ export function ChatView({ group, onBack, onOpenInfo }: Props): React.ReactEleme
       <Modal open={viewAvatar !== null} onClose={() => setViewAvatar(null)} title={viewAvatar === null ? '' : `${viewAvatar.name} 的头像`}>
         {viewAvatar !== null && <img className="avatar-view" src={viewAvatar.url} alt={viewAvatar.name} />}
       </Modal>
+
+      {/* 回退确认（SPEC §1.4）：整轮回滚，动作不可再恢复 */}
+      <Confirm
+        open={undoConfirm}
+        text="回退到这一轮开始之前？这一轮的对话、场景、记忆、状态账本与任务书都会回滚（角色资料与你的设定不受影响）。"
+        okText="回退"
+        onOk={() => void doUndo()}
+        onClose={() => setUndoConfirm(false)}
+      />
 
       {/* 删除确认：文案按 SPEC 必须说明是物理删除 */}
       <Confirm

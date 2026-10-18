@@ -14,6 +14,7 @@ import { join } from 'node:path'
 import { config } from './config.ts'
 import { discoverApiKey, discoverModels } from './llm/discover.ts'
 import { GroupSession, listGroups, type SessionEvent } from './group/engine.ts'
+import { undoInfo } from './group/undo.ts'
 import {
   createCharacter, createGroup, isValidName, readCharacterDraft, readKnowledge, saveGroupSettings, saveKnowledge, saveUserPersona, updateCharacter,
   type CharacterDraft,
@@ -30,6 +31,16 @@ const PORT = Number(process.env.HOST_PORT ?? 8787)
 /** 绑定地址：不设 = 全部网卡（PC 形态）；安卓壳设 127.0.0.1 只绑回环。 */
 const HOST_BIND = process.env.HOST_BIND || undefined
 const sessions = new Map<string, GroupSession>()
+
+/** 正在写这个群的请求数（生成 / 重掷 / 纠正 / 回退）：回退要等它们全部结束才能动手。 */
+const busy = new Map<string, number>()
+const enter = (name: string): void => { busy.set(name, (busy.get(name) ?? 0) + 1) }
+const leave = (name: string): void => {
+  const left = (busy.get(name) ?? 1) - 1
+  if (left <= 0) busy.delete(name)
+  else busy.set(name, left)
+}
+const isBusy = (name: string): boolean => (busy.get(name) ?? 0) > 0
 
 // 启动自愈：上次离线自检若被硬崩溃打断，mock 配置会留在 settings.yaml 上——有孤儿备份就先还原
 healOrphanSettingsBackup()
@@ -66,19 +77,29 @@ app.get('/api/group/:name/judgments', c => {
   return c.json({ lines: raw })
 })
 
-async function runEvents(c: Context, gen: AsyncGenerator<SessionEvent>): Promise<Response> {
-  return stream(c, async s => {
-    // 断线后不再发送、但把生成器完整跑完——记账（msg 行/ledger/回填）由代码保证，不依赖框架吞错
-    let broken = false
-    for await (const ev of gen) {
-      if (broken) continue
+async function runEvents(c: Context, gen: AsyncGenerator<SessionEvent>, name: string): Promise<Response> {
+  enter(name) // 生成期间这一群算"忙"：回退与别的写入不得插进来
+  try {
+    return stream(c, async s => {
       try {
-        await s.write(`${JSON.stringify(ev)}\n`)
-      } catch {
-        broken = true // 客户端断开（断流重连 = 重新拉快照）
+        // 断线后不再发送、但把生成器完整跑完——记账（msg 行/ledger/回填）由代码保证，不依赖框架吞错
+        let broken = false
+        for await (const ev of gen) {
+          if (broken) continue
+          try {
+            await s.write(`${JSON.stringify(ev)}\n`)
+          } catch {
+            broken = true // 客户端断开（断流重连 = 重新拉快照）
+          }
+        }
+      } finally {
+        leave(name)
       }
-    }
-  })
+    })
+  } catch (e) {
+    leave(name)
+    throw e
+  }
 }
 
 app.post('/api/group/:name/message', async c => {
@@ -87,10 +108,39 @@ app.post('/api/group/:name/message', async c => {
   if (text === '') return c.json({ error: 'text 不能为空' }, 400)
   const scene = typeof body.scene === 'string' && body.scene.trim() !== '' ? body.scene.trim() : undefined
   const objective = body.objective === true
-  return runEvents(c, getSession(c.req.param('name')).speak(text, scene, objective))
+  return runEvents(c, getSession(c.req.param('name')).speak(text, scene, objective), c.req.param('name'))
 })
 
-app.post('/api/group/:name/roll', c => runEvents(c, getSession(c.req.param('name')).roll()))
+app.post('/api/group/:name/roll', c => runEvents(c, getSession(c.req.param('name')).roll(), c.req.param('name')))
+
+// ---------- 回退（SPEC §1.4）：每轮开始时拍快照，回退 = 整体还原那轮的剧情状态 ----------
+
+/** 能不能回退：没有正在生成的回合、没有后台还在写、并且还有快照。 */
+app.get('/api/group/:name/undo', c => {
+  const name = c.req.param('name')
+  const session = getSession(name)
+  const info = undoInfo(session.groupDir)
+  const working = isBusy(name)
+  const pending = !session.backgroundIdle()
+  return c.json({ can: !working && !pending && info.remaining > 0, busy: working, pending, remaining: info.remaining, round: info.round })
+})
+
+app.post('/api/group/:name/undo', async c => {
+  const name = c.req.param('name')
+  if (isBusy(name)) return c.json({ error: '这一轮还在生成或写入，等它结束再回退' }, 409)
+  enter(name)
+  try {
+    const session = getSession(name)
+    const r = await session.undoLastRound()
+    const info = undoInfo(session.groupDir)
+    sessions.delete(name) // 磁盘已是新的真相：丢弃缓存会话，下次请求从还原后的文件重建
+    return c.json({ ok: true, round: r.round, text: r.text, remaining: info.remaining })
+  } catch (e) {
+    return c.json({ error: e instanceof Error ? e.message : String(e) }, 409)
+  } finally {
+    leave(name)
+  }
+})
 
 // ---------- 编辑器：建群 / 群设定 / 角色资料 ----------
 
@@ -335,8 +385,13 @@ app.post('/api/group/:name/director', async c => {
   const body = await c.req.json<Record<string, unknown>>().catch(() => ({} as Record<string, unknown>))
   const text = String(body.text ?? '').trim()
   if (text === '') return c.json({ error: '内容不能为空' }, 400)
-  const result = await getSession(c.req.param('name')).correct(text)
-  return c.json(result)
+  const name = c.req.param('name')
+  enter(name) // 纠正窗口也会写账本/场景：回退要等它写完
+  try {
+    return c.json(await getSession(name).correct(text))
+  } finally {
+    leave(name)
+  }
 })
 
 // ---------- 手动改上下文（SPEC §3.10） ----------

@@ -17,6 +17,7 @@ import { listScenes, type Scene } from './scene.ts'
 import { askBriefWriter, askDirector, askOffStoryCompletion, askSceneSummarizer, assembleGroup, askBookkeeper, jevAfterReply, jevBriefGate, jevExtraRounds, jevMidChecks, jevPickSpeaker, jevRoute, knowsThreshold, routeNextSpeaker, type JevAfterReplyResult, type RouteResult } from './host.ts'
 import { readKnowledge } from './scaffold.ts'
 import { loadMidChecksFor } from './midcheck.ts'
+import { restoreLastRound, snapshotRound } from './undo.ts'
 import { turnFromMessages } from '../host.ts'
 import { resolveRouter } from '../settings.ts'
 import { LEDGER_KEYS, loadFiles, saveMemory, savePersonality, saveRelationships, saveStatus, type CharacterFiles } from './status.ts'
@@ -68,6 +69,8 @@ export class GroupSession {
   private readonly books = new Map<string, CharacterFiles>()
   /** 后台任务队列（慢路径记账）：串行执行；新一轮发言前先清空队列，避免与新一轮的文件写入交错。 */
   private bg: Promise<void> = Promise.resolve()
+  /** 还在排队的后台任务数（回退按钮据此判断"有没有东西还在写"）。 */
+  private bgPending = 0
   /** 本轮进行中的"现场所见"（§5.8）：接力判到进场者发言时，speakAs 组装前必须等它完成。 */
   private sceneSnapshot?: { targets: Set<string>; done: Promise<void> }
   /** 本轮进行中的离场管线（任务书 §2/§3 → 离场补全 §4）：等待集里的人开口前必须先等它完成
@@ -492,7 +495,8 @@ export class GroupSession {
   }
 
   private enqueueBg(task: () => Promise<void>): void {
-    this.bg = this.bg.then(task, () => undefined)
+    this.bgPending++
+    this.bg = this.bg.then(task, () => undefined).finally(() => { this.bgPending-- })
   }
 
   /**
@@ -854,6 +858,21 @@ export class GroupSession {
     await this.drainBg()
   }
 
+  /** 后台是否已全部写完（回退按钮只在没有东西还在写时可用）。 */
+  backgroundIdle(): boolean {
+    return this.bgPending === 0
+  }
+
+  /** 回退最近一轮（SPEC §1.4）：先等后台写完，再把本轮开始时的快照整份盖回去。
+   *  调用方负责丢弃会话缓存（磁盘已是新的真相）。 */
+  async undoLastRound(): Promise<{ round: number; text: string }> {
+    await this.drainBg()
+    const r = restoreLastRound(this.groupDir)
+    if (r === undefined) throw new Error('没有可回退的轮次')
+    this.judgeLog({ phase: '回退', round: r.round, note: '已按快照整体还原' })
+    return r
+  }
+
   /**
    * 每轮开始前丢弃内存缓存，下一轮从磁盘重读角色文件、全局规则、用户设定与群设定。
    * 磁盘始终是事实源（不变式 3）：用户手改任何文件，下一轮即刻生效——不依赖界面保存触发会话重建。
@@ -984,6 +1003,13 @@ export class GroupSession {
     if (this.characters.length === 0) {
       yield { type: 'info', text: '这个群还没有角色——先在左侧「＋ 新建角色」建一个再说话' }
       return
+    }
+    // 回退快照（SPEC §1.4）：本轮开始前拍一份剧情状态（配置类文件不在其中）。
+    // 拍快照失败绝不影响这一轮——只是这轮没有可回退点。
+    try {
+      snapshotRound(this.groupDir, this.store.round + 1)
+    } catch (e) {
+      this.judgeLog({ phase: '回退快照', error: String(e instanceof Error ? e.message : e) })
     }
     // 当前场景先落盘（若尚无记录，以地图初始状态/全员为准），供总管参考
     const before = this.sceneAccess()
