@@ -29,6 +29,8 @@ export interface Snapshot {
   scenes: Scene[]
   locations: Record<string, string>
   userName: string
+  /** 当前戴着的面具编号（'' = 未戴；基础资料生效）。面具不是角色，不进 characters。 */
+  mask: string
   present: string[]
   remote: RemoteLink[]
   overhear: RemoteLink[]
@@ -58,6 +60,8 @@ export type JudgeRow = { ts?: string; phase?: string } & Record<string, unknown>
 export interface RuleItem { id: string; name: string; enabled: boolean; text: string }
 /** Jev 中间判定规则（两段固定格式：check = 题面填空，fix = 命中后发回角色的改稿要求）。 */
 export interface MidCheckItem { id: string; name: string; enabled: boolean; check: string; fix: string }
+/** 面具（用户侧替代人设）：name = 角色读到的称呼与发言署名，text = 设定正文。 */
+export interface MaskItem { id: string; name: string; text: string }
 
 export const enc = encodeURIComponent
 

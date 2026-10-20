@@ -17,6 +17,7 @@ import { listScenes, type Scene } from './scene.ts'
 import { askBriefWriter, askDirector, askOffStoryCompletion, askSceneSummarizer, assembleGroup, askBookkeeper, jevAfterReply, jevBriefGate, jevExtraRounds, jevMidChecks, jevPickSpeaker, jevRoute, knowsThreshold, routeNextSpeaker, type JevAfterReplyResult, type RouteResult } from './host.ts'
 import { readKnowledge } from './scaffold.ts'
 import { loadMidChecksFor } from './midcheck.ts'
+import { currentMask, type MaskItem } from './mask.ts'
 import { restoreLastRound, snapshotRound } from './undo.ts'
 import { turnFromMessages } from '../host.ts'
 import { resolveRouter } from '../settings.ts'
@@ -67,6 +68,8 @@ export class GroupSession {
   /** 编号（= 角色目录名）→ 角色。 */
   private readonly byDir: Map<string, CharacterPersona>
   private readonly books = new Map<string, CharacterFiles>()
+  /** 当前戴着的面具（SPEC §3.6a；null = 用基础资料）。配置语义：每轮重读，不进回退快照。 */
+  private mask: MaskItem | null = null
   /** 后台任务队列（慢路径记账）：串行执行；新一轮发言前先清空队列，避免与新一轮的文件写入交错。 */
   private bg: Promise<void> = Promise.resolve()
   /** 还在排队的后台任务数（回退按钮据此判断"有没有东西还在写"）。 */
@@ -84,6 +87,7 @@ export class GroupSession {
     this.characters = loadCharacters(groupDir)
     this.settings = loadGroupSettings(groupDir)
     this.userPersona = loadUserPersona(groupDir)
+    this.mask = currentMask(groupDir)
     this.rules = this.ruleTexts()
     const saved = loadScene(groupDir)
     // 场景来源优先级：日志里最后一次 presence 行（事实源）→ 在场.yaml → 地图初始状态 → 全员现场
@@ -305,7 +309,7 @@ export class GroupSession {
   }
 
   /** 前端初始渲染快照：消息 + 路由行 + 场景（当前场景、地图、各角色位置）。 */
-  snapshot(): { name: string; era: string; world: string; tone: string; scene: string; scenes: Scene[]; locations: Record<string, string>; userName: string; present: string[]; remote: RemoteLink[]; overhear: RemoteLink[]; absent: string[]; characters: Array<{ name: string; dirName: string }>; messages: MsgLine[]; routes: RouteLine[]; statusRecord: boolean; pinned: boolean } {
+  snapshot(): { name: string; era: string; world: string; tone: string; scene: string; scenes: Scene[]; locations: Record<string, string>; userName: string; mask: string; present: string[]; remote: RemoteLink[]; overhear: RemoteLink[]; absent: string[]; characters: Array<{ name: string; dirName: string }>; messages: MsgLine[]; routes: RouteLine[]; statusRecord: boolean; pinned: boolean } {
     const routes = this.store.allLines.filter((l): l is RouteLine => l.type === 'route')
     const present = this.presentNames()
     const remote = this.remoteLinks()
@@ -319,6 +323,7 @@ export class GroupSession {
       scenes: listScenes(this.groupDir),
       locations: { ...(this.scene.locations ?? {}) },
       userName: this.userPersona.name,
+      mask: this.mask?.id ?? '',
       present,
       remote,
       overhear,
@@ -882,6 +887,16 @@ export class GroupSession {
     this.rules = this.ruleTexts()
     this.userPersona = loadUserPersona(this.groupDir)
     this.settings = loadGroupSettings(this.groupDir)
+    this.mask = currentMask(this.groupDir)
+  }
+
+  /**
+   * 本轮「用户是谁」：戴面具 = 面具的称呼与设定，否则 = 基础资料（SPEC §3.6a）。
+   * 一轮只在开头取一次——整轮（含接力各跳与转告记忆）用同一份身份，中途换面具不会把一轮拆成两个人。
+   */
+  private identity(): UserPersona {
+    const m = this.mask
+    return m === null ? this.userPersona : { name: m.name, text: m.text }
   }
 
   /** 生效规则文本 = 全局规则（作用于所有群）+ 本群独立规则（只作用于本群）；各自只取启用的。 */
@@ -919,6 +934,7 @@ export class GroupSession {
   /** 重掷上一条角色发言。 */
   async *roll(): AsyncGenerator<SessionEvent> {
     this.reloadBooks()
+    const me = this.identity()
     const last = this.store.lastCharacterMessage()
     const persona = last !== undefined ? this.byName.get(last.name) : undefined
     if (last === undefined || persona === undefined) {
@@ -934,7 +950,7 @@ export class GroupSession {
         suppressedMids: this.suppressedMids(last.name),
         knowledge: readKnowledge(join(this.groupDir, '角色', persona.dirName)), // 个人知识库：只给这个角色
         memoryText: files !== undefined ? buildMemory(this.store, last.name, files.memory) : '',
-        userPersona: this.userPersona,
+        userPersona: me,
         rules: this.rules,
         presentNames: this.presentNames(),
         remote: this.remoteLinks(),
@@ -997,6 +1013,8 @@ export class GroupSession {
   async *speak(text: string, manualScene?: string, objective = false): AsyncGenerator<SessionEvent> {
     await this.drainBg() // 上一轮的后台记账先完成，避免与新一轮写入交错
     this.reloadBooks()
+    // 本轮身份（基础资料 / 面具）：整轮固定——署名、人设块、接力终止键、转告来源全用它
+    const me = this.identity()
     // 新一轮：上一轮的等待句柄作废（后台任务已 drain 清空，不会再有新的注入）
     this.sceneSnapshot = undefined
     this.offstoryWait = undefined
@@ -1117,7 +1135,7 @@ export class GroupSession {
       const knows = quick?.knows ?? new Set(this.witnesses())
       audience = this.audienceOf(knows, this.store.nextMsgId)
     }
-    const userMsg = this.store.append('user', this.userPersona.name, text, audience, objective ? { objective: true } : {})
+    const userMsg = this.store.append('user', me.name, text, audience, objective ? { objective: true } : {})
     this.backfillAll()
     if (objective) yield { type: 'info', text: '（客观注入：已写入在场者记忆）' }
 
@@ -1126,7 +1144,7 @@ export class GroupSession {
     // userDirty = 状态账本总门（用户发言部分）；缺答案按 true（安全侧）。
     const userDirty = quick?.stateDirty ?? true
     if (quick !== undefined && quick.told.size > 0 && routerLlm !== undefined) {
-      yield* this.grantExtraMemory(quick.told, text, this.userPersona.name, routerLlm)
+      yield* this.grantExtraMemory(quick.told, text, me.name, routerLlm)
     }
 
     if (isMap && quick !== undefined) {
@@ -1273,7 +1291,7 @@ export class GroupSession {
         yield { type: 'route', picked: current, reason: '接力', fallback: false }
         this.store.appendRoute(current, '接力', false)
       }
-      const r = yield* this.speakAs(current, this.store.effectiveMessages())
+      const r = yield* this.speakAs(current, this.store.effectiveMessages(), me)
       replies.push({ speaker: current, text: r.text })
       if (!spokenWeight.has(current)) spokenWeight.set(current, 1) // 首次发言记 1；再次发言不重置（衰减叠加）
       if (r.text.trim() === '') break // 空回复不接力、不记账
@@ -1311,7 +1329,7 @@ export class GroupSession {
         break
       }
       if (pickedNext !== raw.picked) this.judgeLog({ phase: '接力加权', from: raw.picked, to: pickedNext, dist })
-      if (pickedNext === this.userPersona.name || !this.speakableNames().includes(pickedNext)) break
+      if (pickedNext === me.name || !this.speakableNames().includes(pickedNext)) break
       current = pickedNext
     }
 
@@ -1404,7 +1422,7 @@ export class GroupSession {
     return { scene: target || undefined, locations, present: nextPresent, remote: base.remote, overhear: base.overhear }
   }
 
-  private async *speakAs(name: string, history: MsgLine[]): AsyncGenerator<SessionEvent, { text: string; msgId?: number; judge?: JevAfterReplyResult }> {
+  private async *speakAs(name: string, history: MsgLine[], me: UserPersona): AsyncGenerator<SessionEvent, { text: string; msgId?: number; judge?: JevAfterReplyResult }> {
     // 现场所见（§5.8）：新进场者要开口了——先等"现场所见"注入完成，再组装发言（先看见，再发言）。
     const snap = this.sceneSnapshot
     if (snap !== undefined && snap.targets.has(name)) {
@@ -1431,7 +1449,7 @@ export class GroupSession {
       suppressedMids: this.suppressedMids(name),
       knowledge: readKnowledge(join(this.groupDir, '角色', persona.dirName)), // 个人知识库：只给这个角色
       memoryText: buildMemory(this.store, name, files.memory),
-      userPersona: this.userPersona,
+      userPersona: me,
       rules: this.rules,
       presentNames: this.presentNames(),
       remote: this.remoteLinks(),
@@ -1505,7 +1523,7 @@ export class GroupSession {
             candidates,
             roster: speakable.map(n => ({ name: n })),
             rosterLines: this.rosterLinesFor(speakable),
-            userName: this.userPersona.name,
+            userName: me.name,
             statusNotes: this.settings.statusRecord === true ? this.statusNotes() : [],
             presentNotes: this.presentNotes(),
             present: this.presentNames(),

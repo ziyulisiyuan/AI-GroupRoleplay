@@ -24,6 +24,7 @@ import { createScene, listScenes, saveSceneDescription } from './group/scene.ts'
 import { getThinking, listThinkingAfterIds } from './group/thinking.ts'
 import { ensureRuleMigration, loadRuleList, saveRuleList } from './group/rules.ts'
 import { loadMidCheckList, saveMidCheckList } from './group/midcheck.ts'
+import { loadCurrentMaskId, loadMaskList, maskNameTaken, saveMaskList, setCurrentMask } from './group/mask.ts'
 import { loadSettings, saveSettings, resolveLlm, healOrphanSettingsBackup, type Provider } from './settings.ts'
 import { registerStatic } from './server-static.ts'
 
@@ -295,6 +296,42 @@ app.put('/api/group/:name/mid-checks', async c => {
   return c.json({ ok: true })
 })
 
+// ---------- 面具（SPEC §3.6a）：用户侧的替代人设，只作用于这个群 ----------
+// 面具不是角色：不进 角色/ 目录、不占路由、没有记忆与状态账本；它只换角色看到的「你是谁」与发言署名。
+// 戴着谁存在群目录的 当前面具.yaml（配置语义，不进剧情日志、不参与回退/rebuild）。
+
+app.get('/api/group/:name/masks', c => {
+  const dir = groupDir(c.req.param('name'))
+  return c.json({ masks: loadMaskList(dir), current: loadCurrentMaskId(dir) })
+})
+
+app.put('/api/group/:name/masks', async c => {
+  const dir = groupDir(c.req.param('name'))
+  if (!existsSync(dir)) return c.json({ error: '群聊不存在' }, 400)
+  const body = await c.req.json<Record<string, unknown>>().catch(() => ({} as Record<string, unknown>))
+  try {
+    saveMaskList(dir, Array.isArray(body.masks) ? body.masks : [])
+  } catch (e) {
+    return c.json({ error: e instanceof Error ? e.message : String(e) }, 400)
+  }
+  sessions.delete(c.req.param('name')) // 人设变了，丢弃缓存的会话（与 PUT /user 同处理）
+  return c.json({ ok: true })
+})
+
+/** 戴上面具（body {id}）或摘下（id 为空串）。 */
+app.put('/api/group/:name/mask', async c => {
+  const dir = groupDir(c.req.param('name'))
+  if (!existsSync(dir)) return c.json({ error: '群聊不存在' }, 400)
+  const body = await c.req.json<Record<string, unknown>>().catch(() => ({} as Record<string, unknown>))
+  try {
+    setCurrentMask(dir, String(body.id ?? '').trim())
+  } catch (e) {
+    return c.json({ error: e instanceof Error ? e.message : String(e) }, 400)
+  }
+  sessions.delete(c.req.param('name'))
+  return c.json({ ok: true })
+})
+
 // 用户设定（自由格式单文件）：角色与总管都会读到
 app.get('/api/group/:name/user', c => {
   const dir = groupDir(c.req.param('name'))
@@ -356,6 +393,8 @@ app.post('/api/group/:name/character', async c => {
   if (!existsSync(dir)) return c.json({ error: '群聊不存在' }, 400)
   const draft = draftFrom(body)
   if (!isValidName(draft.name)) return c.json({ error: '非法角色名' }, 400)
+  // 对称校验（SPEC §3.6a）：面具名与角色名必须互斥，否则同名两个人会共用一套字符串身份
+  if (maskNameTaken(dir, draft.name)) return c.json({ error: `角色名「${draft.name}」与面具重名——角色不能和面具用同一个称呼` }, 400)
   createCharacter(dir, draft)
   sessions.delete(c.req.param('name'))
   return c.json({ ok: true, name: draft.name, dirName: draft.name })
@@ -369,7 +408,13 @@ app.get('/api/group/:name/character/:dir', c => {
 app.put('/api/group/:name/character/:dir', async c => {
   const body = await c.req.json<Record<string, unknown>>().catch(() => ({} as Record<string, unknown>))
   const dir = groupDir(c.req.param('name'))
-  updateCharacter(dir, validDirName(c.req.param('dir')), draftFrom(body))
+  const dirName = validDirName(c.req.param('dir'))
+  const draft = draftFrom(body)
+  // 只在真的改名时做对称校验：让已经存在的同名数据仍可编辑其它字段
+  if (draft.name !== readCharacterDraft(dir, dirName).name && maskNameTaken(dir, draft.name)) {
+    return c.json({ error: `角色名「${draft.name}」与面具重名——角色不能和面具用同一个称呼` }, 400)
+  }
+  updateCharacter(dir, dirName, draft)
   sessions.delete(c.req.param('name'))
   return c.json({ ok: true })
 })

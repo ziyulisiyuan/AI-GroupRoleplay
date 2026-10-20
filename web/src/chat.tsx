@@ -7,11 +7,11 @@
  *   确认文案按 SPEC 必须说明日志不保留原文）。
  */
 import React, { memo, useCallback, useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from 'react'
-import { avatarUrl, clearGroupRowsCache, getJson, getThinking, getUndoState, listThinkingAfter, postJson, postStream, readNdjson, type Ev, type Msg, type Snapshot, type UndoState } from './api.ts'
+import { avatarUrl, clearGroupRowsCache, getJson, getThinking, getUndoState, listThinkingAfter, postJson, postStream, putJson, readNdjson, type Ev, type MaskItem, type Msg, type Snapshot, type UndoState } from './api.ts'
 import { applyRules } from './regex.ts'
 import { subscribeTurn, getTurn, turnBegin, turnSpeaker, turnDelta, turnReplyDone, turnEnd, turnPatch, turnSetStatus, cachedSnapshot, cacheSnapshot } from './turn.ts'
-import { Avatar, Confirm, Modal, NavBar, useLongPress, useToast } from './ui.tsx'
-import { ArrowDownToLine, Check, CheckSquare, Copy, Ellipsis, Lightbulb, MapPin, Pencil, RefreshCw, Trash2, Undo2, X } from './icons.tsx'
+import { Avatar, Confirm, Modal, NavBar, Sheet, useLongPress, useToast } from './ui.tsx'
+import { ArrowDownToLine, Check, CheckSquare, Copy, Ellipsis, Lightbulb, MapPin, Pencil, RefreshCw, Trash2, Undo2, VenetianMask, X } from './icons.tsx'
 
 /** 每群当前挂载的刷新入口：流在旧闭包里收尾时，要刷新"现在挂着的那个实例"，而不是已卸载的旧实例 */
 const activeRefresh = new Map<string, () => Promise<void>>()
@@ -56,8 +56,14 @@ export function ChatView({ group, onBack, onOpenInfo }: Props): React.ReactEleme
   const [pendingScene, setPendingScene] = useState<string | null>(null)
   /** 客观注入武装态：本轮发送不经感知判定，直接以「客观」来源写入在场者记忆。 */
   const [objectiveMode, setObjectiveMode] = useState(false)
-  /** 输入条左侧 ⋯ 菜单（前往地点 / 客观注入）。 */
+  /** 输入条左侧 ⋯ 菜单（底部上拉：前往地点 / 客观注入 / 面具）。 */
   const [composerMenu, setComposerMenu] = useState(false)
+  /** 面具二级面板：列出可用面具（戴上即替换「你是谁」与发言署名，直到取消）。 */
+  const [maskPick, setMaskPick] = useState(false)
+  const [masks, setMasks] = useState<MaskItem[] | null>(null)
+  const [maskBusy, setMaskBusy] = useState(false)
+  /** 正戴着面具：发送键变黑（唯一的状态指示）。 */
+  const masked = (snap?.mask ?? '') !== ''
   const scroller = useRef<HTMLDivElement>(null)
   const pinned = useRef(true)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
@@ -153,6 +159,34 @@ export function ChatView({ group, onBack, onOpenInfo }: Props): React.ReactEleme
     await (activeRefresh.get(group) ?? refresh)()
     turnEnd(group)
   }, [group, refresh, toast])
+
+  /** 打开面具面板：现取列表（戴着的那副打勾）。 */
+  const openMaskPick = useCallback((): void => {
+    setComposerMenu(false)
+    setMaskPick(true)
+    void (async () => {
+      try {
+        setMasks((await getJson<{ masks: MaskItem[] }>(`/api/group/${encodeURIComponent(group)}/masks`)).masks)
+      } catch (e) {
+        toast(e instanceof Error ? e.message : String(e))
+      }
+    })()
+  }, [group, toast])
+
+  /** 戴上面具（id）或摘下（''）：服务端改身份，快照重拉——发送键颜色随之变。 */
+  const wearMask = useCallback(async (id: string): Promise<void> => {
+    if (maskBusy) return
+    setMaskBusy(true)
+    try {
+      await putJson(`/api/group/${encodeURIComponent(group)}/mask`, { id })
+      setMaskPick(false)
+      await refresh()
+    } catch (e) {
+      toast(e instanceof Error ? e.message : String(e))
+    } finally {
+      setMaskBusy(false)
+    }
+  }, [group, maskBusy, refresh, toast])
 
   const send = useCallback((): void => {
     const text = input.trim()
@@ -415,26 +449,47 @@ export function ChatView({ group, onBack, onOpenInfo }: Props): React.ReactEleme
                 onChange={e => { setInput(e.target.value); saveDraft(group, e.target.value); autoGrow() }}
                 onKeyDown={onKeyDown}
               />
-              <button className="composer-send" disabled={turn.busy || input.trim() === ''} onClick={send}>发送</button>
+              <button className={'composer-send' + (masked ? ' masked' : '')} disabled={turn.busy || input.trim() === ''} onClick={send}>发送</button>
             </div>
           </>
         )}
       </div>
 
-      {/* ⋯ 插入菜单：前往地点（⊘ 手选）/ 客观注入 */}
-      <Modal open={composerMenu} onClose={() => setComposerMenu(false)}>
+      {/* ⋯ 菜单（底部上拉）：前往地点（⊘ 手选）/ 客观注入 / 面具 */}
+      <Sheet open={composerMenu} onClose={() => setComposerMenu(false)}>
         <button className="menu-item" onClick={() => { setComposerMenu(false); setScenePick(true) }}>
           <MapPin size={18} /> 前往地点
         </button>
         <button className="menu-item" onClick={() => { setComposerMenu(false); setPendingScene(null); setObjectiveMode(true) }}>
           <ArrowDownToLine size={18} /> 客观注入
         </button>
+        {masked
+          ? <button className="menu-item" disabled={maskBusy} onClick={() => { setComposerMenu(false); void wearMask('') }}>
+              <X size={18} /> 取消面具
+            </button>
+          : <button className="menu-item" onClick={openMaskPick}>
+              <VenetianMask size={18} /> 面具
+            </button>}
         {objectiveMode && (
           <button className="menu-item" style={{ color: 'var(--danger)' }} onClick={() => { setComposerMenu(false); setObjectiveMode(false) }}>
             <X size={18} /> 取消客观注入
           </button>
         )}
-      </Modal>
+      </Sheet>
+
+      {/* 面具二级面板：选一副戴上（戴上后发送键变黑，直到「取消面具」） */}
+      <Sheet open={maskPick} onClose={() => setMaskPick(false)} title="选择面具">
+        {masks === null && <div className="hint">加载中……</div>}
+        {masks?.map(m => (
+          <button key={m.id} className="menu-item" disabled={maskBusy} onClick={() => void wearMask(m.id)}>
+            <VenetianMask size={18} /> <span style={{ flex: 1 }}>{m.name}</span>
+            {snap?.mask === m.id && <Check size={18} />}
+          </button>
+        ))}
+        {masks !== null && masks.length === 0 && (
+          <div className="hint">（还没有面具——到「聊天信息 → 我的设定 → 面具」里创建）</div>
+        )}
+      </Sheet>
 
       {/* ⊘ 场景手选（悬浮）：选中的场景随本轮发送生效——跳过换场景判定，直接按"是"处理 */}
       <Modal open={scenePick} onClose={() => setScenePick(false)} title="前往哪个场景？">

@@ -308,6 +308,37 @@ export function Modal({ open, onClose, title, children }: {
   )
 }
 
+/* ---------- 底部上拉面板（Action Sheet；菜单用，替代居中弹窗） ---------- */
+
+export function Sheet({ open, onClose, title, children }: {
+  open: boolean
+  onClose: () => void
+  title?: string
+  children?: React.ReactNode
+}): React.ReactElement | null {
+  const [render, setRender] = useState(open)
+  // 与 Modal 同一套冻结语义：收起动画期间内容不按调用方的新状态重排，否则面板会先塌缩再滑走
+  const frozen = useRef<{ title?: string; children?: React.ReactNode }>({})
+  if (open) frozen.current = { title, children }
+  useEffect(() => {
+    if (open) { setRender(true); return }
+    const t = setTimeout(() => setRender(false), 200)
+    return () => clearTimeout(t)
+  }, [open])
+  if (!render) return null
+  const closing = !open
+  const shown = closing ? frozen.current : { title, children }
+  return (
+    <div className={'dialog sheet' + (closing ? ' closing' : '')}>
+      <div className="dialog-mask" onClick={onClose} />
+      <div className="sheet-box">
+        {shown.title !== undefined && <div className="modal-title">{shown.title}</div>}
+        <div className="modal-body">{shown.children}</div>
+      </div>
+    </div>
+  )
+}
+
 export function Confirm({ open, text, okText = '删除', danger = true, onOk, onClose }: {
   open: boolean
   text: React.ReactNode

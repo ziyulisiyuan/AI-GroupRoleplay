@@ -33,6 +33,7 @@
     "selfcheck:scene": "tsx scripts/selfcheck-scene-offline.ts",
     "selfcheck:briefs": "tsx scripts/selfcheck-briefs-offline.ts",
     "selfcheck:midcheck": "tsx scripts/selfcheck-midcheck-offline.ts",
+    "selfcheck:mask": "tsx scripts/selfcheck-mask.ts",
     "selfcheck:undo": "tsx scripts/selfcheck-undo-offline.ts"
   },
   "devDependencies": {

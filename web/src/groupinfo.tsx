@@ -8,7 +8,7 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react'
 import {
   avatarUrl, delJson, enc, getJson, postJson, putJson, clearGroupRowsCache,
-  type Draft, type JudgeRow, type MemoryEntry, type MidCheckItem, type RuleItem, type Snapshot,
+  type Draft, type JudgeRow, type MaskItem, type MemoryEntry, type MidCheckItem, type RuleItem, type Snapshot,
 } from './api.ts'
 import { Avatar, AvatarPicker, Cell, Cells, CheckCell, Confirm, Field, Modal, NavBar, useLongPress, useToast } from './ui.tsx'
 import { MidCheckEditPage, MidCheckListPage, RegexPage, RuleEditPage, RuleListPage } from './rulesui.tsx'
@@ -19,7 +19,7 @@ export const LEDGER_KEYS = ['生理状态', '心理状态', '外观状态', '位
 
 /** 一级页（字符串键）：标题查 VIEW_TITLES；下面的对象键 = 带参数的子页。 */
 type InfoPage =
-  | 'hub' | 'settings' | 'me' | 'director' | 'log' | 'scenes'
+  | 'hub' | 'settings' | 'me' | 'meBase' | 'masks' | 'director' | 'log' | 'scenes'
   /** 本群独立设置（只作用于这个群；与全局页叠加生效）：规则 / 正则 / Jev 中间判定。 */
   | 'grules' | 'gregex' | 'gmid'
 
@@ -27,11 +27,14 @@ type InfoView =
   | InfoPage
   | { grulesEdit: string | null; seed?: RuleItem }
   | { gmidEdit: string | null; seed?: MidCheckItem }
+  /** 面具编辑（id；null = 新建）——面具是用户侧的替代人设，不是角色 */
+  | { maskEdit: string | null }
   | { char: string }                                        // 角色资料收纳页（'' = 新建角色表单）
   | { charSub: string; page: 'profile' | 'memory' | 'ledger' | 'knowledge' }
 
 const VIEW_TITLES: Record<InfoPage, string> = {
-  hub: '聊天信息', settings: '群聊设定', me: '我的设定', director: '对总管说（纠正）',
+  hub: '聊天信息', settings: '群聊设定', me: '我的设定', meBase: '基础资料', masks: '面具',
+  director: '对总管说（纠正）',
   log: '运行日志', scenes: '场景',
   grules: '独立规则', gregex: '独立正则', gmid: '独立Jev判定',
 }
@@ -64,16 +67,18 @@ export function InfoRoot({ group, onExit, onDeleted }: { group: string; onExit: 
   const title = typeof top === 'string' ? VIEW_TITLES[top]
     : 'grulesEdit' in top ? (top.grulesEdit === null ? '新建独立规则' : '编辑独立规则')
       : 'gmidEdit' in top ? (top.gmidEdit === null ? '新建独立Jev判定' : '编辑独立Jev判定')
-        : 'char' in top ? (top.char === '' ? '新建角色' : '角色资料')
-          : top.page === 'profile' ? '个人资料'
-            : top.page === 'memory' ? '记忆'
-              : top.page === 'ledger' ? '状态账本' : '个人知识库'
+        : 'maskEdit' in top ? (top.maskEdit === null ? '新建面具' : '编辑面具')
+          : 'char' in top ? (top.char === '' ? '新建角色' : '角色资料')
+            : top.page === 'profile' ? '个人资料'
+              : top.page === 'memory' ? '记忆'
+                : top.page === 'ledger' ? '状态账本' : '个人知识库'
   /** 子页切换：换 key 重挂载滚动容器——滚动位回到顶部，并重放一次入场动画 */
   const viewKey = typeof top === 'string' ? top
     : 'grulesEdit' in top ? `grulesEdit:${top.grulesEdit ?? 'new'}`
       : 'gmidEdit' in top ? `gmidEdit:${top.gmidEdit ?? 'new'}`
-        : 'char' in top ? `char:${top.char}`
-          : `sub:${top.charSub}:${top.page}`
+        : 'maskEdit' in top ? `maskEdit:${top.maskEdit ?? 'new'}`
+          : 'char' in top ? `char:${top.char}`
+            : `sub:${top.charSub}:${top.page}`
 
   return (
     <div className="page page-enter">
@@ -81,7 +86,9 @@ export function InfoRoot({ group, onExit, onDeleted }: { group: string; onExit: 
       <div className="scroll view-enter" key={viewKey}>
         {top === 'hub' && <HubView group={group} snap={snap} avatarV={avatarV} bump={bump} go={push} refresh={refresh} onDeleted={onDeleted} />}
         {top === 'settings' && <SettingsView group={group} snap={snap} onSaved={refresh} />}
-        {top === 'me' && <MeView group={group} snap={snap} avatarV={avatarV} bump={bump} onSaved={refresh} />}
+        {top === 'me' && <MeHubView go={push} />}
+        {top === 'meBase' && <MeView group={group} snap={snap} avatarV={avatarV} bump={bump} onSaved={refresh} />}
+        {top === 'masks' && <MaskListPage group={group} snap={snap} onEdit={id => push({ maskEdit: id })} />}
         {top === 'director' && <DirectorView group={group} onChanged={refresh} />}
         {top === 'log' && <LogView group={group} />}
         {top === 'scenes' && <ScenesView group={group} snap={snap} onChanged={refresh} />}
@@ -105,6 +112,9 @@ export function InfoRoot({ group, onExit, onDeleted }: { group: string; onExit: 
         {typeof top !== 'string' && 'gmidEdit' in top && (
           <MidCheckEditPage key={top.gmidEdit ?? 'new'} frame="inline" endpoint={`/api/group/${enc(group)}/mid-checks`}
             id={top.gmidEdit} seed={top.seed} titleNew="新建独立Jev判定" titleEdit="编辑独立Jev判定" onBack={pop} />
+        )}
+        {typeof top !== 'string' && 'maskEdit' in top && (
+          <MaskEditPage key={top.maskEdit ?? 'new'} group={group} id={top.maskEdit} maskedId={snap?.mask ?? ''} onBack={pop} />
         )}
         {typeof top !== 'string' && 'char' in top && (
           top.char === ''
@@ -340,7 +350,18 @@ function SettingsView({ group, snap, onSaved }: { group: string; snap: Snapshot 
   )
 }
 
-/* ---------- 我的设定 ---------- */
+/* ---------- 我的设定（两行 hub：基础资料 / 面具） ---------- */
+
+function MeHubView({ go }: { go: (v: InfoView) => void }): React.ReactElement {
+  return (
+    <Cells>
+      <Cell title="基础资料" arrow onTap={() => go('meBase')} />
+      <Cell title="面具" arrow onTap={() => go('masks')} />
+    </Cells>
+  )
+}
+
+/* ---------- 基础资料（原「我的设定」页） ---------- */
 
 function MeView({ group, snap, avatarV, bump, onSaved }: {
   group: string; snap: Snapshot | null; avatarV: number; bump: () => void; onSaved: () => Promise<void>
@@ -393,6 +414,129 @@ function MeView({ group, snap, avatarV, bump, onSaved }: {
         <Field label="你的设定" value={text} onChange={setText} multiline rows={6} />
       </Cells>
       <button className="btn-primary" disabled={name === null || !dirty} onClick={() => void save()}>保存</button>
+    </>
+  )
+}
+
+/* ---------- 面具（用户侧的替代人设：列表 + 编辑） ----------
+   戴着的那副只在聊天页的面具面板里换/摘，这里只负责建、改、删；
+   正戴着的不能删（服务端也会拒），与「先摘下再删」同一把尺。 */
+
+function maskEndpoint(group: string): string {
+  return `/api/group/${enc(group)}/masks`
+}
+
+function MaskListPage({ group, snap, onEdit }: {
+  group: string
+  snap: Snapshot | null
+  onEdit: (id: string | null) => void
+}): React.ReactElement {
+  const toast = useToast()
+  const [masks, setMasks] = useState<MaskItem[] | null>(null)
+  useEffect(() => {
+    void (async () => {
+      try {
+        setMasks((await getJson<{ masks: MaskItem[] }>(maskEndpoint(group))).masks)
+      } catch (e) {
+        toast(e instanceof Error ? e.message : String(e))
+      }
+    })()
+  }, [group, toast])
+  return (
+    <Cells>
+      <button className="cell" onClick={() => onEdit(null)}>
+        <div className="cell-title"><div className="main" style={{ color: 'var(--brand)' }}>＋ 创建面具</div></div>
+      </button>
+      {masks?.map(m => (
+        <Cell
+          key={m.id}
+          title={m.name}
+          sub={m.text.trim() === '' ? '（未写设定）' : m.text.trim().split('\n')[0]}
+          {...(snap?.mask === m.id ? { value: '戴着' } : {})}
+          arrow
+          onTap={() => onEdit(m.id)}
+        />
+      ))}
+      {masks !== null && masks.length === 0 && <div className="hint">（还没有面具——点上方「＋ 创建面具」创建）</div>}
+    </Cells>
+  )
+}
+
+function MaskEditPage({ group, id, maskedId, onBack }: {
+  group: string
+  id: string | null
+  /** 正戴着的面具编号：它是当前身份，删掉会让署名与「戴着」失配。 */
+  maskedId: string
+  onBack: () => void
+}): React.ReactElement {
+  const toast = useToast()
+  const [masks, setMasks] = useState<MaskItem[] | null>(null)
+  const [name, setName] = useState('')
+  const [text, setText] = useState('')
+  /** 载入时的内容：只有改动过才允许保存（与规则页同一套手感）。 */
+  const [initial, setInitial] = useState<{ name: string; text: string } | null>(id === null ? { name: '', text: '' } : null)
+  const [busy, setBusy] = useState(false)
+  useEffect(() => {
+    void (async () => {
+      try {
+        const list = (await getJson<{ masks: MaskItem[] }>(maskEndpoint(group))).masks
+        setMasks(list)
+        if (id === null) return
+        const m = list.find(x => x.id === id)
+        if (m === undefined) { toast('面具不存在'); onBack(); return }
+        setName(m.name)
+        setText(m.text)
+        setInitial({ name: m.name, text: m.text })
+      } catch (e) {
+        toast(e instanceof Error ? e.message : String(e))
+        if (id !== null) onBack()
+      }
+    })()
+  }, [group, id, onBack, toast])
+  const dirty = initial !== null && (name !== initial.name || text !== initial.text)
+  const save = async (): Promise<void> => {
+    if (masks === null || busy) return
+    if (name.trim() === '') { toast('称呼不能为空'); return }
+    setBusy(true)
+    try {
+      const next = id === null
+        ? [...masks, { id: `m${Date.now().toString(36)}`, name: name.trim(), text }]
+        : masks.map(m => (m.id === id ? { ...m, name: name.trim(), text } : m))
+      await putJson(maskEndpoint(group), { masks: next })
+      onBack()
+    } catch (e) {
+      toast(e instanceof Error ? e.message : String(e)) // 重名/与角色重名由服务端拒绝
+    } finally {
+      setBusy(false)
+    }
+  }
+  const remove = async (): Promise<void> => {
+    if (masks === null || id === null || busy) return
+    setBusy(true)
+    try {
+      const next = masks.filter(m => m.id !== id)
+      await putJson(maskEndpoint(group), { masks: next })
+      onBack()
+    } catch (e) {
+      toast(e instanceof Error ? e.message : String(e))
+    } finally {
+      setBusy(false)
+    }
+  }
+  // 载入完成前不渲染表单：否则会先闪一帧空表单（看起来像"新建"页）
+  if (initial === null) return <div className="empty">加载中……</div>
+  return (
+    <>
+      <Cells>
+        <Field label="称呼" value={name} onChange={setName} placeholder="角色会这么称呼你（也是你的发言署名）" />
+        <Field label="你的设定" value={text} onChange={setText} multiline rows={8} placeholder="戴上这副面具时，角色知道的「你是谁」" />
+      </Cells>
+      {id !== null && id !== maskedId && (
+        <div style={{ padding: '0 var(--s-4) var(--s-3)' }}>
+          <button style={{ color: 'var(--danger)', fontSize: 'var(--fs-sub)' }} disabled={busy} onClick={() => void remove()}>删除这个面具</button>
+        </div>
+      )}
+      <button className="btn-primary" disabled={busy || masks === null || !dirty} onClick={() => void save()}>保存</button>
     </>
   )
 }
