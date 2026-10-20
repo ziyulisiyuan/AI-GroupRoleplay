@@ -210,10 +210,8 @@ button.cell:active, .cell.tap:active { background: var(--bg-press); }
   resize: none;
 }
 .field-input::placeholder { color: var(--text-3); }
-/* 固定句式 + 填空（Jev 中间判定的第一段）：引导语固定不可编辑，后面只填它后面的那截 */
-.sentence-field { display: flex; align-items: center; gap: 6px; }
-.sentence-field .lead { flex: none; font-size: var(--fs-cell); color: var(--text-1); }
-.sentence-field .field-input { flex: 1; min-width: 0; }
+/* 固定句式导语（Jev 中间判定的第一段）：这句不可编辑，填空在它下面另起一行、多行输入 */
+.sentence-lead { font-size: var(--fs-cell); color: var(--text-1); line-height: 1.5; margin-bottom: 4px; }
 
 /* 主按钮 */
 .btn-primary {

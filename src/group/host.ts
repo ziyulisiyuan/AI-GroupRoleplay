@@ -398,9 +398,9 @@ function asArray<T>(value: unknown): T[] {
  * unlinkedKnowsMin：知情判定的场外门槛——不在现场、也没有接入/单向感知链路的角色，必须过更高的把握
  *   才写进 visible_to。写进去就撤不掉（消息出生快照没有改写路径），所以别让单次概率尖峰把场外无关角色拉进名单。
  * briefMin：任务书判定（离场管线 §2/§11.3）——本次离场是否留底任务书；默认 0.5。
- * midCheckMin：中间判定（§6.1e）——每条规则的 noul 过这条线才把它的第二段发回角色改稿；默认 0.6。
+ * midCheckMin：中间判定（§6.1e）——每条规则的 noul 过这条线才把它的第二段发回角色改稿；默认 0.42。
  */
-export const JEV_THRESHOLDS = { confidenceMin: 0.45, perceiveMin: 0.7, interactMin: 0.7, interactMax: 0.3, presentKnowsMin: 0.23, gateKeep: 0.5, unlinkedKnowsMin: 0.65, toldMin: 0.5, extraRoundMin: 0.39, briefMin: 0.5, midCheckMin: 0.6 }
+export const JEV_THRESHOLDS = { confidenceMin: 0.45, perceiveMin: 0.7, interactMin: 0.7, interactMax: 0.3, presentKnowsMin: 0.23, gateKeep: 0.5, unlinkedKnowsMin: 0.65, toldMin: 0.5, extraRoundMin: 0.39, briefMin: 0.5, midCheckMin: 0.42 }
 
 /** 知情判定门槛分三档：现场者用 presentKnowsMin（人在跟前，只有接近明确否定才排除）；
  *  有感知链路者（接入/单向感知）用 gateKeep；两者都不是的场外角色用 unlinkedKnowsMin。 */

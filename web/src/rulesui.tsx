@@ -448,11 +448,10 @@ export function MidCheckEditPage({ frame, endpoint, id, seed, titleNew, titleEdi
         <Field label="名称" value={name} onChange={setName} placeholder="判定的显示名（只影响列表，不进入 Jev）" />
         <div className="field">
           <div className="field-label">第一段（发给 Jev 的问题）</div>
-          <div className="sentence-field">
-            <span className="lead">本段输出是否违反了</span>
-            <input className="field-input" value={check} placeholder="如：不得替用户说话"
-              onChange={e => setCheck(e.target.value)} />
-          </div>
+          {/* 固定句式另起一行，填空在它下面多行输入：左右边界由 .field 的内边距固定，写多了只换行不挤窗口 */}
+          <div className="sentence-lead">本段输出是否违反了</div>
+          <textarea className="field-input" rows={4} value={check} placeholder="如：不得替用户说话"
+            onChange={e => setCheck(e.target.value)} />
         </div>
         <Field label="第二段（命中时发回角色）" value={fix} onChange={setFix} multiline rows={6}
           placeholder="如：不要替用户决定他要做什么，只写你自己的言行" />

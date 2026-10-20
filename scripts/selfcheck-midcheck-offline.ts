@@ -160,7 +160,8 @@ try {
       { id: 'r2', name: '规则B', enabled: true, check: '不得出现现代词', fix: '把现代词换掉' },
     ])
     const chat = await mockChat(['草稿：好，我这就替你把门推开了。', '改稿：我退到门边，等你示下。'])
-    const jev = await mockJev({ noulByRule: { '不得替用户说话': 0.91, '不得出现现代词': 0.07 } })
+    // 0.5 在旧的 0.6 线下会被判"未命中"：用它钉住 0.42 新阈值确实生效
+    const jev = await mockJev({ noulByRule: { '不得替用户说话': 0.5, '不得出现现代词': 0.3 } })
     rmSync(accDir, { recursive: true, force: true })
     buildGroupFixture(accDir, { chars: TEST_CAST })
     writeTestSettings(chat.port, jev.port)
@@ -196,7 +197,7 @@ try {
     assert.deepEqual(midRow?.hits, ['规则A'], '判定日志记录命中的规则')
     const verdicts = midRow?.verdicts as Array<{ name: string; noul?: number }>
     assert.equal(verdicts.length, 2, '每条规则的原始概率都要留痕')
-    assert.ok(verdicts.some(v => v.name === '规则B' && v.noul === 0.07), '未命中规则的原始概率也要留痕')
+    assert.ok(verdicts.some(v => v.name === '规则B' && v.noul === 0.3), '未命中规则的原始概率也要留痕')
     chat.server.close(); jev.server.close()
   }
 

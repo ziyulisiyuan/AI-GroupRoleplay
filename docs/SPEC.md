@@ -122,7 +122,7 @@ mid-checks of §6.1e), a slow bookkeeper (deepseek, §6.1b), a fallback full dir
 9. `speakAs`: assemble inputs (§6.2) → **if no mid-check rule is enabled, stream the reply
    exactly as before (nothing is buffered, nothing is replayed — zero added latency)** → otherwise
    generate a **draft** (buffered, never shown, never
-   persisted) → **mid-checks** (§6.1e): one parallel Jev call per enabled rule; a hit (noul ≥ 0.6)
+   persisted) → **mid-checks** (§6.1e): one parallel Jev call per enabled rule; a hit (noul ≥ 0.42)
    contributes that rule's second section to a rewrite instruction → if anything hit, **one**
    rewrite call over the unchanged context + draft + instruction (streamed live); otherwise the
    draft is replayed as `delta` events at a fixed pace (~150 token/s, §6.1e) → `stripNameEcho` →
@@ -466,7 +466,7 @@ order). A rule is **two fixed sections**:
 - `check` — the fill-in blank of a fixed sentence: the Jev question is literally
   `本段输出是否违反了{check}`. The sentence shape is fixed on purpose: it makes the user phrase a
   *violation*, which is what a `noul` can answer.
-- `fix` — sent back to the character **only when its judgment hits** (`noul ≥ 0.6`, §6.1e), as
+- `fix` — sent back to the character **only when its judgment hits** (`noul ≥ 0.42`, §6.1e), as
   part of the rewrite instruction.
 
 `name`/`enabled` are frontend-only labels (same semantics as 全局规则 §3.7). Only **enabled** rules
@@ -911,9 +911,7 @@ distribution is missing (or every candidate weights to 0) and Jev re-picks the j
 the turn ends and the floor returns to the user — "no consecutive output" is an engine rule, not a
 probability outcome. Flips and blocks are logged to 判定.jsonl (`接力加权`).
 
-Thresholds (`JEV_THRESHOLDS`): `{ confidenceMin: 0.45, perceiveMin: 0.7, interactMin: 0.7, interactMax: 0.3, presentKnowsMin: 0.23, gateKeep: 0.5, unlinkedKnowsMin: 0.65, toldMin: 0.5, extraRoundMin: 0.39, briefMin: 0.5 }` (§5.9).
-interactMax: 0.3, presentKnowsMin: 0.23, gateKeep: 0.5, unlinkedKnowsMin: 0.65, toldMin: 0.5,
-extraRoundMin: 0.39 }`.
+Thresholds (`JEV_THRESHOLDS`): `{ confidenceMin: 0.45, perceiveMin: 0.7, interactMin: 0.7, interactMax: 0.3, presentKnowsMin: 0.23, gateKeep: 0.5, unlinkedKnowsMin: 0.65, toldMin: 0.5, extraRoundMin: 0.39, briefMin: 0.5, midCheckMin: 0.42 }` (§5.9, §6.1e).
 
 ### 6.1b Slow path (`askBookkeeper`)
 
@@ -960,7 +958,7 @@ rule's wording cannot bias another's answer. Each call's `state` is exactly the 
 user's latest line (nothing else — memory, ledgers and history are not sent), and its single
 `noul` question is `本段输出是否违反了{check}`.
 
-- Hit = `noul ≥ JEV_THRESHOLDS.midCheckMin` (0.6). Every hit's `fix` is collected, in rule order,
+- Hit = `noul ≥ JEV_THRESHOLDS.midCheckMin` (0.42). Every hit's `fix` is collected, in rule order,
   under one leading sentence: `以下要求你的输出未满足，请据此重写，只输出改后的内容：` — that
   single sentence is the only wrapper; nothing else is added, so user-written instructions are not
   duplicated.
@@ -1186,8 +1184,10 @@ theme only — deliberate). Desktop widths letterbox the app into a centered 520
   per-rule enable pills; ＋ 添加全局规则 and tapping a rule page-navigate to a name + text editor
   with delete; save/toggle = PUT /api/rules with the whole list; **正则替换** = display-layer
   rewrite rules, see below; **Jev中间判定** = the mid-check rules of §3.7a — same list/editor shape,
-  but the body is two fixed sections: the first renders as the non-editable lead-in
-  `本段输出是否违反了` plus a fill-in field, the second a free-text revision instruction; save and
+  but the body is two fixed sections: the first renders the non-editable lead-in
+  `本段输出是否违反了` on its own line with a **multi-line** fill-in below it (long rules wrap
+  instead of being clipped; the field's left/right bounds are the cell padding), the second a
+  free-text revision instruction; save and
   the per-rule enable pill go through PUT /api/mid-checks) · 模型配置 (custom
   dialogue provider + optional Jev key, per §7.5 amendment). View stack: chat, chat-info, new group.
   The **new-group page** builds the map at creation: scene rows (名称 + 描述, added/removed
