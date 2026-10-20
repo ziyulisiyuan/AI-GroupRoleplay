@@ -2,7 +2,7 @@
  * 共享 UI 组件：导航栏 / TabBar / 头像（含回退与上传压缩）/ 单元组 /
  * 底部弹层 / 确认框 / Toast / 字段 / 长按。
  */
-import React, { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react'
+import React, { createContext, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { Camera, Check, ChevronLeft, MessageCircle, ScrollText, Settings2 } from './icons.tsx'
 
 /* ---------- TabBar ---------- */
@@ -278,27 +278,44 @@ export function CheckCell({ on, label, onToggle }: { on: boolean; label: React.R
 /* ---------- 弹层 ↔ 系统栏那两条带子（Android 外壳） ---------- */
 
 /**
- * 真机上 WebView 被外壳上下各让出一条（状态栏 / 导航栏），页面里的遮罩只能盖住 WebView 内容区
+ * 真机上 WebView 被外壳上下各让出一条（状态栏 / 导航栏），页面遮罩只能盖住 WebView 内容区
  * ——弹层打开时中间压暗、上下两条保持原亮度（真机反馈的"弹窗只盖住中间一段"）。
- * 这里在弹层开合时通知外壳把两条一起压暗/复原（MainActivity 的 qxbncShell 桥，显示信号，无数据）。
+ * 这里在弹层开合时通知外壳，两条带子各自过渡到该有的颜色：
+ *   顶部：有弹层就压暗（遮罩盖住它，它就是背景）。
+ *   底部：上拉面板贴底，它下面那条属于面板本身 → 用面板的白底；居中弹窗 → 一并压暗。
+ * 用 useLayoutEffect（绘制前）而不是 useEffect：晚一帧就是"页面先暗、顶部再暗"。
+ * 时长/曲线由外壳按 .dialog-mask 的 --t-view + ease-out 对齐。
  * PC / 浏览器里没有这个对象，调用即空转。
  */
-let dimDepth = 0
+type StripMode = 'page' | 'dim' | 'sheet'
 
-function shellBridge(): { setDimmed?: (on: boolean) => void } | undefined {
-  return (window as unknown as { qxbncShell?: { setDimmed?: (on: boolean) => void } }).qxbncShell
+let dialogDepth = 0
+let sheetDepth = 0
+
+function shellBridge(): { setStrips?: (top: StripMode, bottom: StripMode) => void } | undefined {
+  return (window as unknown as { qxbncShell?: { setStrips?: (top: StripMode, bottom: StripMode) => void } }).qxbncShell
 }
 
-function useShellDim(active: boolean): void {
-  useEffect(() => {
-    if (!active) return
-    dimDepth++
-    shellBridge()?.setDimmed?.(true)
+function pushShellStrips(): void {
+  const open = dialogDepth + sheetDepth > 0
+  shellBridge()?.setStrips?.(
+    open ? 'dim' : 'page',
+    sheetDepth > 0 ? 'sheet' : open ? 'dim' : 'page',
+  )
+}
+
+function useShellStrip(kind: 'dialog' | 'sheet', open: boolean): void {
+  useLayoutEffect(() => {
+    if (!open) return
+    if (kind === 'sheet') sheetDepth++
+    else dialogDepth++
+    pushShellStrips()
     return () => {
-      dimDepth = Math.max(0, dimDepth - 1)
-      shellBridge()?.setDimmed?.(dimDepth > 0) // 还有别的弹层开着就保持压暗
+      if (kind === 'sheet') sheetDepth = Math.max(0, sheetDepth - 1)
+      else dialogDepth = Math.max(0, dialogDepth - 1)
+      pushShellStrips() // 还有别的弹层开着就保持它该有的样子
     }
-  }, [active])
+  }, [kind, open])
 }
 
 /* ---------- 悬浮弹窗（居中）/ 确认框 ---------- */
@@ -320,7 +337,7 @@ export function Modal({ open, onClose, title, children }: {
     const t = setTimeout(() => setRender(false), 200) // 收起动画播完再卸载
     return () => clearTimeout(t)
   }, [open])
-  useShellDim(open) // 遮罩出现/消失时同步系统栏那两条带子（与 open 同拍，不等收起动画播完）
+  useShellStrip('dialog', open) // 遮罩出现/消失时同步系统栏那两条带子（与 open 同拍，不等收起动画播完）
   if (!render) return null
   const closing = !open
   const shown = closing ? frozen.current : { title, children }
@@ -352,7 +369,7 @@ export function Sheet({ open, onClose, title, children }: {
     const t = setTimeout(() => setRender(false), 200)
     return () => clearTimeout(t)
   }, [open])
-  useShellDim(open) // 与 Modal 同一把尺
+  useShellStrip('sheet', open) // 上拉面板：底部那条属于面板本身（白底），顶端照常压暗
   if (!render) return null
   const closing = !open
   const shown = closing ? frozen.current : { title, children }
@@ -384,7 +401,7 @@ export function Confirm({ open, text, okText = '删除', danger = true, onOk, on
     const t = setTimeout(() => setRender(false), 200)
     return () => clearTimeout(t)
   }, [open])
-  useShellDim(open)
+  useShellStrip('dialog', open)
   if (!render) return null
   return (
     <div className={'dialog' + (open ? '' : ' closing')}>

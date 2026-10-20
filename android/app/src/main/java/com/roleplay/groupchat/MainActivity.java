@@ -15,6 +15,7 @@ import android.view.Gravity;
 import android.view.View;
 import android.view.ViewGroup;
 import android.view.WindowInsets;
+import android.view.animation.PathInterpolator;
 import android.webkit.JavascriptInterface;
 import android.webkit.ValueCallback;
 import android.webkit.WebChromeClient;
@@ -49,19 +50,24 @@ public class MainActivity extends Activity {
      * 系统栏那两条带子的底色。WebView 被上下两条 inset 各让出一块（见 onCreate 的 padding），
      * 那两条是**外壳**画的，页面里的弹层遮罩（.dialog-mask）盖不到——弹窗打开时页面中间压暗、
      * 上下两条保持原亮度，真机观感就是"浮层只盖住了中间一段"。
-     * 所以：页面弹层开合时通过 JavaScript 桥通知外壳，把这两条一起压暗/复原。
-     * 取值 = web/src/tokens.css：正常 = --bg-page(#f7f7f7)；压暗 = 它被 --mask(rgba(0,0,0,.5))
-     * 合成后的颜色（#f7f7f7 × 0.5 = #7b7b7b）。时长对齐 --t-view(0.18s)。
+     * 所以页面弹层开合时通过 JavaScript 桥通知外壳，把两条带子各自过渡到该有的颜色：
+     *   page  = 页面底色（没弹层）
+     *   dim   = 页面底色被 --mask(rgba(0,0,0,.5)) 压暗后的合成色（居中弹窗：两条都是背景）
+     *   sheet = 上拉面板自己的白底（面板贴底，它下面那条属于面板，不该压暗）
+     * 取值 = web/src/tokens.css / colors.xml。时长对齐 --t-view(0.18s)，曲线对齐 CSS 的 ease-out。
      */
-    private static final int STRIP_COLOR = 0xFFF7F7F7;
-    private static final int STRIP_COLOR_DIMMED = 0xFF7B7B7B;
+    private static final int STRIP_PAGE = 0xFFF7F7F7;
+    private static final int STRIP_DIM = 0xFF7B7B7B;
+    private static final int STRIP_SHEET = 0xFFFFFFFF;
     private static final long STRIP_FADE_MS = 180L;
+    /** CSS ease-out = cubic-bezier(0, 0, .58, 1)：页面遮罩用它，外壳必须用同一条，否则"先暗后暗"。 */
+    private static final PathInterpolator STRIP_EASE = new PathInterpolator(0f, 0f, 0.58f, 1f);
 
     private WebView webView;
-    /** 根容器：它的底色就是那两条带子（WebView 只盖住中间的内容区）。 */
+    /** 根容器：两条带子的宿主（WebView 只盖住中间的内容区，上下露出这两块）。 */
     private FrameLayout root;
-    private int stripColor = STRIP_COLOR;
-    private ValueAnimator stripAnim;
+    private Strip topStrip;
+    private Strip bottomStrip;
     /** 等待页：纯品牌绿（logo 由系统的启动页负责，尺寸天然正确；自己再画一个会造成尺寸跳变） */
     private FrameLayout splash;
     private TextView splashFail;
@@ -76,7 +82,14 @@ public class MainActivity extends Activity {
         }
 
         root = new FrameLayout(this);
-        root.setBackgroundColor(STRIP_COLOR); // 浅色界面底色（= 系统栏那两条带子的颜色）；绿只属于启动阶段
+        root.setBackgroundColor(STRIP_PAGE); // 兜底底色（两条带子各自有自己的 view）
+        // 系统栏那两条带子：WebView 被上下让出来之后那块是空的，由这两个 view 上色
+        topStrip = new Strip(new View(this), STRIP_PAGE);
+        bottomStrip = new Strip(new View(this), STRIP_PAGE);
+        root.addView(topStrip.view, new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, 0, Gravity.TOP));
+        root.addView(bottomStrip.view, new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, 0, Gravity.BOTTOM));
         // 让位容器：**padding 必须加在 WebView 外的容器上**——WebView 会忽略自身 padding
         // 直接铺满内容（真机反馈"标题栏顶进状态栏"即此），而容器 padding 能正常收缩其内容区。
         FrameLayout webBox = new FrameLayout(this);
@@ -87,7 +100,7 @@ public class MainActivity extends Activity {
         webView.setVisibility(View.INVISIBLE);
         webView.setBackgroundColor(Color.parseColor("#EDEDED"));
         configureWebView(webView);
-        // 页面弹层开合 → 外壳压暗/复原系统栏那两条带子（见 stripColor 注释）
+        // 页面弹层开合 → 外壳把两条带子过渡到该有的颜色（见 STRIP_PAGE/DIM/SHEET 注释）
         webView.addJavascriptInterface(new ShellBridge(), "qxbncShell");
         webBox.addView(webView, new FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
@@ -102,7 +115,10 @@ public class MainActivity extends Activity {
         root.setOnApplyWindowInsetsListener((v, insets) -> {
             Insets sys = insets.getInsets(WindowInsets.Type.systemBars());
             Insets ime = insets.getInsets(WindowInsets.Type.ime());
-            webBox.setPadding(0, sys.top, 0, Math.max(ime.bottom, sys.bottom));
+            int bottom = Math.max(ime.bottom, sys.bottom);
+            webBox.setPadding(0, sys.top, 0, bottom);
+            topStrip.setHeight(sys.top, Gravity.TOP);
+            bottomStrip.setHeight(bottom, Gravity.BOTTOM);
             return WindowInsets.CONSUMED;
         });
 
@@ -141,29 +157,61 @@ public class MainActivity extends Activity {
 
     /**
      * 页面弹层（Modal / Sheet / Confirm）开合的显示信号：页面的遮罩只能盖住 WebView 内容区，
-     * 系统栏那两条带子在 WebView 之外（见 stripColor 注释），由外壳跟着压暗/复原。
-     * 只暴露这一个开关，没有数据出入口；前端在 ui.tsx 的 useShellDim 里调用。
+     * 系统栏那两条带子在 WebView 之外（见 STRIP_* 注释），由外壳跟着过渡。
+     * 只暴露这一个开关，没有数据出入口；前端在 ui.tsx 的 useShellStrip 里调用。
      */
     public final class ShellBridge {
         @JavascriptInterface
-        public void setDimmed(final boolean dimmed) {
+        public void setStrips(final String top, final String bottom) {
             // JS 桥方法跑在 JavaBridge 线程：切回 UI 线程再动 View
-            runOnUiThread(() -> applyStripColor(dimmed ? STRIP_COLOR_DIMMED : STRIP_COLOR));
+            runOnUiThread(() -> {
+                topStrip.to(stripColor(top));
+                bottomStrip.to(stripColor(bottom));
+            });
         }
     }
 
-    /** 带子底色过渡（时长对齐页面 .dialog-mask 的淡入淡出）。只改颜色，不碰布局。 */
-    private void applyStripColor(final int to) {
-        if (stripAnim != null) stripAnim.cancel();
-        if (stripColor == to || root == null) return;
-        ValueAnimator anim = ValueAnimator.ofArgb(stripColor, to);
-        anim.setDuration(STRIP_FADE_MS);
-        anim.addUpdateListener(a -> {
-            stripColor = (int) a.getAnimatedValue();
-            root.setBackgroundColor(stripColor);
-        });
-        stripAnim = anim;
-        anim.start();
+    /** 桥上的模式名 → 颜色（未知/缺省一律按页面底色）。 */
+    private static int stripColor(final String mode) {
+        if ("dim".equals(mode)) return STRIP_DIM;
+        if ("sheet".equals(mode)) return STRIP_SHEET;
+        return STRIP_PAGE;
+    }
+
+    /** 一条系统栏带子：自己上色、自己过渡；只改颜色，不碰布局。 */
+    private static final class Strip {
+        private final View view;
+        private int color;
+        private ValueAnimator anim;
+
+        Strip(final View view, final int color) {
+            this.view = view;
+            this.color = color;
+            view.setBackgroundColor(color);
+        }
+
+        /** 高度由 inset 决定（0 = 该侧没有系统栏，自然不显示）。 */
+        void setHeight(final int height, final int gravity) {
+            FrameLayout.LayoutParams lp = (FrameLayout.LayoutParams) view.getLayoutParams();
+            if (lp.height == height && lp.gravity == gravity) return;
+            lp.height = height;
+            lp.gravity = gravity;
+            view.setLayoutParams(lp);
+        }
+
+        void to(final int target) {
+            if (anim != null) anim.cancel();
+            if (color == target) return;
+            ValueAnimator a = ValueAnimator.ofArgb(color, target);
+            a.setDuration(STRIP_FADE_MS);
+            a.setInterpolator(STRIP_EASE);
+            a.addUpdateListener(x -> {
+                color = (int) x.getAnimatedValue();
+                view.setBackgroundColor(color);
+            });
+            anim = a;
+            a.start();
+        }
     }
 
     private void configureWebView(WebView wv) {

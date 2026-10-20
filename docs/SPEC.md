@@ -1431,13 +1431,19 @@ filesDir/规则.md              optional, user-authored
   edge-to-edge): top = status bar, bottom = `max(ime, navigationBar)`. The WebView view is
   therefore compressed to the keyboard's top edge and the frontend's flow-composer sits flush
   against it (no browser chrome, no gap). **The two strips left over by that padding are painted by
-  the shell, not by the page** — a background color on the root container, so the page's dialog mask
-  cannot dim them. The page therefore reports modal open/closed through the display-only
-  `qxbncShell.setDimmed(boolean)` bridge (`ui.tsx` `useShellDim`, reference-counted across
-  Modal / Sheet / Confirm) and the shell cross-fades those strips to the same dimmed color for the
-  same 180 ms. Back key = `moveTaskToBack` (the app's navigation is a
-  React state stack, not URL history, so there is nothing to `goBack` to). `onShowFileChooser`
-  bridges `<input type=file>` for avatar upload.
+  the shell, not by the page** (two dedicated `View`s; the system bars themselves are transparent),
+  so a page-side dialog mask cannot dim them. The page therefore reports modal state through the
+  display-only `qxbncShell.setStrips(top, bottom)` bridge (`ui.tsx` `useShellStrip`, reference
+  counted per kind) with three modes: `page` (no overlay), `dim` (the page background under
+  `--mask`) and `sheet` (a bottom sheet's own white). Top strip: `dim` while anything is open.
+  Bottom strip: `sheet` while a bottom sheet is open — it belongs to that sheet, not to the
+  background — else `dim` for a centered modal/dialog, else `page`. Reference counting is per kind
+  (`dialogDepth` / `sheetDepth`), so stacked overlays resolve to the right pair. The transition is
+  180 ms with the **same** cubic-bezier as `.dialog-mask` (`ease-out`, `PathInterpolator(0,0,.58,1)`)
+  and is fired from `useLayoutEffect` (before paint) — a different curve or a post-paint effect is
+  visible as "the page dims first, the strip follows". Back key = `moveTaskToBack` (the app's
+  navigation is a React state stack, not URL history, so there is nothing to `goBack` to).
+  `onShowFileChooser` bridges `<input type=file>` for avatar upload.
 - `NodeRunner` — spawns the bundled Node runtime as a **child process of the app process**,
   started by `MainActivity.onCreate` and stopped in `onDestroy`. No foreground service and
   therefore **no persistent notification** (user decision: the local server's only client is
