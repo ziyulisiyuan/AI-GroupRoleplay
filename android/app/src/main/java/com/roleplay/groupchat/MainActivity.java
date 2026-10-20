@@ -1,5 +1,6 @@
 package com.roleplay.groupchat;
 
+import android.animation.ValueAnimator;
 import android.app.Activity;
 import android.content.Intent;
 import android.graphics.Color;
@@ -14,6 +15,7 @@ import android.view.Gravity;
 import android.view.View;
 import android.view.ViewGroup;
 import android.view.WindowInsets;
+import android.webkit.JavascriptInterface;
 import android.webkit.ValueCallback;
 import android.webkit.WebChromeClient;
 import android.webkit.WebSettings;
@@ -43,7 +45,23 @@ public class MainActivity extends Activity {
     /** 启动页最短展示时长：服务通常 ~1s 就绪，这个下限保证动画看得见、不闪一下就没 */
     private static final long SPLASH_MIN_MS = 900L;
 
+    /**
+     * 系统栏那两条带子的底色。WebView 被上下两条 inset 各让出一块（见 onCreate 的 padding），
+     * 那两条是**外壳**画的，页面里的弹层遮罩（.dialog-mask）盖不到——弹窗打开时页面中间压暗、
+     * 上下两条保持原亮度，真机观感就是"浮层只盖住了中间一段"。
+     * 所以：页面弹层开合时通过 JavaScript 桥通知外壳，把这两条一起压暗/复原。
+     * 取值 = web/src/tokens.css：正常 = --bg-page(#f7f7f7)；压暗 = 它被 --mask(rgba(0,0,0,.5))
+     * 合成后的颜色（#f7f7f7 × 0.5 = #7b7b7b）。时长对齐 --t-view(0.18s)。
+     */
+    private static final int STRIP_COLOR = 0xFFF7F7F7;
+    private static final int STRIP_COLOR_DIMMED = 0xFF7B7B7B;
+    private static final long STRIP_FADE_MS = 180L;
+
     private WebView webView;
+    /** 根容器：它的底色就是那两条带子（WebView 只盖住中间的内容区）。 */
+    private FrameLayout root;
+    private int stripColor = STRIP_COLOR;
+    private ValueAnimator stripAnim;
     /** 等待页：纯品牌绿（logo 由系统的启动页负责，尺寸天然正确；自己再画一个会造成尺寸跳变） */
     private FrameLayout splash;
     private TextView splashFail;
@@ -57,9 +75,8 @@ public class MainActivity extends Activity {
             getWindow().setDecorFitsSystemWindows(false);
         }
 
-        FrameLayout root = new FrameLayout(this);
-        root.setBackgroundColor(Color.parseColor("#F7F7F7")); // 浅色界面底色；绿只属于启动阶段
-
+        root = new FrameLayout(this);
+        root.setBackgroundColor(STRIP_COLOR); // 浅色界面底色（= 系统栏那两条带子的颜色）；绿只属于启动阶段
         // 让位容器：**padding 必须加在 WebView 外的容器上**——WebView 会忽略自身 padding
         // 直接铺满内容（真机反馈"标题栏顶进状态栏"即此），而容器 padding 能正常收缩其内容区。
         FrameLayout webBox = new FrameLayout(this);
@@ -70,6 +87,8 @@ public class MainActivity extends Activity {
         webView.setVisibility(View.INVISIBLE);
         webView.setBackgroundColor(Color.parseColor("#EDEDED"));
         configureWebView(webView);
+        // 页面弹层开合 → 外壳压暗/复原系统栏那两条带子（见 stripColor 注释）
+        webView.addJavascriptInterface(new ShellBridge(), "qxbncShell");
         webBox.addView(webView, new FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
 
@@ -118,6 +137,33 @@ public class MainActivity extends Activity {
         if (c == null) return;
         int mask = android.view.WindowInsetsController.APPEARANCE_LIGHT_STATUS_BARS;
         c.setSystemBarsAppearance(darkIcons ? mask : 0, mask);
+    }
+
+    /**
+     * 页面弹层（Modal / Sheet / Confirm）开合的显示信号：页面的遮罩只能盖住 WebView 内容区，
+     * 系统栏那两条带子在 WebView 之外（见 stripColor 注释），由外壳跟着压暗/复原。
+     * 只暴露这一个开关，没有数据出入口；前端在 ui.tsx 的 useShellDim 里调用。
+     */
+    public final class ShellBridge {
+        @JavascriptInterface
+        public void setDimmed(final boolean dimmed) {
+            // JS 桥方法跑在 JavaBridge 线程：切回 UI 线程再动 View
+            runOnUiThread(() -> applyStripColor(dimmed ? STRIP_COLOR_DIMMED : STRIP_COLOR));
+        }
+    }
+
+    /** 带子底色过渡（时长对齐页面 .dialog-mask 的淡入淡出）。只改颜色，不碰布局。 */
+    private void applyStripColor(final int to) {
+        if (stripAnim != null) stripAnim.cancel();
+        if (stripColor == to || root == null) return;
+        ValueAnimator anim = ValueAnimator.ofArgb(stripColor, to);
+        anim.setDuration(STRIP_FADE_MS);
+        anim.addUpdateListener(a -> {
+            stripColor = (int) a.getAnimatedValue();
+            root.setBackgroundColor(stripColor);
+        });
+        stripAnim = anim;
+        anim.start();
     }
 
     private void configureWebView(WebView wv) {

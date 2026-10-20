@@ -1430,7 +1430,12 @@ filesDir/规则.md              optional, user-authored
 - `MainActivity` — the only activity; consumes window insets manually (`targetSdk 36` forces
   edge-to-edge): top = status bar, bottom = `max(ime, navigationBar)`. The WebView view is
   therefore compressed to the keyboard's top edge and the frontend's flow-composer sits flush
-  against it (no browser chrome, no gap). Back key = `moveTaskToBack` (the app's navigation is a
+  against it (no browser chrome, no gap). **The two strips left over by that padding are painted by
+  the shell, not by the page** — a background color on the root container, so the page's dialog mask
+  cannot dim them. The page therefore reports modal open/closed through the display-only
+  `qxbncShell.setDimmed(boolean)` bridge (`ui.tsx` `useShellDim`, reference-counted across
+  Modal / Sheet / Confirm) and the shell cross-fades those strips to the same dimmed color for the
+  same 180 ms. Back key = `moveTaskToBack` (the app's navigation is a
   React state stack, not URL history, so there is nothing to `goBack` to). `onShowFileChooser`
   bridges `<input type=file>` for avatar upload.
 - `NodeRunner` — spawns the bundled Node runtime as a **child process of the app process**,

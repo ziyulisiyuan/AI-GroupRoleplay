@@ -275,6 +275,32 @@ export function CheckCell({ on, label, onToggle }: { on: boolean; label: React.R
   )
 }
 
+/* ---------- 弹层 ↔ 系统栏那两条带子（Android 外壳） ---------- */
+
+/**
+ * 真机上 WebView 被外壳上下各让出一条（状态栏 / 导航栏），页面里的遮罩只能盖住 WebView 内容区
+ * ——弹层打开时中间压暗、上下两条保持原亮度（真机反馈的"弹窗只盖住中间一段"）。
+ * 这里在弹层开合时通知外壳把两条一起压暗/复原（MainActivity 的 qxbncShell 桥，显示信号，无数据）。
+ * PC / 浏览器里没有这个对象，调用即空转。
+ */
+let dimDepth = 0
+
+function shellBridge(): { setDimmed?: (on: boolean) => void } | undefined {
+  return (window as unknown as { qxbncShell?: { setDimmed?: (on: boolean) => void } }).qxbncShell
+}
+
+function useShellDim(active: boolean): void {
+  useEffect(() => {
+    if (!active) return
+    dimDepth++
+    shellBridge()?.setDimmed?.(true)
+    return () => {
+      dimDepth = Math.max(0, dimDepth - 1)
+      shellBridge()?.setDimmed?.(dimDepth > 0) // 还有别的弹层开着就保持压暗
+    }
+  }, [active])
+}
+
 /* ---------- 悬浮弹窗（居中）/ 确认框 ---------- */
 
 export function Modal({ open, onClose, title, children }: {
@@ -294,6 +320,7 @@ export function Modal({ open, onClose, title, children }: {
     const t = setTimeout(() => setRender(false), 200) // 收起动画播完再卸载
     return () => clearTimeout(t)
   }, [open])
+  useShellDim(open) // 遮罩出现/消失时同步系统栏那两条带子（与 open 同拍，不等收起动画播完）
   if (!render) return null
   const closing = !open
   const shown = closing ? frozen.current : { title, children }
@@ -325,6 +352,7 @@ export function Sheet({ open, onClose, title, children }: {
     const t = setTimeout(() => setRender(false), 200)
     return () => clearTimeout(t)
   }, [open])
+  useShellDim(open) // 与 Modal 同一把尺
   if (!render) return null
   const closing = !open
   const shown = closing ? frozen.current : { title, children }
@@ -356,6 +384,7 @@ export function Confirm({ open, text, okText = '删除', danger = true, onOk, on
     const t = setTimeout(() => setRender(false), 200)
     return () => clearTimeout(t)
   }, [open])
+  useShellDim(open)
   if (!render) return null
   return (
     <div className={'dialog' + (open ? '' : ' closing')}>
